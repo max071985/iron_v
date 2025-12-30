@@ -7,9 +7,22 @@ MEMORY
 
 SECTIONS
 {
-    . = 0x40800000;
-    .text : { *(.text) }
-    .rodata : { *(.rodata) }
-    .data : { *(.data) }
-    .bss : { *(.bss) }
+    .text : {
+        KEEP(*(.text.entry))
+        *(.text)
+    } > hp_sram
+    .rodata : {
+        *(.rodata)
+    } > hp_sram
+    .data : {
+        _sdata = .;
+        *(.data)
+        _edata = .;
+    } > hp_sram
+    .bss : {
+        _sbss = .;
+        *(.bss)
+        _ebss = .;
+    } > hp_sram
+    _stack_top = ORIGIN(hp_sram) + LENGTH(hp_sram);
 }

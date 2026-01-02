@@ -18,6 +18,7 @@ SECTIONS
         _sdata = .;
         *(.data)
         _edata = .;
+        __global_pointer$ = _sdata + 0x800;
     } > hp_sram
     .bss : {
         _sbss = .;

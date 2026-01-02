@@ -19,3 +19,7 @@ _zero_bss:
     j _zero_bss
 
 _zero_end:
+    call main
+
+_hang:
+    j _hang

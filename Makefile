@@ -20,7 +20,7 @@ firmware.elf: $(SRCS)
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
 firmware.bin: firmware.elf
-	esptool.py --chip esp32c6 elf2image --flash_mode dio --flash_size 4MB --flag_freq 80m -o $@ $<
+	esptool --chip esp32c6 elf2image --flash_mode dio --flash_size 4MB --flash_freq 80m -o $@ $<
 
 clean:
 	rm -f *.elf *.bin

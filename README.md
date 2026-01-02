@@ -15,6 +15,6 @@ sudo apt install gcc-riscv64-unknown-elf
 
 # 2. Install esptool (through pip or system package)
 pip install esptool
-OR
+# OR
 sudo apt install esptool
 ```

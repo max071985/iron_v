@@ -15,7 +15,7 @@ _start:
 _zero_bss:
     bge t0, t1, _zero_end
     sw x0, 0(t0)
-    addi t0, 4
+    addi t0, t0, 4
     j _zero_bss
 
 _zero_end:

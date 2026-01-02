@@ -9,7 +9,7 @@ TODO
 2. esptool
 
 ### Ubuntu / Debian
-'''bash
+```bash
 # 1. Install the RISC-V GCC Toolchain (64 bit, or 32bit and change makefile toolchain)
 sudo apt install gcc-riscv64-unknown-elf
 
@@ -17,4 +17,4 @@ sudo apt install gcc-riscv64-unknown-elf
 pip install esptool
 OR
 sudo apt install esptool
-'''
+```

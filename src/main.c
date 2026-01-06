@@ -15,16 +15,30 @@ void uart_puts(const char *str)
     }
 }
 
+/* Gets the character from UART0_FIFO */
 char uart_getc(void)
 {
-    char c = 0;
-    while (!c)
+    char c = 0, output_c = 0;
+    while (c != '\r')
     {
+        output_c = c;
         if ((*UART0_STATUS_REG & UART_RX_FIFO_CNT) > 0)
         {
             c = *UART0_FIFO;
+            if (c != '\r' && c != '\n')
+                uart_putc(c);
         }
     }
+    uart_puts("\r\n");
+    return output_c;
+}
+
+/* Gets a character from the user */
+char get_char(char *msg)
+{
+    char c;
+    uart_puts(msg); // Prompts using the string provided
+    c = uart_getc();
     return c;
 }
 
@@ -70,11 +84,10 @@ void main(void)
     uart_puts("Booting...\r\n");
     char c;
     while(1) {
-        uart_puts("Please enter a character: ");
-        c = uart_getc();
+        c = get_char("Please enter a character: ");
         uart_puts("You've entered: ");
         uart_putc(c);
-        uart_puts("\n");
+        uart_puts("\r\n");
         delay(2000000);
     }
 }

@@ -8,6 +8,9 @@
 
 #define UART_TX_FIFO_CNT    0x00FF0000
 #define UART_TX_FIFO_CNT_SHIFT 16
+#define UART_FIFO_SIZE      128
+#define UART_FIFO_HEADROOM  8
+#define UART_FIFO_THRESHOLD (UART_FIFO_SIZE - UART_FIFO_HEADROOM)
 
 #define MCU_SEL             1   // 0 = GPIO, 1 = UART
 

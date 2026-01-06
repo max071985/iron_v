@@ -1,8 +1,9 @@
 #include "io_constants.h"
 
-
 void putc(char c)
 {
+    while (((*UART0_STATUS_REG >> UART_TX_FIFO_CNT_SHIFT) & 0xFF) > UART_FIFO_THRESHOLD);
+
     *UART0_FIFO = c;
 }
 

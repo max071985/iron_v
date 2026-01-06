@@ -5,7 +5,7 @@ LD = $(CROSS_COMPILE)ld
 OBJCOPY = $(CROSS_COMPILE)objcopy
 
 # Compiler flags
-CFLAGS = -march=rv32imac -mabi=ilp32 -ffreestanding -nostdlib -g -Wall
+CFLAGS = -march=rv32imac -mabi=ilp32 -ffreestanding -nostdlib -g -Wall -Isrc
 
 # Linker flags
 LDFLAGS = -T ld/link.ld -nostdlib

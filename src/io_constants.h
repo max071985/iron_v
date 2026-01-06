@@ -6,6 +6,7 @@
 #define UART0_CLKDIV        ((volatile uint32_t *)(UART0_BASE + 0x0014))
 #define UART0_STATUS_REG    ((volatile uint32_t *)(UART0_BASE + 0x001C))
 
+#define UART_RX_FIFO_CNT    0x000000FF
 #define UART_TX_FIFO_CNT    0x00FF0000
 #define UART_TX_FIFO_CNT_SHIFT 16
 #define UART_FIFO_SIZE      128

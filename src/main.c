@@ -14,16 +14,11 @@
 #define TIMG1_WDTFEED       ((volatile uint32_t *)(TIMG1_BASE + 0x60))
 #define TIMG1_WDTWPROTECT   ((volatile uint32_t *)(TIMG1_BASE + 0x64))
 
-#define LP_TIMER_BASE       0x600B0C00
-#define LP_WDT_BASE         0x600B1C00
-#define LP_WDT_CONFIG0      ((volatile uint32_t *)(LP_WDT_BASE + 0x0))
-
 #define RTC_WDT_BASE                0x600B1C00
 #define RTC_WDT_CONFIG0_REG         ((volatile uint32_t *)(RTC_WDT_BASE + 0x0000))
 #define RTC_WDT_WPROTECT_REG        ((volatile uint32_t *)(RTC_WDT_BASE + 0x0018))
 #define RTC_WDT_SWD_WPROTECT_REG    ((volatile uint32_t *)(RTC_WDT_BASE + 0x0020))
 #define RTC_WDT_SWD_CONFIG_REG      ((volatile uint32_t *)(RTC_WDT_BASE + 0x001C))
-#define RTC_WDT_SWD_AUTO_FEED_EN    (1u << 18)
 
 
 void putc(char c)

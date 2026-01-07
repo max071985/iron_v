@@ -18,28 +18,30 @@ void uart_puts(const char *str)
 /* Gets the character from UART0_FIFO */
 char uart_getc(void)
 {
-    char c = 0, output_c = 0;
-    while (c != '\r')
+    char c = 0;
+    while (!c)
     {
-        output_c = c;
         if ((*UART0_STATUS_REG & UART_RX_FIFO_CNT) > 0)
         {
             c = *UART0_FIFO;
-            if (c != '\r' && c != '\n')
-                uart_putc(c);
         }
     }
-    uart_puts("\r\n");
-    return output_c;
+    return c;
 }
 
 /* Gets a character from the user */
 char get_char(char *msg)
 {
-    char c;
+    char c, output_c = 0;
     uart_puts(msg); // Prompts using the string provided
-    c = uart_getc();
-    return c;
+    while((c = uart_getc()) != '\r')
+    {
+        output_c = c;
+        if (c != '\r' && c != '\n')
+            uart_putc(c);
+    }
+    uart_puts("\r\n");
+    return output_c;
 }
 
 void disable_wdt(void)

@@ -19,13 +19,8 @@ void uart_puts(const char *str)
 char uart_getc(void)
 {
     char c = 0;
-    while (!c)
-    {
-        if ((*UART0_STATUS_REG & UART_RX_FIFO_CNT) > 0)
-        {
-            c = *UART0_FIFO;
-        }
-    }
+    if ((*UART0_STATUS_REG & UART_RX_FIFO_CNT) > 0)
+        c = *UART0_FIFO;
     return c;
 }
 
@@ -36,8 +31,9 @@ char get_char(char *msg)
     uart_puts(msg); // Prompts using the string provided
     while((c = uart_getc()) != '\r')
     {
-        output_c = c;
-        if (c != '\r' && c != '\n')
+        if (c > 0)
+            output_c = c;
+        if (c != '\r' && c != '\n' && c > 0)
             uart_putc(c);
     }
     uart_puts("\r\n");

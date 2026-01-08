@@ -1,5 +1,8 @@
 #include <stdint.h>
 
+// Shell constants
+#define MAX_CMD_LEN         128
+
 // UART0 constants
 #define UART0_BASE          0x60000000
 #define UART0_FIFO          ((volatile uint32_t *)(UART0_BASE + 0x0000))

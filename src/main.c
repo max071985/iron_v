@@ -95,23 +95,20 @@ void disable_wdt(void)
     uart_puts("Disabled SWD\r\n");
 }
 
-void delay (volatile uint32_t count)
+/* Pseudo-delay function */
+void delay(volatile uint32_t count)
 {
     while(count--) asm volatile("nop");
 }
 
-void feed_wdt(void)
-{
-    *TIMG0_WDTWPROTECT = TIMG_WDT_WKEY;
-    *TIMG0_WDTFEED = 1;
-    *TIMG0_WDTWPROTECT = 0;
-}
-
 void main(void)
 {
+    char *input_buffer[MAX_CMD_LEN];
+    
+    uart_puts("Booting...\r\n");
     uart_puts("Disabling WDT:\r\n");
     disable_wdt();
-    uart_puts("Booting...\r\n");
+
     char c;
     while(1) {
         c = get_char("Please enter a character: ");

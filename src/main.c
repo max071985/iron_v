@@ -40,6 +40,38 @@ char get_char(char *msg)
     return output_c;
 }
 
+/* Reads a line from the user into the buffer */
+void read_line(char *buffer, int max_len)
+{
+    char c = 0;
+    int i = 0;
+    while((c = uart_getc()) != '\r')
+    {
+
+        if (c == 0)
+            continue;
+
+        // Check for backspace or DEL
+        if (c == 0x08 || c == 0x7F)
+        {
+            if (i > 0)
+            {
+                i--;
+                uart_puts("\b \b"); // Visually erase the last character from the CLI
+            }
+            continue;
+        }
+        if (i < max_len - 1)
+        {
+            buffer[i++] = c;
+            uart_putc(c);           // Visually print the last input character to the CLI
+        }
+    }
+    buffer[i] = '\0';   // Null-terminate (safe because i can only increase to 'max_len - 1')
+    uart_puts("\r\n");
+}
+
+/* Disables RISC-V watchdogs */
 void disable_wdt(void)
 {
     *TIMG0_WDTWPROTECT = TIMG_WDT_WKEY;

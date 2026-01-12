@@ -1,5 +1,5 @@
 #include "io_constants.h"
-#include "utils.c"
+#include "utils.h"
 
 /* Disables RISC-V watchdogs */
 void disable_wdt(void)

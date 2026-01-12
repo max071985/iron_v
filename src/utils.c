@@ -48,7 +48,7 @@ void read_line(char *buffer, int max_len)
     while((c = uart_getc()) != '\r')
     {
 
-        if (c == 0)
+        if (c == 0 || c == '\n')
             continue;
 
         // Check for backspace or DEL
@@ -83,7 +83,7 @@ void put_hex(uint32_t val)
     unsigned int c = 0;
     for (int i = 32; i > 0; i -= 4)
     {
-        c = (val >> i - 4) & 0xF;
+        c = (val >> (i - 4)) & 0xF;
         uart_putc(htoch(c));   // Print the character
     }
 }

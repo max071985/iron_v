@@ -1,5 +1,6 @@
 #include "io_constants.h"
 #include "utils.h"
+#include "string.h"
 
 /* Disables RISC-V watchdogs */
 void disable_wdt(void)
@@ -31,20 +32,43 @@ void delay(volatile uint32_t count)
     while(count--) asm volatile("nop");
 }
 
+void shell(char *input_buffer)
+{
+    uart_puts("> ");
+    read_line(input_buffer, MAX_CMD_LEN); // Fill buffer with values given by the user
+    // TEMP SOLUTION:
+    if (input_buffer[0] == 'p' && input_buffer[1] == 'e' && input_buffer[2] == 'e' && input_buffer[3] == 'k' && input_buffer[4] == ' ')
+    {
+        // Read address:
+        uint32_t addr = 0;
+        int isvalid = s_htoi(input_buffer + 5, &addr);
+        if (isvalid)
+        {
+            uart_puts("Value: 0x");
+            put_hex(*(volatile uint32_t *)addr);
+            uart_puts("\r\n");
+        }
+        else
+        {
+            uart_puts("ERROR: Invalid address format.\r\n");
+        }
+    }
+    else if (input_buffer[0] != 0)
+    {
+        uart_puts("Unknown command.\r\n");
+    }
+    /////////////////////
+}
+
 void main(void)
 {
-    char *input_buffer[MAX_CMD_LEN];
+    char input_buffer[MAX_CMD_LEN];
     
     uart_puts("Booting...\r\n");
     uart_puts("Disabling WDT:\r\n");
     disable_wdt();
 
-    char c;
     while(1) {
-        c = get_char("Please enter a character: ");
-        uart_puts("You've entered: ");
-        uart_putc(c);
-        uart_puts("\r\n");
-        delay(2000000);
+        shell(input_buffer);
     }
 }

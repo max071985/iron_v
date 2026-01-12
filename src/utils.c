@@ -70,3 +70,20 @@ void read_line(char *buffer, int max_len)
     buffer[i] = '\0';   // Null-terminate (safe because i can only increase to 'max_len - 1')
     uart_puts("\r\n");
 }
+
+char htoch(unsigned int a)
+{
+    a = a & 0xF;
+    if (a < 10) return (char)(a + 48);
+    return (char)(a + 55);
+}
+
+void put_hex(uint32_t val)
+{
+    unsigned int c = 0;
+    for (int i = 32; i > 0; i -= 4)
+    {
+        c = (val >> i - 4) & 0xF;
+        uart_putc(htoch(c));   // Print the character
+    }
+}

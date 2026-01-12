@@ -11,7 +11,7 @@ CFLAGS = -march=rv32imac -mabi=ilp32 -ffreestanding -nostdlib -g -Wall -Isrc
 LDFLAGS = -T ld/link.ld -nostdlib
 
 # Source files
-SRCS = src/crt0.S src/main.c
+SRCS = src/crt0.S src/main.c src/string.c
 
 # Targets
 all: firmware.bin

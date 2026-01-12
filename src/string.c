@@ -15,22 +15,24 @@ int strcmp(const char *str1, const char *str2)
 }
 
 /* Converts the hexadecimal number in the string into an integer
-Returns: an integer with the hex value if valid, otherwise -1. */
-uint32_t s_htoi(char *str)
+Returns: 1 if successful, 0 if the string was invalid.
+Output: writes the parsed value to *out on success */
+int s_htoi(char *str, uint32_t *out)
 {
-    uint32_t output = 0;
     int to_add = 0;
+    *out = 0;
     if (*str && str[0] == '0' && (str[1] == 'x' || str[1] == 'X')) str += 2;    // If string starts with 0x or 0X ignore prefix
     while(*str)
     {
         if ((to_add = is_hex(*str++)) < 0)
         {
-            return -1;
+            *out = 0;
+            return 0;
         }
-        output <<= 4;
-        output += to_add;
+        *out <<= 4;
+        *out += to_add;
     }
-    return output;
+    return 1;
 }
 
 /* Converts a hex character into int

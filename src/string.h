@@ -1,5 +1,5 @@
 #include <stdint.h>
 
 int strcmp(const char *str1, const char *str2);
-uint32_t s_htoi(char *str);
+int s_htoi(char *str, uint32_t *out);
 int is_hex(char c);

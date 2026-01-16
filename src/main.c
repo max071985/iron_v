@@ -30,13 +30,32 @@ void disable_wdt(void)
 /* Initialize interrupts */
 void interrupt_init(void)
 {
+    *UART0_INT_CLR_REG = UART_RXFIFO_FULL_INT_ST_M;
     *UART0_CONF1_REG = (*UART0_CONF1_REG & ~0x1FF) | 1;
-
     *UART0_INT_ENA_REG |= UART_RXFIFO_FULL_INT_ENA_M;
 
     *INTMTX_CORE0_UART0_INTR_MAP_REG = CPU_INTR_UART0;   // Route UART0 interrupt to CPU Interrupt CPU_INTR_UART0 (default = 6)
+    
+    *(volatile uint32_t *)(0x600C5080) = 0;
+    *INTPRI_CORE0_CPU_INT_PRI_18_REG = 15;
+    *INTPRI_CORE0_CPU_INT_ENABLE_REG |= (1 << CPU_INTR_UART0);
 
-    uart_puts("Interrupt Matrix configured:\nUART0 -> CPU Interrupt 6\r\n Type something!\r\n");
+    // Double check mie here just in case:
+    uint32_t mie_val;
+    asm volatile("csrr %0, mie" : "=r"(mie_val));
+    if (!(mie_val & (1 << 18))) {
+        uart_puts("WARNING: CPU mie bit 18 NOT set in crt0.S!\r\n");
+    }
+
+    // Check MIE (Machine Interrupt Enable) in mstatus
+    uint32_t mstatus;
+    asm volatile("csrr %0, mstatus" : "=r"(mstatus));
+    if ((mstatus & 0x8) == 0) { // Bit 3 is MIE
+        uart_puts("Fixing MSTATUS: Enabling Global Interrupts...\r\n");
+        asm volatile("csrs mstatus, %0" :: "r"(0x8));
+    }
+
+    uart_puts("INTC: Switched to Channel 18.\r\n");
 }
 
 /* Pseudo-delay function */
@@ -105,6 +124,14 @@ void uart_isr(void)
     }
 }
 
+void check_mip(void) {
+    uint32_t mip_val;
+    asm volatile("csrr %0, mip" : "=r"(mip_val));
+    uart_puts("MIP: ");
+    put_hex(mip_val);
+    uart_puts("\r\n");
+}
+
 void main(void)
 {
     char input_buffer[MAX_CMD_LEN];
@@ -116,6 +143,7 @@ void main(void)
     interrupt_init();
 
     while(1) {
+        check_mip();
         shell(input_buffer);
     }
 }

@@ -26,8 +26,13 @@ _zero_bss:
     j _zero_bss
 
 _zero_end:
+    la t0, _trap_handler
+    csrw mtvec, t0
     call main   # Call main function
 
 # Safety Net infinite loop in case main returns
 _hang:
     j _hang
+
+_trap_handler:
+    mret

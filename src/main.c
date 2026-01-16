@@ -1,6 +1,7 @@
 #include "io_constants.h"
 #include "utils.h"
 #include "string.h"
+#include "interrupts.h"
 
 /* Disables RISC-V watchdogs */
 void disable_wdt(void)
@@ -24,6 +25,18 @@ void disable_wdt(void)
     *RTC_WDT_SWD_CONFIG_REG |= (1u << 30);
     *RTC_WDT_SWD_WPROTECT_REG = 0;
     uart_puts("Disabled SWD\r\n");
+}
+
+/* Initialize interrupts */
+void interrupt_init(void)
+{
+    *UART0_CONF1_REG = (*UART0_CONF1_REG & ~0x1FF) | 1;
+
+    *UART0_INT_ENA_REG |= UART_RXFIFO_FULL_INT_ENA_M;
+
+    *INTMTX_CORE0_UART0_INTR_MAP_REG = CPU_INTR_UART0;   // Route UART0 interrupt to CPU Interrupt CPU_INTR_UART0 (default = 6)
+
+    uart_puts("Interrupt Matrix configured:\nUART0 -> CPU Interrupt 6\r\n Type something!\r\n");
 }
 
 /* Pseudo-delay function */
@@ -76,6 +89,22 @@ void shell(char *input_buffer)
     /////////////////////
 }
 
+__attribute__((interrupt))
+void uart_isr(void)
+{
+    uint32_t status = *UART0_INT_ST_REG;
+    
+    if (status & UART_RXFIFO_FULL_INT_ST_M)
+    {
+        while ((*UART0_STATUS_REG & UART_RX_FIFO_CNT) > 0)
+        {
+            char c = (char)(*UART0_FIFO);
+            uart_putc(c);
+        }
+        *UART0_INT_CLR_REG = UART_RXFIFO_FULL_INT_ST_M;
+    }
+}
+
 void main(void)
 {
     char input_buffer[MAX_CMD_LEN];
@@ -83,6 +112,8 @@ void main(void)
     uart_puts("Booting...\r\n");
     uart_puts("Disabling WDT:\r\n");
     disable_wdt();
+
+    interrupt_init();
 
     while(1) {
         shell(input_buffer);

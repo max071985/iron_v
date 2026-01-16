@@ -26,13 +26,21 @@ _zero_bss:
     j _zero_bss
 
 _zero_end:
+    /* Setup trap vector */
     la t0, _trap_handler
-    csrw mtvec, t0
+    CSRW mtvec, t0
+    /* Enable CPU interrupt 6 in MIE */
+    li t0, 0x40
+    CSRS mie, t0
+    /* Enable Global Interrupts in MIE */
+    li t0, 0x8
+    CSRS mstatus, t0
     call main   # Call main function
 
 # Safety Net infinite loop in case main returns
 _hang:
     j _hang
 
+.align 4
 _trap_handler:
-    mret
+    j uart_isr

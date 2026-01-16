@@ -6,17 +6,22 @@
 // UART0 constants
 #define UART0_BASE          0x60000000
 #define UART0_FIFO          ((volatile uint32_t *)(UART0_BASE + 0x0000))
+#define UART0_CONF1_REG      ((volatile uint32_t *)(UART0_BASE + 0x0004))
 #define UART0_CLKDIV        ((volatile uint32_t *)(UART0_BASE + 0x0014))
 #define UART0_STATUS_REG    ((volatile uint32_t *)(UART0_BASE + 0x001C))
 
-#define UART_RX_FIFO_CNT    0x000000FF
-#define UART_TX_FIFO_CNT    0x00FF0000
-#define UART_TX_FIFO_CNT_SHIFT 16
-#define UART_FIFO_SIZE      128
-#define UART_FIFO_HEADROOM  8
-#define UART_FIFO_THRESHOLD (UART_FIFO_SIZE - UART_FIFO_HEADROOM)
+#define UART_RX_FIFO_CNT            0x000000FF
+#define UART_TX_FIFO_CNT            0x00FF0000
+#define UART_TX_FIFO_CNT_SHIFT      16
+#define UART_FIFO_SIZE              128
+#define UART_FIFO_HEADROOM          8
+#define UART_FIFO_THRESHOLD         (UART_FIFO_SIZE - UART_FIFO_HEADROOM)
 
-#define MCU_SEL             1   // 0 = GPIO, 1 = UART
+#define UART_RXFIFO_FULL_INT_ST_M   (1 << 0)
+#define UART_RXFIFO_FULL_INT_CLR_M  (1 << 0)
+#define UART_RXFIFO_FULL_INT_ENA_M  (1 << 0)
+
+#define MCU_SEL 1   // 0 = GPIO, 1 = UART
 
 // IO Mux constants
 #define IO_MUX_BASE         0x60090000

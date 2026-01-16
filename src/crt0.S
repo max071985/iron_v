@@ -29,7 +29,10 @@ _zero_end:
     /* Setup trap vector */
     la t0, _trap_handler
     CSRW mtvec, t0
-    /* Enable CPU interrupt 18 in MIE */
+    /* Enable bit 11 in MIE */
+    li t0, (1 << 11)
+    CSRS mie, t0
+    /* Enable bit 18 in MIE */
     li t0, (1 << 18)
     CSRS mie, t0
     /* Enable Global Interrupts in MIE */

@@ -41,7 +41,8 @@ void shell(char *input_buffer)
     {
         // Read address:
         uint32_t addr = 0;
-        int isvalid = s_htoi(input_buffer + 5, &addr);
+        char *next_arg = input_buffer + 5;
+        int isvalid = s_htoi(&next_arg, &addr);
         if (isvalid)
         {
             uart_puts("Value: 0x");

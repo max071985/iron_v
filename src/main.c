@@ -36,7 +36,8 @@ void interrupt_init(void)
 
     *INTMTX_CORE0_UART0_INTR_MAP_REG = CPU_INTR_UART0;   // Route UART0 interrupt to CPU Interrupt CPU_INTR_UART0 (default = 6)
     
-    *(volatile uint32_t *)(0x600C5080) = 0;
+    *INTPRI_CORE0_CPU_INT_THRESH_REG = 0;
+    *INTPRI_CORE0_CPU_INT_TYPE_REG &= ~(1 << 18);
     *INTPRI_CORE0_CPU_INT_PRI_18_REG = 15;
     *INTPRI_CORE0_CPU_INT_ENABLE_REG |= (1 << CPU_INTR_UART0);
 
@@ -141,7 +142,14 @@ void main(void)
     disable_wdt();
 
     interrupt_init();
+    // Debug: Dump CSRs
+    uint32_t mstatus_dbg, mie_dbg;
+    asm volatile("csrr %0, mstatus" : "=r"(mstatus_dbg));
+    asm volatile("csrr %0, mie" : "=r"(mie_dbg));
 
+    uart_puts("DEBUG CSRs:\r\n");
+    uart_puts("MSTATUS: "); put_hex(mstatus_dbg); uart_puts("\r\n");
+    uart_puts("MIE    : "); put_hex(mie_dbg); uart_puts("\r\n");
     while(1) {
         check_mip();
         shell(input_buffer);

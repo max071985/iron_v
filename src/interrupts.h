@@ -17,5 +17,7 @@
 // INTC
 #define INTPRI_BASE     0x600C5000
 #define INTPRI_CORE0_CPU_INT_ENABLE_REG ((volatile uint32_t *)(INTPRI_BASE + 0x0000))
+#define INTPRI_CORE0_CPU_INT_TYPE_REG   ((volatile uint32_t *)(INTPRI_BASE + 0x0004))
 #define INTPRI_CORE0_CPU_INT_PRI_6_REG  ((volatile uint32_t *)(INTPRI_BASE + 0x0024))
-#define INTPRI_CORE0_CPU_INT_PRI_18_REG  ((volatile uint32_t *)(INTPRI_BASE + 0x005C))
+#define INTPRI_CORE0_CPU_INT_PRI_18_REG ((volatile uint32_t *)(INTPRI_BASE + 0x0054))
+#define INTPRI_CORE0_CPU_INT_THRESH_REG ((volatile uint32_t *)(INTPRI_BASE + 0x008C))

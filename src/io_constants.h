@@ -18,10 +18,28 @@
 
 #define MCU_SEL             1   // 0 = GPIO, 1 = UART
 
-// GPIO constants
+// IO Mux constants
 #define IO_MUX_BASE         0x60090000
 #define IO_MUX_GPIO16_REG   ((volatile uint32_t *)(IO_MUX_BASE + 0x44))
 #define IO_MUX_GPIO17_REG   ((volatile uint32_t *)(IO_MUX_BASE + 0x48))
+
+// GPIO constants
+#define GPIO_BASE           0x60091000
+#define GPIO_OUT_REG        ((volatile uint32_t *)(GPIO_BASE + 0x0004))
+#define GPIO_OUT_W1TS_REG   ((volatile uint32_t *)(GPIO_BASE + 0x0008))
+#define GPIO_OUT_W1TC_REG   ((volatile uint32_t *)(GPIO_BASE + 0x000C))
+#define GPIO_ENABLE_REG     ((volatile uint32_t *)(GPIO_BASE + 0x0020))
+#define GPIO_ENABLE_W1TS_REG     ((volatile uint32_t *)(GPIO_BASE + 0x0024))
+#define GPIO_ENABLE_W1TC_REG     ((volatile uint32_t *)(GPIO_BASE + 0x0028))
+
+// Interrupt status registers
+#define GPIO_STATUS_REG     ((volatile uint32_t *)(GPIO_BASE + 0x0044))
+#define GPIO_STATUS_W1TS_REG    ((volatile uint32_t *)(GPIO_BASE + 0x0048))
+#define GPIO_STATUS_W1TC_REG    ((volatile uint32_t *)(GPIO_BASE + 0x004C))
+
+// Pin configurations
+#define GPIO_PIN0_REG       ((volatile uint32_t *)(GPIO_BASE + 0x0074))
+#define GPIO_PIN8_REG       ((volatile uint32_t *)(GPIO_BASE + 0x0094))
 
 // Watchdog constants
 #define TIMG0_BASE          0x60008000

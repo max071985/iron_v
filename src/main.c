@@ -54,6 +54,21 @@ void shell(char *input_buffer)
             uart_puts("ERROR: Invalid address format.\r\n");
         }
     }
+    else if(input_buffer[0] == 'p' && input_buffer[1] == 'o' && input_buffer[2] == 'k' && input_buffer[3] == 'e')
+    {
+        // Poke address
+        // syntax: poke <addr> <val>
+        uint32_t addr, val;
+        char *next_arg = input_buffer + 4;
+        if (s_htoi(&next_arg, &addr) && s_htoi(&next_arg, &val))
+        {
+            // Perform the update in the memory "poke"
+            *(volatile uint32_t *)addr = val;
+            uart_puts("Written.\r\n");
+        }
+        else
+            uart_puts("Error: Invalid poke arguments.\r\n");
+    }
     else if (input_buffer[0] != 0)
     {
         uart_puts("Unknown command.\r\n");

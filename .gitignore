@@ -3,3 +3,4 @@
 .agent
 gen_headers.py
 src/regs/*.h
+GEMINI.md

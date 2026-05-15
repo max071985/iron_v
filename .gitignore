@@ -1,0 +1,5 @@
+*.bin
+*.elf
+.agent
+gen_headers.py
+src/regs/*.h

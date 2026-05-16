@@ -9,6 +9,7 @@ SECTIONS
 {
     .text : {
         KEEP(*(.text.entry))
+        KEEP(*(.interrupt_vector_table))
         *(.text)
     } > hp_sram
     .rodata : {

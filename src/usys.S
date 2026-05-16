@@ -8,3 +8,4 @@ vector_table:
 # dummy handler for non-implemented interrupts
 default_handler:
     mret
+

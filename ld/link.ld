@@ -9,6 +9,7 @@ SECTIONS
 {
     .text : {
         KEEP(*(.text.entry))
+        . = ALIGN(256);
         KEEP(*(.interrupt_vector_table))
         *(.text)
     } > hp_sram

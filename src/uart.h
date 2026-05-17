@@ -14,4 +14,6 @@ extern volatile int rx_tail; // Read by Fetcher (uart_getc)
 // Hardware ISR
 void uart_rx_isr(void);
 
+void enable_uart_intr(void);
+
 #endif

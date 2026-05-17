@@ -28,3 +28,13 @@ void uart_rx_isr(void) {
     // Note: Clearing the hardware interrupt flag usually happens here.
     // Depends on specific register (e.g., UART_INT_CLR_REG)
 }
+
+/**
+ * Enable UART interrupt flags
+ */
+void enable_uart_intr(void) {
+    // Enable interrupt bits for RXFIFO_FULL and RX_FIFO_TOUT
+    *UART0_INT_ENA_REG |= UART0_INT_ENA_RXFIFO_FULL_INT_ENA_M | UART0_INT_ENA_RXFIFO_TOUT_INT_ENA_M;
+    // set rxfifo threshhold to 128 bytes
+//    *UART0_CONF1_REG |= (UART0_CONF1_RXFIFO_FULL_THRHD_M & 128u);
+}

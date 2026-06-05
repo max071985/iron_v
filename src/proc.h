@@ -30,6 +30,7 @@ enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 struct proc
 {
     uint sz;                        // Size of process memory
+    uint kstack;                    // Virtual address of kernel stack
     uint* pgdir;                    // Page table
     int pid;                        // Process ID
     enum procstate state;           // Process state

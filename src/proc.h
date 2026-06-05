@@ -4,6 +4,8 @@
 #include "types.h"
 #include "riscv.h"
 
+#define NPROC 8     // Max process count
+
 struct context {
     uint ra;       // Return address
     uint sp;       // Stack pointer
@@ -23,29 +25,26 @@ struct context {
     uint s11;
 };
 
+enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
+
 struct proc
 {
     uint sz;                        // Size of process memory
     uint* pgdir;                    // Page table
     int pid;                        // Process ID
+    enum procstate state;           // Process state
     struct proc *parent;            // Parent process
     struct trapframe *tf;           // Trap frame for current syscall
-    struct context *context;        // swtch() here to run process
+    struct context context;        // swtch() here to run process
     void *chan;                     // If non-zero, sleeping on chan
     int killed;                     // If non-zero, have been killed
-    //struct file *ofile[NOFILE];     // Open files
-    //struct inode *cwd;              // Current directory
-    //struct mount *cwdmount;         // Mount in which current directory lies
     char name[16];                  // Process name (debugging)
-    struct nsproxy *nsproxy;        // Namespace proxy object
-    struct pid_ns *child_pid_ns;    // PID namespace for child procs
     int status;                     // Process exit status
-    //char cwdp[MAX_PATH_LENGTH];     // Current directory path.
     struct cgroup * cgroup;         // The process control group.
-    unsigned int cpu_time;          // Process cpu time.
-    unsigned int cpu_period_time;   // Cpu time in microseconds in the last accounting frame.
-    unsigned int cpu_percent;       // Cpu usage percentage in the last accounting frame.
-    unsigned int cpu_account_frame; // The cpu account frame.
+    uint cpu_time;                  // Process cpu time.
+    uint cpu_period_time;           // Cpu time in microseconds in the last accounting frame.
+    uint cpu_percent;               // Cpu usage percentage in the last accounting frame.
+    uint cpu_account_frame;         // The cpu account frame.
 };
 
 #endif

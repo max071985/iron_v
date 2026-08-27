@@ -7,23 +7,40 @@ MEMORY
 
 SECTIONS
 {
-    .text : {
+    . = ORIGIN(hp_sram);
+
+    .text : ALIGN(16) {
+        _stext = .;
         KEEP(*(.text.entry))
-        *(.text)
+        *(.text .text.*)
+        . = ALIGN(16);
+        _etext = .;
     } > hp_sram
-    .rodata : {
-        *(.rodata)
+
+    .rodata : ALIGN(16) {
+        _srodata = .;
+        *(.rodata .rodata.*)
+        . = ALIGN(16);
+        _erodata = .;
     } > hp_sram
-    .data : {
+
+    .data : ALIGN(16) {
         _sdata = .;
-        *(.data)
+        *(.data .data.*)
+        *(.sdata .sdata.*)
+        . = ALIGN(16);
         _edata = .;
         __global_pointer$ = _sdata + 0x800;
     } > hp_sram
-    .bss : {
+
+    .bss (NOLOAD) : ALIGN(16) {
         _sbss = .;
-        *(.bss)
+        *(.bss .bss.*)
+        *(.sbss .sbss.*)
+        *(COMMON)
+        . = ALIGN(16);
         _ebss = .;
     } > hp_sram
+
     _stack_top = ORIGIN(hp_sram) + LENGTH(hp_sram);
 }

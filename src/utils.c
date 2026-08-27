@@ -1,4 +1,5 @@
 #include "io_constants.h"
+#include "uart.h"
 
 void uart_putc(char c)
 {
@@ -15,60 +16,60 @@ void uart_puts(const char *str)
     }
 }
 
-/* Gets the character from UART0_FIFO */
+/**
+ * The Fetcher:
+ * Reads one byte out of the rx_ring_buffer.
+ * If empty, it waits for an interrupt.
+ */
 char uart_getc(void)
 {
-    char c = 0;
-    if ((*UART0_STATUS_REG & UART_RX_FIFO_CNT) > 0)
-        c = *UART0_FIFO;
+    while (rx_head == rx_tail) {
+        asm volatile("wfi"); // Wait for Interrupt
+    }
+
+    char c = rx_ring_buffer[rx_tail];
+    rx_tail = (rx_tail + 1) % RX_BUFF_SIZE;
     return c;
 }
 
-/* Gets a character from the user */
-char get_char(char *msg)
-{
-    char c, output_c = 0;
-    uart_puts(msg); // Prompts using the string provided
-    while((c = uart_getc()) != '\r')
-    {
-        if (c > 0)
-            output_c = c;
-        if (c != '\r' && c != '\n' && c > 0)
-            uart_putc(c);
-    }
-    uart_puts("\r\n");
-    return output_c;
-}
-
-/* Reads a line from the user into the buffer */
+/**
+ * The Assembler:
+ * Calls uart_getc() to build a linear command string.
+ * Handles line editing (backspace) and echoes to terminal.
+ */
 void read_line(char *buffer, int max_len)
 {
-    char c = 0;
     int i = 0;
-    while((c = uart_getc()) != '\r')
+    while(1)
     {
+        char c = uart_getc();
 
-        if (c == 0 || c == '\n')
-            continue;
+        // Handle Enter/Return (Command Complete)
+        if (c == '\r' || c == '\n')
+        {
+            buffer[i] = '\0'; // Null-terminate the linear buffer
+            uart_puts("\r\n");
+            return; // Return to the Parser (shell)
+        }
 
-        // Check for backspace or DEL
+        // Handle Backspace or DEL
         if (c == 0x08 || c == 0x7F)
         {
             if (i > 0)
             {
                 i--;
-                uart_puts("\b \b"); // Visually erase the last character from the CLI
+                uart_puts("\b \b"); // Visually erase character
             }
             continue;
         }
+
+        // Standard character: add to linear buffer and echo
         if (i < max_len - 1)
         {
             buffer[i++] = c;
-            uart_putc(c);           // Visually print the last input character to the CLI
+            uart_putc(c); 
         }
     }
-    buffer[i] = '\0';   // Null-terminate (safe because i can only increase to 'max_len - 1')
-    uart_puts("\r\n");
 }
 
 char htoch(unsigned int a)
@@ -84,6 +85,6 @@ void put_hex(uint32_t val)
     for (int i = 32; i > 0; i -= 4)
     {
         c = (val >> (i - 4)) & 0xF;
-        uart_putc(htoch(c));   // Print the character
+        uart_putc(htoch(c));
     }
 }

@@ -1,55 +1,106 @@
 #include "string.h"
 
-/* Compare str1 and str2
-Returns 0 if equal, a positive value if str1 is greater, a negative value otherwise */
 int strcmp(const char *str1, const char *str2)
 {
-    while (*str1)
+    while (*str1 && (*str1 == *str2))
     {
-        if (*str1 != *str2) return *str1 - *str2;
         str1++;
         str2++;
     }
-    if (*str2) return -1;
-    return 0;
+    return *(const unsigned char *)str1 - *(const unsigned char *)str2;
 }
 
-/* Converts the next hexadecimal number in the string into an integer, alters the input string to point to the next space character or the end of the string.
-Returns: 1 if successful, 0 if the string was invalid.
-Output: writes the parsed value to *out on success
-        points string to next ' ' character or '\0' (whichever is first) */
-int s_htoi(char **s, uint32_t *out)
+int strncmp(const char *str1, const char *str2, size_t n)
 {
-    char *str = *s;
-    int to_add = 0;
-    *out = 0;
-    if (*str == ' ') skip_space(&str);
-    if (*str && str[0] == '0' && (str[1] == 'x' || str[1] == 'X')) str += 2;    // If string starts with 0x or 0X ignore prefix
-    while(*str && *str != ' ')
+    while (n && *str1 && (*str1 == *str2))
     {
-        if ((to_add = is_hex(*str++)) < 0)
-        {
-            *out = 0;
-            return 0;
-        }
-        *out <<= 4;
-        *out += to_add;
+        str1++;
+        str2++;
+        n--;
     }
-    *s = str;
-    return 1;
+    if (n == 0) return 0;
+    return *(const unsigned char *)str1 - *(const unsigned char *)str2;
 }
 
-/* Converts a hex character into int
-Returns the 0-15 int value if valid, otherwise -1. */
+size_t strlen(const char *str)
+{
+    size_t len = 0;
+    while (str[len])
+    {
+        len++;
+    }
+    return len;
+}
+
+void *memset(void *s, int c, size_t n)
+{
+    unsigned char *p = (unsigned char *)s;
+    while (n--)
+    {
+        *p++ = (unsigned char)c;
+    }
+    return s;
+}
+
+void *memcpy(void *dest, const void *src, size_t n)
+{
+    unsigned char *d = (unsigned char *)dest;
+    const unsigned char *s = (const unsigned char *)src;
+    while (n--)
+    {
+        *d++ = *s++;
+    }
+    return dest;
+}
+
 int is_hex(char c)
 {
-    if (c >= '0' && c <= '9') return c - 48;
-    if (c >= 'A' && c <= 'F') return c - 55;
-    if (c >= 'a' && c <= 'f') return c - 87;
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
     return -1;
 }
 
 void skip_space(char **str)
 {
-    while (**str == ' ') (*str)++;
+    while (**str == ' ' || **str == '\t')
+    {
+        (*str)++;
+    }
+}
+
+int s_htoi(char **s, uint32_t *out)
+{
+    char *str = *s;
+    int to_add = 0;
+    int digits_found = 0;
+    *out = 0;
+
+    skip_space(&str);
+
+    if (str[0] == '0' && (str[1] == 'x' || str[1] == 'X'))
+    {
+        str += 2;
+    }
+
+    while (*str && *str != ' ' && *str != '\t' && *str != '\r' && *str != '\n')
+    {
+        to_add = is_hex(*str);
+        if (to_add < 0)
+        {
+            *out = 0;
+            return 0;
+        }
+        *out = (*out << 4) | (uint32_t)to_add;
+        str++;
+        digits_found++;
+    }
+
+    if (digits_found == 0)
+    {
+        return 0;
+    }
+
+    *s = str;
+    return 1;
 }

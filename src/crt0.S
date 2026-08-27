@@ -2,20 +2,20 @@
 .global _start
 
 _start:
-    la sp, _stack_top   # Init stack pointer based on linker defined _stack_top
+    /* 1. Setup Stack Pointer (Top of SRAM) */
+    la sp, _stack_top
 
-    /* * Initialize gp safely
-    * 'push -> norelax -> pop' allows us to avoid predefined optimization shortcuts in order to use them later on with our new gp value.
-    */
+    /* 2. Setup Global Pointer (gp) safely to optimize relaxation */
     .option push
     .option norelax
     la gp, __global_pointer$
     .option pop
 
-    /* * The next section zeros the .bss memory block 
-    * fetch _sbss (start of the block) and _ebss (end of the block)
-    * iterate over it and zero the memory
-    */
+    /* 3. Initialize Machine-Mode CSRs (Disable interrupts & clear pending) */
+    csrw mie, zero
+    csrw mip, zero
+
+    /* 4. Zero-initialize the .bss section */
     la t0, _sbss
     la t1, _ebss
 
@@ -26,8 +26,11 @@ _zero_bss:
     j _zero_bss
 
 _zero_end:
-    call main   # Call main function
+    /* 5. Memory barrier before calling main */
+    fence
+    call main
 
-# Safety Net infinite loop in case main returns
+    /* Safety Net infinite loop in case main returns */
 _hang:
+    wfi
     j _hang

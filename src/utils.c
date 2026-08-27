@@ -1,55 +1,71 @@
+#include "utils.h"
 #include "io_constants.h"
-#include "uart.h"
 
-void uart_putc(char c)
+int uart_putc(char c)
 {
-    while (((*UART0_STATUS_REG >> UART_TX_FIFO_CNT_SHIFT) & 0xFF) > UART_FIFO_THRESHOLD);
+    volatile uint32_t timeout = UART_TIMEOUT_CYCLES;
+    while (((*UART0_STATUS_REG >> UART_TX_FIFO_CNT_SHIFT) & 0xFF) > UART_FIFO_THRESHOLD)
+    {
+        if (--timeout == 0)
+        {
+            return -1; // Bounded polling timeout reached (hardware safety)
+        }
+    }
 
-    *UART0_FIFO = c;
+    *UART0_FIFO = (uint32_t)(uint8_t)c;
+    FENCE();
+    return 0;
 }
 
 void uart_puts(const char *str)
 {
+    if (!str) return;
     while (*str)
     {
+        if (*str == '\n')
+        {
+            uart_putc('\r');
+        }
         uart_putc(*str++);
     }
 }
 
-/**
- * The Fetcher:
- * Reads one byte out of the rx_ring_buffer.
- * If empty, it waits for an interrupt.
- */
-char uart_getc(void)
+int uart_getc_nonblocking(char *c)
 {
-    while (rx_head == rx_tail) {
-        asm volatile("wfi"); // Wait for Interrupt
+    if ((*UART0_STATUS_REG & UART_RX_FIFO_CNT) > 0)
+    {
+        *c = (char)(*UART0_FIFO & 0xFF);
+        FENCE();
+        return 1;
     }
+    return 0;
+}
 
-    char c = rx_ring_buffer[rx_tail];
-    rx_tail = (rx_tail + 1) % RX_BUFF_SIZE;
+char uart_getc_blocking(void)
+{
+    char c = 0;
+    while (!uart_getc_nonblocking(&c))
+    {
+        __asm__ volatile ("nop");
+    }
     return c;
 }
 
-/**
- * The Assembler:
- * Calls uart_getc() to build a linear command string.
- * Handles line editing (backspace) and echoes to terminal.
- */
 void read_line(char *buffer, int max_len)
 {
     int i = 0;
-    while(1)
-    {
-        char c = uart_getc();
+    if (!buffer || max_len <= 0) return;
 
-        // Handle Enter/Return (Command Complete)
+    while (1)
+    {
+        char c = uart_getc_blocking();
+
+        // Handle Carriage Return / Newline
         if (c == '\r' || c == '\n')
         {
-            buffer[i] = '\0'; // Null-terminate the linear buffer
+            buffer[i] = '\0';
             uart_puts("\r\n");
-            return; // Return to the Parser (shell)
+            return;
         }
 
         // Handle Backspace or DEL
@@ -58,33 +74,57 @@ void read_line(char *buffer, int max_len)
             if (i > 0)
             {
                 i--;
-                uart_puts("\b \b"); // Visually erase character
+                uart_puts("\b \b");
             }
             continue;
         }
 
-        // Standard character: add to linear buffer and echo
-        if (i < max_len - 1)
+        // Printable ASCII characters
+        if (c >= 32 && c <= 126)
         {
-            buffer[i++] = c;
-            uart_putc(c); 
+            if (i < max_len - 1)
+            {
+                buffer[i++] = c;
+                uart_putc(c);
+            }
         }
     }
 }
 
-char htoch(unsigned int a)
+static char nibble_to_hex(uint8_t n)
 {
-    a = a & 0xF;
-    if (a < 10) return (char)(a + 48);
-    return (char)(a + 55);
+    n &= 0x0F;
+    return (n < 10) ? (char)('0' + n) : (char)('A' + (n - 10));
 }
 
 void put_hex(uint32_t val)
 {
-    unsigned int c = 0;
-    for (int i = 32; i > 0; i -= 4)
+    uart_puts("0x");
+    for (int i = 28; i >= 0; i -= 4)
     {
-        c = (val >> (i - 4)) & 0xF;
-        uart_putc(htoch(c));
+        uart_putc(nibble_to_hex((uint8_t)(val >> i)));
+    }
+}
+
+void put_dec(uint32_t val)
+{
+    char buf[12];
+    int idx = 0;
+
+    if (val == 0)
+    {
+        uart_putc('0');
+        return;
+    }
+
+    while (val > 0)
+    {
+        buf[idx++] = (char)('0' + (val % 10));
+        val /= 10;
+    }
+
+    for (int i = idx - 1; i >= 0; i--)
+    {
+        uart_putc(buf[i]);
     }
 }

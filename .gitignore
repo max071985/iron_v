@@ -5,4 +5,4 @@ gen_headers.py
 src/regs/*.h
 GEMINI.md
 docs
-context*
+context**:Zone.Identifier

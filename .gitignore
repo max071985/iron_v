@@ -4,4 +4,9 @@
 gen_headers.py
 GEMINI.md
 docs
+<<<<<<< HEAD
 context**:Zone.Identifier
+=======
+context*
+-l
+>>>>>>> 790abe5 (Ignore arch tempfile -l)

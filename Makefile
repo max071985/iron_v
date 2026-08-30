@@ -1,4 +1,11 @@
-CROSS_COMPILE = riscv64-unknown-elf-
+CROSS_COMPILE ?= $(shell \
+	if command -v riscv64-unknown-elf-gcc >/dev/null 2>&1; then \
+		echo "riscv64-unknown-elf-"; \
+	elif command -v riscv64-elf-gcc >/dev/null 2>&1; then \
+		echo "riscv64-elf-"; \
+	else \
+		echo "riscv64-unknown-elf-"; \
+	fi)
 
 CC = $(CROSS_COMPILE)gcc
 LD = $(CROSS_COMPILE)ld

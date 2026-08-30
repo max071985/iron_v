@@ -1,0 +1,176 @@
+/*
+ * PAU.h
+ * PAU Peripheral
+ * Base Address: 0x60093000
+ */
+
+#ifndef PAU_H
+#define PAU_H
+
+#include <stdint.h>
+
+#define PAU_BASE 0x60093000
+
+// Peri backup control register
+#define PAU_REGDMA_CONF_REG ((volatile uint32_t *)(PAU_BASE + 0x0))
+#define PAU_REGDMA_CONF_FLOW_ERR_M (0x00000007U)
+#define PAU_REGDMA_CONF_FLOW_ERR_S (0)
+#define PAU_REGDMA_CONF_FLOW_ERR_V(v) (((v) << 0) & 0x00000007U)
+#define PAU_REGDMA_CONF_START_M (0x00000008U)
+#define PAU_REGDMA_CONF_START_S (3)
+#define PAU_REGDMA_CONF_START_V(v) (((v) << 3) & 0x00000008U)
+#define PAU_REGDMA_CONF_TO_MEM_M (0x00000010U)
+#define PAU_REGDMA_CONF_TO_MEM_S (4)
+#define PAU_REGDMA_CONF_TO_MEM_V(v) (((v) << 4) & 0x00000010U)
+#define PAU_REGDMA_CONF_LINK_SEL_M (0x00000060U)
+#define PAU_REGDMA_CONF_LINK_SEL_S (5)
+#define PAU_REGDMA_CONF_LINK_SEL_V(v) (((v) << 5) & 0x00000060U)
+#define PAU_REGDMA_CONF_START_MAC_M (0x00000080U)
+#define PAU_REGDMA_CONF_START_MAC_S (7)
+#define PAU_REGDMA_CONF_START_MAC_V(v) (((v) << 7) & 0x00000080U)
+#define PAU_REGDMA_CONF_TO_MEM_MAC_M (0x00000100U)
+#define PAU_REGDMA_CONF_TO_MEM_MAC_S (8)
+#define PAU_REGDMA_CONF_TO_MEM_MAC_V(v) (((v) << 8) & 0x00000100U)
+#define PAU_REGDMA_CONF_SEL_MAC_M (0x00000200U)
+#define PAU_REGDMA_CONF_SEL_MAC_S (9)
+#define PAU_REGDMA_CONF_SEL_MAC_V(v) (((v) << 9) & 0x00000200U)
+
+// Clock control register
+#define PAU_REGDMA_CLK_CONF_REG ((volatile uint32_t *)(PAU_BASE + 0x4))
+#define PAU_REGDMA_CLK_CONF_CLK_EN_M (0x00000001U)
+#define PAU_REGDMA_CLK_CONF_CLK_EN_S (0)
+#define PAU_REGDMA_CLK_CONF_CLK_EN_V(v) (((v) << 0) & 0x00000001U)
+
+// ETM start ctrl reg
+#define PAU_REGDMA_ETM_CTRL_REG ((volatile uint32_t *)(PAU_BASE + 0x8))
+#define PAU_REGDMA_ETM_CTRL_ETM_START_0_M (0x00000001U)
+#define PAU_REGDMA_ETM_CTRL_ETM_START_0_S (0)
+#define PAU_REGDMA_ETM_CTRL_ETM_START_0_V(v) (((v) << 0) & 0x00000001U)
+#define PAU_REGDMA_ETM_CTRL_ETM_START_1_M (0x00000002U)
+#define PAU_REGDMA_ETM_CTRL_ETM_START_1_S (1)
+#define PAU_REGDMA_ETM_CTRL_ETM_START_1_V(v) (((v) << 1) & 0x00000002U)
+#define PAU_REGDMA_ETM_CTRL_ETM_START_2_M (0x00000004U)
+#define PAU_REGDMA_ETM_CTRL_ETM_START_2_S (2)
+#define PAU_REGDMA_ETM_CTRL_ETM_START_2_V(v) (((v) << 2) & 0x00000004U)
+#define PAU_REGDMA_ETM_CTRL_ETM_START_3_M (0x00000008U)
+#define PAU_REGDMA_ETM_CTRL_ETM_START_3_S (3)
+#define PAU_REGDMA_ETM_CTRL_ETM_START_3_V(v) (((v) << 3) & 0x00000008U)
+
+// link_0_addr
+#define PAU_REGDMA_LINK_0_ADDR_REG ((volatile uint32_t *)(PAU_BASE + 0xC))
+#define PAU_REGDMA_LINK_0_ADDR_LINK_ADDR_0_M (0xFFFFFFFFU)
+#define PAU_REGDMA_LINK_0_ADDR_LINK_ADDR_0_S (0)
+#define PAU_REGDMA_LINK_0_ADDR_LINK_ADDR_0_V(v) (((v) << 0) & 0xFFFFFFFFU)
+
+// Link_1_addr
+#define PAU_REGDMA_LINK_1_ADDR_REG ((volatile uint32_t *)(PAU_BASE + 0x10))
+#define PAU_REGDMA_LINK_1_ADDR_LINK_ADDR_1_M (0xFFFFFFFFU)
+#define PAU_REGDMA_LINK_1_ADDR_LINK_ADDR_1_S (0)
+#define PAU_REGDMA_LINK_1_ADDR_LINK_ADDR_1_V(v) (((v) << 0) & 0xFFFFFFFFU)
+
+// Link_2_addr
+#define PAU_REGDMA_LINK_2_ADDR_REG ((volatile uint32_t *)(PAU_BASE + 0x14))
+#define PAU_REGDMA_LINK_2_ADDR_LINK_ADDR_2_M (0xFFFFFFFFU)
+#define PAU_REGDMA_LINK_2_ADDR_LINK_ADDR_2_S (0)
+#define PAU_REGDMA_LINK_2_ADDR_LINK_ADDR_2_V(v) (((v) << 0) & 0xFFFFFFFFU)
+
+// Link_3_addr
+#define PAU_REGDMA_LINK_3_ADDR_REG ((volatile uint32_t *)(PAU_BASE + 0x18))
+#define PAU_REGDMA_LINK_3_ADDR_LINK_ADDR_3_M (0xFFFFFFFFU)
+#define PAU_REGDMA_LINK_3_ADDR_LINK_ADDR_3_S (0)
+#define PAU_REGDMA_LINK_3_ADDR_LINK_ADDR_3_V(v) (((v) << 0) & 0xFFFFFFFFU)
+
+// Link_mac_addr
+#define PAU_REGDMA_LINK_MAC_ADDR_REG ((volatile uint32_t *)(PAU_BASE + 0x1C))
+#define PAU_REGDMA_LINK_MAC_ADDR_LINK_ADDR_MAC_M (0xFFFFFFFFU)
+#define PAU_REGDMA_LINK_MAC_ADDR_LINK_ADDR_MAC_S (0)
+#define PAU_REGDMA_LINK_MAC_ADDR_LINK_ADDR_MAC_V(v) (((v) << 0) & 0xFFFFFFFFU)
+
+// current link addr
+#define PAU_REGDMA_CURRENT_LINK_ADDR_REG ((volatile uint32_t *)(PAU_BASE + 0x20))
+#define PAU_REGDMA_CURRENT_LINK_ADDR_CURRENT_LINK_ADDR_M (0xFFFFFFFFU)
+#define PAU_REGDMA_CURRENT_LINK_ADDR_CURRENT_LINK_ADDR_S (0)
+#define PAU_REGDMA_CURRENT_LINK_ADDR_CURRENT_LINK_ADDR_V(v) (((v) << 0) & 0xFFFFFFFFU)
+
+// Backup addr
+#define PAU_REGDMA_BACKUP_ADDR_REG ((volatile uint32_t *)(PAU_BASE + 0x24))
+#define PAU_REGDMA_BACKUP_ADDR_BACKUP_ADDR_M (0xFFFFFFFFU)
+#define PAU_REGDMA_BACKUP_ADDR_BACKUP_ADDR_S (0)
+#define PAU_REGDMA_BACKUP_ADDR_BACKUP_ADDR_V(v) (((v) << 0) & 0xFFFFFFFFU)
+
+// mem addr
+#define PAU_REGDMA_MEM_ADDR_REG ((volatile uint32_t *)(PAU_BASE + 0x28))
+#define PAU_REGDMA_MEM_ADDR_MEM_ADDR_M (0xFFFFFFFFU)
+#define PAU_REGDMA_MEM_ADDR_MEM_ADDR_S (0)
+#define PAU_REGDMA_MEM_ADDR_MEM_ADDR_V(v) (((v) << 0) & 0xFFFFFFFFU)
+
+// backup config
+#define PAU_REGDMA_BKP_CONF_REG ((volatile uint32_t *)(PAU_BASE + 0x2C))
+#define PAU_REGDMA_BKP_CONF_READ_INTERVAL_M (0x0000007FU)
+#define PAU_REGDMA_BKP_CONF_READ_INTERVAL_S (0)
+#define PAU_REGDMA_BKP_CONF_READ_INTERVAL_V(v) (((v) << 0) & 0x0000007FU)
+#define PAU_REGDMA_BKP_CONF_LINK_TOUT_THRES_M (0x0001FF80U)
+#define PAU_REGDMA_BKP_CONF_LINK_TOUT_THRES_S (7)
+#define PAU_REGDMA_BKP_CONF_LINK_TOUT_THRES_V(v) (((v) << 7) & 0x0001FF80U)
+#define PAU_REGDMA_BKP_CONF_BURST_LIMIT_M (0x003E0000U)
+#define PAU_REGDMA_BKP_CONF_BURST_LIMIT_S (17)
+#define PAU_REGDMA_BKP_CONF_BURST_LIMIT_V(v) (((v) << 17) & 0x003E0000U)
+#define PAU_REGDMA_BKP_CONF_BACKUP_TOUT_THRES_M (0xFFC00000U)
+#define PAU_REGDMA_BKP_CONF_BACKUP_TOUT_THRES_S (22)
+#define PAU_REGDMA_BKP_CONF_BACKUP_TOUT_THRES_V(v) (((v) << 22) & 0xFFC00000U)
+
+// retention dma link base
+#define PAU_RETENTION_LINK_BASE_REG ((volatile uint32_t *)(PAU_BASE + 0x30))
+#define PAU_RETENTION_LINK_BASE_LINK_BASE_ADDR_M (0x07FFFFFFU)
+#define PAU_RETENTION_LINK_BASE_LINK_BASE_ADDR_S (0)
+#define PAU_RETENTION_LINK_BASE_LINK_BASE_ADDR_V(v) (((v) << 0) & 0x07FFFFFFU)
+
+// retention_cfg
+#define PAU_RETENTION_CFG_REG ((volatile uint32_t *)(PAU_BASE + 0x34))
+#define PAU_RETENTION_CFG_RET_INV_CFG_M (0xFFFFFFFFU)
+#define PAU_RETENTION_CFG_RET_INV_CFG_S (0)
+#define PAU_RETENTION_CFG_RET_INV_CFG_V(v) (((v) << 0) & 0xFFFFFFFFU)
+
+// Read only register for error and done
+#define PAU_INT_ENA_REG ((volatile uint32_t *)(PAU_BASE + 0x38))
+#define PAU_INT_ENA_DONE_INT_ENA_M (0x00000001U)
+#define PAU_INT_ENA_DONE_INT_ENA_S (0)
+#define PAU_INT_ENA_DONE_INT_ENA_V(v) (((v) << 0) & 0x00000001U)
+#define PAU_INT_ENA_ERROR_INT_ENA_M (0x00000002U)
+#define PAU_INT_ENA_ERROR_INT_ENA_S (1)
+#define PAU_INT_ENA_ERROR_INT_ENA_V(v) (((v) << 1) & 0x00000002U)
+
+// Read only register for error and done
+#define PAU_INT_RAW_REG ((volatile uint32_t *)(PAU_BASE + 0x3C))
+#define PAU_INT_RAW_DONE_INT_RAW_M (0x00000001U)
+#define PAU_INT_RAW_DONE_INT_RAW_S (0)
+#define PAU_INT_RAW_DONE_INT_RAW_V(v) (((v) << 0) & 0x00000001U)
+#define PAU_INT_RAW_ERROR_INT_RAW_M (0x00000002U)
+#define PAU_INT_RAW_ERROR_INT_RAW_S (1)
+#define PAU_INT_RAW_ERROR_INT_RAW_V(v) (((v) << 1) & 0x00000002U)
+
+// Read only register for error and done
+#define PAU_INT_CLR_REG ((volatile uint32_t *)(PAU_BASE + 0x40))
+#define PAU_INT_CLR_DONE_INT_CLR_M (0x00000001U)
+#define PAU_INT_CLR_DONE_INT_CLR_S (0)
+#define PAU_INT_CLR_DONE_INT_CLR_V(v) (((v) << 0) & 0x00000001U)
+#define PAU_INT_CLR_ERROR_INT_CLR_M (0x00000002U)
+#define PAU_INT_CLR_ERROR_INT_CLR_S (1)
+#define PAU_INT_CLR_ERROR_INT_CLR_V(v) (((v) << 1) & 0x00000002U)
+
+// Read only register for error and done
+#define PAU_INT_ST_REG ((volatile uint32_t *)(PAU_BASE + 0x44))
+#define PAU_INT_ST_DONE_INT_ST_M (0x00000001U)
+#define PAU_INT_ST_DONE_INT_ST_S (0)
+#define PAU_INT_ST_DONE_INT_ST_V(v) (((v) << 0) & 0x00000001U)
+#define PAU_INT_ST_ERROR_INT_ST_M (0x00000002U)
+#define PAU_INT_ST_ERROR_INT_ST_S (1)
+#define PAU_INT_ST_ERROR_INT_ST_V(v) (((v) << 1) & 0x00000002U)
+
+// Date register.
+#define PAU_DATE_REG ((volatile uint32_t *)(PAU_BASE + 0x3FC))
+#define PAU_DATE_DATE_M (0x0FFFFFFFU)
+#define PAU_DATE_DATE_S (0)
+#define PAU_DATE_DATE_V(v) (((v) << 0) & 0x0FFFFFFFU)
+
+#endif // PAU_H

@@ -2,7 +2,7 @@
 *.elf
 .agent
 gen_headers.py
-GEMINI.md
+*.md
 docs
 context**:Zone.Identifier
 context*

@@ -2,27 +2,30 @@ ENTRY(_start)
 
 MEMORY
 {
-    hp_sram (rwx) : ORIGIN = 0x40800000, LENGTH = 512K
+    hp_iram (rx)  : ORIGIN = 0x40800000, LENGTH = 128K
+    hp_dram (rw)  : ORIGIN = 0x40820000, LENGTH = 384K
+    lp_sram (rw)  : ORIGIN = 0x50000000, LENGTH = 16K
+    flash_xip (rx): ORIGIN = 0x42000000, LENGTH = 8M
 }
 
 SECTIONS
 {
-    . = ORIGIN(hp_sram);
-
     .text : ALIGN(16) {
         _stext = .;
         KEEP(*(.text.entry))
         *(.text .text.*)
+        *(.init .init.*)
         . = ALIGN(16);
         _etext = .;
-    } > hp_sram
+    } > hp_iram
 
     .rodata : ALIGN(16) {
         _srodata = .;
         *(.rodata .rodata.*)
+        *(.srodata .srodata.*)
         . = ALIGN(16);
         _erodata = .;
-    } > hp_sram
+    } > hp_iram
 
     .data : ALIGN(16) {
         _sdata = .;
@@ -31,7 +34,7 @@ SECTIONS
         . = ALIGN(16);
         _edata = .;
         __global_pointer$ = _sdata + 0x800;
-    } > hp_sram
+    } > hp_dram
 
     .bss (NOLOAD) : ALIGN(16) {
         _sbss = .;
@@ -40,7 +43,28 @@ SECTIONS
         *(COMMON)
         . = ALIGN(16);
         _ebss = .;
-    } > hp_sram
+    } > hp_dram
 
-    _stack_top = ORIGIN(hp_sram) + LENGTH(hp_sram);
+    .heap (NOLOAD) : ALIGN(16) {
+        _sheap = .;
+        . = ALIGN(16);
+        _eheap = .;
+    } > hp_dram
+
+    .lp_sram (NOLOAD) : ALIGN(16) {
+        _slp_sram = .;
+        *(.lp_sram .lp_sram.*)
+        . = ALIGN(16);
+        _elp_sram = .;
+    } > lp_sram
+
+    .flash_xip : ALIGN(16) {
+        _sflash_xip = .;
+        *(.flash.text .flash.text.*)
+        *(.flash.rodata .flash.rodata.*)
+        . = ALIGN(16);
+        _eflash_xip = .;
+    } > flash_xip
+
+    _stack_top = ORIGIN(hp_dram) + LENGTH(hp_dram);
 }

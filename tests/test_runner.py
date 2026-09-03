@@ -371,6 +371,26 @@ def run_suite():
         t11_pass
     )
 
+    # TEST 12: PCR Clock Subsystem Linkage & Symbols Validation (Task 1.3)
+    total += 1
+    clock_syms = ["clock_init", "clock_get_config", "clock_get_cpu_freq_hz", "clock_get_apb_freq_hz"]
+    found_clock_syms = [s for s in clock_syms if s in symbols]
+    all_clock_found = len(found_clock_syms) == len(clock_syms)
+    all_clock_in_text = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < sdata)
+        for s in found_clock_syms
+    )
+    t12_pass = all_clock_found and all_clock_in_text
+    t12_actual = f"Found {len(found_clock_syms)}/{len(clock_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    passed += print_result_line(
+        total,
+        "PCR Clock Subsystem Linkage & Symbols Validation",
+        "Verify clock_init, clock_get_config, and query symbols exist in IRAM executable section",
+        "All 4 clock subsystem symbols present in IRAM text section [0x40800000, 0x40820000)",
+        t12_actual,
+        t12_pass
+    )
+
     print("\n" + "=" * 70)
     print("                       TEST SUITE SUMMARY                             ")
     print("=" * 70)

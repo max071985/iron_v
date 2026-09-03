@@ -3,6 +3,7 @@
 #include "utils.h"
 #include "string.h"
 #include "test.h"
+#include "clock.h"
 
 /*
  * Disables hardware watchdogs safely with memory barriers during early bringup.
@@ -57,11 +58,21 @@ static void print_help(void)
 
 static void print_info(void)
 {
+    clock_config_t clk;
+    clock_get_config(&clk);
+
     uart_puts("========================================\r\n");
     uart_puts(" Iron V Bare-Metal RISC-V Runtime\r\n");
     uart_puts(" Target:  ESP32-C6 (RV32IMAC)\r\n");
     uart_puts(" Mode:    Bare Metal / No ESP-IDF\r\n");
-    uart_puts(" Memory:  HP SRAM 512KB @ 0x40800000\r\n");
+    uart_puts(" CPU:     ");
+    put_dec(clk.cpu_mhz);
+    uart_puts(" MHz (PLL 480M)\r\n");
+    uart_puts(" APB:     ");
+    put_dec(clk.apb_mhz);
+    uart_puts(" MHz\r\n");
+    uart_puts(" Memory:  HP SRAM 512KB (Harvard Split)\r\n");
+    uart_puts(" Flash:   8 MB SPI NOR Flash (DIO @ 80M)\r\n");
     uart_puts("========================================\r\n");
 }
 
@@ -164,6 +175,9 @@ void shell(char *input_buffer)
 void main(void)
 {
     char input_buffer[MAX_CMD_LEN];
+
+    /* Initialize PCR clock tree to 160 MHz CPU PLL and 80 MHz APB */
+    clock_init();
 
     uart_puts("\r\n");
     print_info();

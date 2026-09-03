@@ -2,6 +2,7 @@
 #include "utils.h"
 #include "string.h"
 #include "io_constants.h"
+#include "clock.h"
 
 /* Designated static test variables */
 static volatile uint32_t g_test_data_var = 0x12345678U; // Placed in .data
@@ -415,6 +416,49 @@ void run_validation_suite(void)
     int t10_pass = sp_aligned && sp_in_bounds && (mpp == 3) && (mie_val == 0) && (mtvec_val != 0);
     if (t10_pass) passed_tests++;
     print_result(t10_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 11: PCR Clock Tree Configuration & Frequency Validation  */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(11, "PCR Clock Distribution & Frequency Status",
+                      "Verify SYSCLK operates on PLL (160MHz) with 80MHz APB bus clock in PCR registers");
+
+    uint32_t sysclk_reg = *PCR_SYSCLK_CONF_REG;
+    uint32_t soc_clk_sel = (sysclk_reg & PCR_SYSCLK_CONF_SOC_CLK_SEL_M) >> PCR_SYSCLK_CONF_SOC_CLK_SEL_S;
+    uint32_t xtal_freq = (sysclk_reg & PCR_SYSCLK_CONF_CLK_XTAL_FREQ_M) >> PCR_SYSCLK_CONF_CLK_XTAL_FREQ_S;
+
+    uint32_t pll_div_reg = *PCR_PLL_DIV_CLK_EN_REG;
+    int pll_160m_en = (pll_div_reg & PCR_PLL_DIV_CLK_EN_PLL_160M_CLK_EN_M) != 0;
+    int pll_80m_en = (pll_div_reg & PCR_PLL_DIV_CLK_EN_PLL_80M_CLK_EN_M) != 0;
+
+    uint32_t apb_freq_reg = *PCR_APB_FREQ_CONF_REG;
+    uint32_t apb_div = (apb_freq_reg & PCR_APB_FREQ_CONF_APB_DIV_NUM_M) >> PCR_APB_FREQ_CONF_APB_DIV_NUM_S;
+
+    clock_config_t clk_cfg;
+    clock_get_config(&clk_cfg);
+
+    uart_puts("  Expected:    SOC_CLK_SEL=2 (PLL), XTAL=40MHz, PLL_160M=1, PLL_80M=1, APB_DIV=1\r\n");
+    uart_puts("  Actual:      CLK_SEL=");
+    put_dec(soc_clk_sel);
+    uart_puts(" (");
+    if (soc_clk_sel == 2) uart_puts("PLL");
+    else if (soc_clk_sel == 0) uart_puts("XTAL");
+    else uart_puts("OTHER");
+    uart_puts("), XTAL=");
+    put_dec(xtal_freq);
+    uart_puts("MHz, CPU=");
+    put_dec(clk_cfg.cpu_mhz);
+    uart_puts("MHz, APB=");
+    put_dec(clk_cfg.apb_mhz);
+    uart_puts("MHz, APB_DIV=");
+    put_dec(apb_div);
+    uart_puts("\r\n");
+
+    int t11_pass = (soc_clk_sel == 2) && (xtal_freq == 40) && pll_160m_en && pll_80m_en &&
+                   (apb_div == 1) && (clk_cfg.cpu_mhz == 160) && (clk_cfg.apb_mhz == 80);
+    if (t11_pass) passed_tests++;
+    print_result(t11_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

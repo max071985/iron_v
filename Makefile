@@ -20,6 +20,11 @@ LDFLAGS = -T ld/link.ld -nostdlib
 # Baseline source files
 SRCS = src/crt0.S src/main.c src/string.c src/utils.c src/test.c
 
+# Flashing parameters
+PORT ?= /dev/ttyUSB0
+FLASH_BAUD ?= 921600
+MONITOR_BAUD ?= 115200
+
 # Targets
 all: firmware.bin
 
@@ -27,7 +32,25 @@ firmware.elf: $(SRCS)
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
 firmware.bin: firmware.elf
-	esptool --chip esp32c6 elf2image --flash_mode dio --flash_size 4MB --flash_freq 80m -o $@ $<
+	esptool --chip esp32c6 elf2image --flash-mode dio --flash-size 8MB --flash-freq 80m -o $@ $<
+
+flash: firmware.bin
+	esptool --chip esp32c6 --port $(PORT) --baud $(FLASH_BAUD) write_flash --flash-mode dio --flash-size 8MB --flash-freq 80m 0x0 $<
+
+erase_flash:
+	esptool --chip esp32c6 --port $(PORT) erase_flash
+
+monitor:
+	picocom -b $(MONITOR_BAUD) $(PORT)
+
+tests/test_freestanding: tests/test_freestanding.c src/string.c src/string.h
+	gcc -O2 -Wall -Wextra -Isrc tests/test_freestanding.c src/string.c -o $@
+
+do-test: firmware.elf firmware.bin tests/test_freestanding
+	@./tests/test_freestanding
+	@python3 tests/test_runner.py
+
+test: do-test
 
 clean:
-	rm -f *.elf *.bin
+	rm -f *.elf *.bin tests/test_freestanding

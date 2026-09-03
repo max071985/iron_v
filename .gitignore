@@ -1,6 +1,7 @@
 *.bin
 *.elf
 .agent
+.*
 gen_headers.py
 *.md
 docs

@@ -3,6 +3,7 @@
 #include "string.h"
 #include "io_constants.h"
 #include "clock.h"
+#include "wdt.h"
 
 /* Designated static test variables */
 static volatile uint32_t g_test_data_var = 0x12345678U; // Placed in .data
@@ -459,6 +460,43 @@ void run_validation_suite(void)
                    (apb_div == 1) && (clk_cfg.cpu_mhz == 160) && (clk_cfg.apb_mhz == 80);
     if (t11_pass) passed_tests++;
     print_result(t11_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 12: Active Multi-Tier Watchdog Supervisor & Reload Status*/
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(12, "Active Watchdog Supervisor & Reload Status",
+                      "Verify TIMG0 MWDT is armed, prescaled, and reload feed operates safely");
+
+    uint32_t timg0_cfg0 = *TIMG0_WDTCONFIG0;
+    int wdt_enabled = (timg0_cfg0 & TIMG0_WDTCONFIG0_WDT_EN_M) != 0;
+    uint32_t wdt_stg0 = (timg0_cfg0 & TIMG0_WDTCONFIG0_WDT_STG0_M) >> TIMG0_WDTCONFIG0_WDT_STG0_S;
+    uint32_t timg0_cfg1 = *TIMG0_WDTCONFIG1_REG;
+    uint32_t prescale = (timg0_cfg1 & TIMG0_WDTCONFIG1_WDT_CLK_PRESCALE_M) >> TIMG0_WDTCONFIG1_WDT_CLK_PRESCALE_S;
+
+    wdt_supervisor_t wdt_stat;
+    wdt_get_status(&wdt_stat);
+    uint32_t prev_feed = wdt_stat.feed_count;
+    wdt_feed();
+    wdt_get_status(&wdt_stat);
+
+    uart_puts("  Expected:    WDT_EN=1, STG0=3 (Reset), Prescale=80, FeedCount increments\r\n");
+    uart_puts("  Actual:      WDT_EN=");
+    put_dec(wdt_enabled);
+    uart_puts(", STG0=");
+    put_dec(wdt_stg0);
+    uart_puts(", Prescale=");
+    put_dec(prescale);
+    uart_puts(", Active=");
+    put_dec(wdt_stat.active);
+    uart_puts(", Feeds=");
+    put_dec(wdt_stat.feed_count);
+    uart_puts("\r\n");
+
+    int t12_pass = wdt_enabled && (wdt_stg0 == 3) && (prescale == 80) &&
+                   (wdt_stat.active == 1) && (wdt_stat.feed_count > prev_feed);
+    if (t12_pass) passed_tests++;
+    print_result(t12_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

@@ -4,6 +4,7 @@
 #include "string.h"
 #include "test.h"
 #include "clock.h"
+#include "wdt.h"
 
 /*
  * Disables hardware watchdogs safely with memory barriers during early bringup.
@@ -73,6 +74,20 @@ static void print_info(void)
     uart_puts(" MHz\r\n");
     uart_puts(" Memory:  HP SRAM 512KB (Harvard Split)\r\n");
     uart_puts(" Flash:   8 MB SPI NOR Flash (DIO @ 80M)\r\n");
+
+    wdt_supervisor_t wdt;
+    wdt_get_status(&wdt);
+    uart_puts(" WDT:     ");
+    if (wdt.active)
+    {
+        uart_puts("Active (");
+        put_dec(wdt.feed_interval_ms);
+        uart_puts(" ms timeout)\r\n");
+    }
+    else
+    {
+        uart_puts("Disabled\r\n");
+    }
     uart_puts("========================================\r\n");
 }
 
@@ -181,12 +196,15 @@ void main(void)
 
     uart_puts("\r\n");
     print_info();
-    disable_wdt();
+
+    /* Initialize active multi-tier watchdog supervisor (5000ms timeout) */
+    wdt_init(5000);
 
     uart_puts("Ready. Type 'do-test' for validation suite or 'help' for command list.\r\n");
 
     while (1)
     {
+        wdt_supervisor_tick();
         shell(input_buffer);
     }
 }

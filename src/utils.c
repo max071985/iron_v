@@ -1,5 +1,6 @@
 #include "utils.h"
 #include "io_constants.h"
+#include "wdt.h"
 
 int uart_putc(char c)
 {
@@ -46,7 +47,7 @@ char uart_getc_blocking(void)
     char c = 0;
     while (!uart_getc_nonblocking(&c))
     {
-        __asm__ volatile ("nop");
+        wdt_supervisor_tick();
     }
     return c;
 }

@@ -2,6 +2,7 @@
 *.elf
 .agent
 .*
+tests/test_freestanding
 gen_headers.py
 *.md
 docs

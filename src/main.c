@@ -88,6 +88,13 @@ static void print_info(void)
     {
         uart_puts("Disabled\r\n");
     }
+
+    uint32_t rst_cause = wdt_get_reset_cause();
+    uart_puts(" Reset:   ");
+    uart_puts(wdt_get_reset_cause_desc(rst_cause));
+    uart_puts(" [");
+    put_hex(rst_cause);
+    uart_puts("]\r\n");
     uart_puts("========================================\r\n");
 }
 
@@ -194,11 +201,11 @@ void main(void)
     /* Initialize PCR clock tree to 160 MHz CPU PLL and 80 MHz APB */
     clock_init();
 
-    uart_puts("\r\n");
-    print_info();
-
     /* Initialize active multi-tier watchdog supervisor (5000ms timeout) */
     wdt_init(5000);
+
+    uart_puts("\r\n");
+    print_info();
 
     uart_puts("Ready. Type 'do-test' for validation suite or 'help' for command list.\r\n");
 

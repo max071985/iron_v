@@ -393,7 +393,7 @@ def run_suite():
 
     # TEST 13: Watchdog Supervisor Subsystem Linkage & Symbols Validation (Task 1.4)
     total += 1
-    wdt_syms = ["wdt_init", "wdt_feed", "wdt_supervisor_tick", "wdt_get_status"]
+    wdt_syms = ["wdt_init", "wdt_feed", "wdt_supervisor_tick", "wdt_get_status", "wdt_get_reset_cause", "wdt_get_reset_cause_desc"]
     found_wdt_syms = [s for s in wdt_syms if s in symbols]
     all_wdt_found = len(found_wdt_syms) == len(wdt_syms)
     all_wdt_in_text = all(
@@ -406,7 +406,7 @@ def run_suite():
         total,
         "Watchdog Supervisor Linkage & Symbols Validation",
         "Verify wdt_init, wdt_feed, and tick symbols exist in IRAM executable section",
-        "All 4 watchdog supervisor symbols present in IRAM text section [0x40800000, 0x40820000)",
+        "All 6 watchdog supervisor symbols present in IRAM text section [0x40800000, 0x40820000)",
         t13_actual,
         t13_pass
     )

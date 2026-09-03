@@ -9,6 +9,7 @@
 #include "regs/timg1.h"
 #include "regs/lp_wdt.h"
 #include "regs/pcr.h"
+#include "regs/lp_clkrst.h"
 
 /* Memory barriers */
 #define FENCE()   __asm__ volatile ("fence" ::: "memory")

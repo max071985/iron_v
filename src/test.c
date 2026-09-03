@@ -374,6 +374,49 @@ void run_validation_suite(void)
     print_result(t9_pass);
 
     /* ------------------------------------------------------------- */
+    /* TEST 10: Stack Pointer Alignment, Margin & Machine CSR State  */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(10, "Stack Bounds, Alignment & Machine CSR State",
+                      "Verify SP is 16-byte aligned in DRAM and CSRs are correctly initialized");
+
+    uint32_t current_sp = 0;
+    GET_CURRENT_SP(current_sp);
+
+    int sp_aligned = ((current_sp & 0xFU) == 0);
+    int sp_in_bounds = (current_sp > STACK_LIMIT_ADDR) && (current_sp <= STACK_TOP_ADDR);
+    uint32_t stack_margin = GET_STACK_MARGIN(current_sp);
+
+    uint32_t mstatus_val = 0;
+    asm volatile("csrr %0, mstatus" : "=r"(mstatus_val));
+    uint32_t mpp = (mstatus_val >> 11) & 0x3U;
+
+    uint32_t mie_val = 0;
+    asm volatile("csrr %0, mie" : "=r"(mie_val));
+
+    uint32_t mtvec_val = 0;
+    asm volatile("csrr %0, mtvec" : "=r"(mtvec_val));
+
+    uart_puts("  Expected:    SP aligned (16B), within DRAM bounds, MPP=3 (M-Mode), MIE=0\r\n");
+    uart_puts("  Actual:      SP=");
+    put_hex(current_sp);
+    uart_puts(" (aligned=");
+    put_dec(sp_aligned);
+    uart_puts(", margin=");
+    put_dec(stack_margin);
+    uart_puts(" B), MPP=");
+    put_dec(mpp);
+    uart_puts(", MIE=");
+    put_dec(mie_val);
+    uart_puts(", MTVEC=");
+    put_hex(mtvec_val);
+    uart_puts("\r\n");
+
+    int t10_pass = sp_aligned && sp_in_bounds && (mpp == 3) && (mie_val == 0) && (mtvec_val != 0);
+    if (t10_pass) passed_tests++;
+    print_result(t10_pass);
+
+    /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */
     /* ------------------------------------------------------------- */
     print_banner_line();

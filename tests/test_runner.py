@@ -352,6 +352,25 @@ def run_suite():
         t10_pass
     )
 
+    # TEST 11: Stack Pointer Boundary Geometry & Entry Vector Topology (Task 1.2)
+    total += 1
+    stack_top = symbols["_stack_top"]["value"]
+    start_sym = symbols.get("_start", {}).get("value", None)
+    stack_align_ok = (stack_top % 16 == 0)
+    stack_vma_ok = (stack_top == 0x40880000)
+    stack_headroom = stack_top - ebss
+    entry_ok = (start_sym == 0x40800000) and (elf["entry"] == 0x40800000)
+    t11_pass = stack_align_ok and stack_vma_ok and (stack_headroom >= 65536) and entry_ok
+    t11_actual = f"_stack_top=0x{stack_top:08x} (align16={stack_align_ok}), Headroom={stack_headroom // 1024} KB, _start=0x{start_sym:08x}"
+    passed += print_result_line(
+        total,
+        "Stack Boundary Geometry & CRT0 Entry Vector Topology",
+        "Verify _stack_top at 0x40880000 with 16-byte alignment, >=64KB headroom above .bss, and entry at _start",
+        "_stack_top == 0x40880000, 16-byte aligned, Headroom >= 64KB, entry == 0x40800000",
+        t11_actual,
+        t11_pass
+    )
+
     print("\n" + "=" * 70)
     print("                       TEST SUITE SUMMARY                             ")
     print("=" * 70)

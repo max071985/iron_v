@@ -1,36 +1,50 @@
-.section .text.entry
+.section .text.entry, "ax"
 .global _start
 
 _start:
-    /* 1. Setup Stack Pointer (Top of SRAM) */
+    /* 1. Setup Stack Pointer (Top of DRAM, 16-byte aligned) */
     la sp, _stack_top
 
-    /* 2. Setup Global Pointer (gp) safely to optimize relaxation */
+    /* 2. Setup Global Pointer (gp) safely to optimize linker relaxation */
     .option push
     .option norelax
     la gp, __global_pointer$
     .option pop
 
-    /* 3. Initialize Machine-Mode CSRs (Disable interrupts & clear pending) */
+    /* 3. Initialize Machine-Mode CSRs */
+    /* Disable all interrupts */
     csrw mie, zero
+    /* Clear pending interrupts */
     csrw mip, zero
+    /* Set mstatus MPP to Machine Mode (bits 12:11 = 2'b11 = 0x1800), MIE = 0 */
+    li t0, 0x1800
+    csrw mstatus, t0
+    /* Clear supervisory/scratch registers */
+    csrw mscratch, zero
+    csrw mcause, zero
+    csrw mtval, zero
+    /* Point mtvec to safe hang handler in direct mode (bits 1:0 = 0) */
+    la t0, _hang
+    csrw mtvec, t0
 
     /* 4. Zero-initialize the .bss section */
     la t0, _sbss
     la t1, _ebss
 
-_zero_bss:
-    bge t0, t1, _zero_end
-    sw x0, 0(t0)
+1:
+    bgeu t0, t1, 2f
+    sw zero, 0(t0)
     addi t0, t0, 4
-    j _zero_bss
+    j 1b
 
-_zero_end:
-    /* 5. Memory barrier before calling main */
-    fence
+2:
+    /* 5. Memory barrier to guarantee BSS clearing is committed */
+    fence rw, rw
+
+    /* 6. Jump into runtime main() */
     call main
 
-    /* Safety Net infinite loop in case main returns */
+    /* Safety Net infinite loop in case main() ever returns */
 _hang:
     wfi
     j _hang

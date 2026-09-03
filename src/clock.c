@@ -6,7 +6,7 @@ void clock_init(void)
     /* 1. Ensure XTAL frequency is explicitly set to 40 MHz in PCR */
     uint32_t sysclk = *PCR_SYSCLK_CONF_REG;
     sysclk &= ~PCR_SYSCLK_CONF_CLK_XTAL_FREQ_M;
-    sysclk |= (40U << PCR_SYSCLK_CONF_CLK_XTAL_FREQ_S);
+    sysclk |= (SOC_XTAL_FREQ_MHZ << PCR_SYSCLK_CONF_CLK_XTAL_FREQ_S);
     *PCR_SYSCLK_CONF_REG = sysclk;
     FENCE();
 
@@ -27,13 +27,13 @@ void clock_init(void)
 
     /* 5. Configure APB Bus Divider (Divider = 1 -> divide by 2 for 80 MHz APB) */
     *PCR_APB_FREQ_CONF_REG = (0U << PCR_APB_FREQ_CONF_APB_DECREASE_DIV_NUM_S) |
-                             (1U << PCR_APB_FREQ_CONF_APB_DIV_NUM_S);
+                             (SOC_APB_DIVIDER_2 << PCR_APB_FREQ_CONF_APB_DIV_NUM_S);
     FENCE();
 
-    /* 6. Switch SOC_CLK_SEL to PLL (2'b10 = 2) */
+    /* 6. Switch SOC_CLK_SEL to PLL */
     sysclk = *PCR_SYSCLK_CONF_REG;
     sysclk &= ~PCR_SYSCLK_CONF_SOC_CLK_SEL_M;
-    sysclk |= (2U << PCR_SYSCLK_CONF_SOC_CLK_SEL_S);
+    sysclk |= (CLK_SOURCE_PLL << PCR_SYSCLK_CONF_SOC_CLK_SEL_S);
     *PCR_SYSCLK_CONF_REG = sysclk;
     FENCE();
 }
@@ -44,20 +44,20 @@ void clock_get_config(clock_config_t *cfg)
 
     uint32_t sysclk = *PCR_SYSCLK_CONF_REG;
     cfg->xtal_mhz = (sysclk & PCR_SYSCLK_CONF_CLK_XTAL_FREQ_M) >> PCR_SYSCLK_CONF_CLK_XTAL_FREQ_S;
-    uint32_t clk_sel = (sysclk & PCR_SYSCLK_CONF_SOC_CLK_SEL_M) >> PCR_SYSCLK_CONF_SOC_CLK_SEL_S;
+    soc_clk_src_t clk_sel = (soc_clk_src_t)((sysclk & PCR_SYSCLK_CONF_SOC_CLK_SEL_M) >> PCR_SYSCLK_CONF_SOC_CLK_SEL_S);
 
-    if (clk_sel == 2)
+    if (clk_sel == CLK_SOURCE_PLL)
     {
         /* Running on PLL */
-        cfg->pll_mhz = 480;
-        cfg->cpu_mhz = 160;
-        cfg->apb_mhz = 80;
+        cfg->pll_mhz = SOC_PLL_CORE_FREQ_MHZ;
+        cfg->cpu_mhz = SOC_CPU_TARGET_FREQ_MHZ;
+        cfg->apb_mhz = SOC_APB_TARGET_FREQ_MHZ;
     }
     else
     {
         /* Running on XTAL or RC_FAST */
         cfg->pll_mhz = 0;
-        cfg->cpu_mhz = cfg->xtal_mhz ? cfg->xtal_mhz : 40;
+        cfg->cpu_mhz = cfg->xtal_mhz ? cfg->xtal_mhz : SOC_XTAL_FREQ_MHZ;
         cfg->apb_mhz = cfg->cpu_mhz;
     }
 }

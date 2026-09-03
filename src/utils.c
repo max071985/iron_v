@@ -70,7 +70,7 @@ void read_line(char *buffer, int max_len)
         }
 
         // Handle Backspace or DEL
-        if (c == 0x08 || c == 0x7F)
+        if (c == ASCII_BS || c == ASCII_DEL)
         {
             if (i > 0)
             {
@@ -81,7 +81,7 @@ void read_line(char *buffer, int max_len)
         }
 
         // Printable ASCII characters
-        if (c >= 32 && c <= 126)
+        if (c >= ASCII_PRINTABLE_MIN && c <= ASCII_PRINTABLE_MAX)
         {
             if (i < max_len - 1)
             {

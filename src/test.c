@@ -439,12 +439,12 @@ void run_validation_suite(void)
     clock_config_t clk_cfg;
     clock_get_config(&clk_cfg);
 
-    uart_puts("  Expected:    SOC_CLK_SEL=2 (PLL), XTAL=40MHz, PLL_160M=1, PLL_80M=1, APB_DIV=1\r\n");
+    uart_puts("  Expected:    SOC_CLK_SEL=PLL, XTAL=40MHz, PLL_160M=1, PLL_80M=1, APB_DIV=1\r\n");
     uart_puts("  Actual:      CLK_SEL=");
     put_dec(soc_clk_sel);
     uart_puts(" (");
-    if (soc_clk_sel == 2) uart_puts("PLL");
-    else if (soc_clk_sel == 0) uart_puts("XTAL");
+    if (soc_clk_sel == CLK_SOURCE_PLL) uart_puts("PLL");
+    else if (soc_clk_sel == CLK_SOURCE_XTAL) uart_puts("XTAL");
     else uart_puts("OTHER");
     uart_puts("), XTAL=");
     put_dec(xtal_freq);
@@ -456,8 +456,11 @@ void run_validation_suite(void)
     put_dec(apb_div);
     uart_puts("\r\n");
 
-    int t11_pass = (soc_clk_sel == 2) && (xtal_freq == 40) && pll_160m_en && pll_80m_en &&
-                   (apb_div == 1) && (clk_cfg.cpu_mhz == 160) && (clk_cfg.apb_mhz == 80);
+    int t11_pass = (soc_clk_sel == CLK_SOURCE_PLL) && (xtal_freq == SOC_XTAL_FREQ_MHZ) &&
+                   pll_160m_en && pll_80m_en &&
+                   (apb_div == SOC_APB_DIVIDER_2) &&
+                   (clk_cfg.cpu_mhz == SOC_CPU_TARGET_FREQ_MHZ) &&
+                   (clk_cfg.apb_mhz == SOC_APB_TARGET_FREQ_MHZ);
     if (t11_pass) passed_tests++;
     print_result(t11_pass);
 
@@ -493,7 +496,8 @@ void run_validation_suite(void)
     put_dec(wdt_stat.feed_count);
     uart_puts("\r\n");
 
-    int t12_pass = wdt_enabled && (wdt_stg0 == 3) && (prescale == 80) &&
+    int t12_pass = wdt_enabled && (wdt_stg0 == WDT_ACTION_RESET_SYSTEM) &&
+                   (prescale == WDT_PRESCALER_DIV) &&
                    (wdt_stat.active == 1) && (wdt_stat.feed_count > prev_feed);
     if (t12_pass) passed_tests++;
     print_result(t12_pass);

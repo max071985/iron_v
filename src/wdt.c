@@ -5,9 +5,24 @@
 static wdt_supervisor_t g_wdt_supervisor = {
     .feed_interval_ms = 0,
     .feed_count = 0,
+    .last_epoch_feeds = 0,
+    .epoch_count = 0,
+    .max_feeds_per_epoch = WDT_MAX_FEEDS_PER_EPOCH,
     .timg0_timeout_ticks = 0,
     .active = 0
 };
+
+static uint64_t g_wdt_epoch_start_ticks = 0;
+static uint64_t g_wdt_last_feed_ticks = 0;
+
+static inline uint64_t wdt_get_systimer_ticks(void)
+{
+    *SYSTIMER_UNIT0_OP_REG = SYSTIMER_UNIT0_OP_TIMER_UNIT0_UPDATE_M;
+    FENCE();
+    uint32_t lo = *SYSTIMER_UNIT0_VALUE_LO_REG;
+    uint32_t hi = *SYSTIMER_UNIT0_VALUE_HI_REG & SYSTIMER_UNIT0_VALUE_HI_TIMER_UNIT0_VALUE_HI_M;
+    return ((uint64_t)hi << 32) | (uint64_t)lo;
+}
 
 void wdt_init(uint32_t timeout_ms)
 {
@@ -81,32 +96,66 @@ void wdt_init(uint32_t timeout_ms)
     *TIMG0_WDTWPROTECT = TIMG_WDT_WKEY;
     FENCE();
 
+    uint64_t now = wdt_get_systimer_ticks();
+    g_wdt_epoch_start_ticks = now;
+    g_wdt_last_feed_ticks = now;
+
     g_wdt_supervisor.feed_interval_ms = timeout_ms;
     g_wdt_supervisor.feed_count = 1;
+    g_wdt_supervisor.last_epoch_feeds = 0;
+    g_wdt_supervisor.epoch_count = 0;
+    g_wdt_supervisor.max_feeds_per_epoch = WDT_MAX_FEEDS_PER_EPOCH;
     g_wdt_supervisor.active = 1;
 
-    uart_puts("[WDT] Active supervisor armed (TIMG0 MWDT, SWD disabled, Flashboot cleared).\r\n");
+    uart_puts("[WDT] Active windowed epoch supervisor armed (TIMG0 MWDT, SYSTIMER epoch 1000ms).\r\n");
 }
 
 void wdt_feed(void)
 {
     if (!g_wdt_supervisor.active) return;
 
-    *TIMG0_WDTWPROTECT = TIMG_WDT_WKEY;
-    FENCE();
-    *TIMG0_WDTFEED = 1;
-    FENCE();
+    /* Enforce bounded feed limit per epoch (protects against runaway spin-loops) */
+    if (g_wdt_supervisor.feed_count < g_wdt_supervisor.max_feeds_per_epoch)
+    {
+        *TIMG0_WDTWPROTECT = TIMG_WDT_WKEY;
+        FENCE();
+        *TIMG0_WDTFEED = 1;
+        FENCE();
 
-    g_wdt_supervisor.feed_count++;
+        g_wdt_supervisor.feed_count++;
+        g_wdt_last_feed_ticks = wdt_get_systimer_ticks();
+    }
 }
 
 void wdt_supervisor_tick(void)
 {
-    /* Rate-limit hardware MMIO feeds to prevent APB bus saturation */
-    static uint32_t s_poll_ticks = 0;
-    if (++s_poll_ticks >= WDT_FEED_RATE_LIMIT_CYCLES)
+    if (!g_wdt_supervisor.active) return;
+
+    uint64_t current_ticks = wdt_get_systimer_ticks();
+
+    /* 1. Check if 1-second supervisory clock epoch has elapsed */
+    if (current_ticks - g_wdt_epoch_start_ticks >= WDT_EPOCH_PERIOD_TICKS)
     {
-        s_poll_ticks = 0;
+        /* Check if minimum liveness feed requirement was satisfied during epoch */
+        if (g_wdt_supervisor.feed_count >= WDT_MIN_FEEDS_PER_EPOCH)
+        {
+            /* Healthy epoch: refresh hardware watchdog */
+            *TIMG0_WDTWPROTECT = TIMG_WDT_WKEY;
+            FENCE();
+            *TIMG0_WDTFEED = 1;
+            FENCE();
+            g_wdt_last_feed_ticks = current_ticks;
+        }
+
+        /* Snapshot current epoch feeds and reset counter to zero for next epoch */
+        g_wdt_supervisor.last_epoch_feeds = g_wdt_supervisor.feed_count;
+        g_wdt_supervisor.feed_count = 0;
+        g_wdt_supervisor.epoch_count++;
+        g_wdt_epoch_start_ticks = current_ticks;
+    }
+    /* 2. Check periodic feed interval within active epoch */
+    else if (current_ticks - g_wdt_last_feed_ticks >= WDT_FEED_INTERVAL_TICKS)
+    {
         wdt_feed();
     }
 }

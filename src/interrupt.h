@@ -13,6 +13,7 @@
 #include "trap.h"
 #include "regs/interrupt_core0.h"
 #include "regs/intpri.h"
+#include "regs/plic.h"
 
 /* Total CPU interrupt channels in ESP-RISC-V core (0 to 31) */
 #define INTERRUPT_CPU_CHANNELS 32U
@@ -32,9 +33,6 @@
 
 /* Bitfield masks for hardware registers */
 #define INTMTX_MAP_CHANNEL_MASK   0x0000001FU /* Bits 4:0: CPU interrupt channel */
-#define INTPRI_PRIORITY_MASK      0x0000000FU /* Bits 3:0: Priority level */
-#define INTPRI_THRESH_MASK        0x000000FFU /* Bits 7:0: Interrupt threshold */
-#define INTPRI_CLEAR_ALL_MASK     0xFFFFFFFFU /* Acknowledge all edge interrupt lines */
 
 /* RISC-V Machine Status CSR (mstatus) bitfield constants */
 #define MSTATUS_MIE_BIT           (1U << 3)   /* Bit 3: Machine Interrupt Enable */
@@ -42,8 +40,8 @@
 
 /* Register array address calculation macros */
 #define INTMTX_SOURCE_MAP_REG(src)   ((volatile uint32_t *)(INTERRUPT_CORE0_BASE + ((uint32_t)(src) * 4U)))
-#define INTPRI_CPU_PRI_REG(chan)     ((volatile uint32_t *)(INTPRI_BASE + 0x0CU + ((uint32_t)(chan) * 4U)))
-#define INTPRI_SW_INTR_REG(idx)      ((volatile uint32_t *)(INTPRI_BASE + 0x90U + ((uint32_t)(idx) * 4U)))
+#define INTPRI_SW_INTR_BASE_OFFSET   0x90U
+#define INTPRI_SW_INTR_REG(idx)      ((volatile uint32_t *)(INTPRI_BASE + INTPRI_SW_INTR_BASE_OFFSET + ((uint32_t)(idx) * 4U)))
 
 /* Interrupt Trigger Type */
 typedef enum {

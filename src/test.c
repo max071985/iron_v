@@ -42,19 +42,25 @@ mem_access_t check_mem_access(uint32_t addr)
     }
 
     /* 4. LP SRAM (16 KB @ 0x50000000) */
-    if (addr >= 0x50000000U && addr < 0x50004000U)
+    if (addr >= LP_SRAM_START_ADDR && addr < LP_SRAM_END_ADDR)
     {
         return MEM_ACCESS_READWRITE;
     }
 
     /* 5. Memory-Mapped I/O Peripheral Space (0x60000000 - 0x600D0000) */
-    if (addr >= 0x60000000U && addr < 0x600D0000U)
+    if (addr >= PERIPHERAL_MMIO_START_ADDR && addr < PERIPHERAL_MMIO_END_ADDR)
     {
         return MEM_ACCESS_MMIO;
     }
 
-    /* 6. Internal ROM (0x40000000 - 0x40050000) */
-    if (addr >= 0x40000000U && addr < 0x40050000U)
+    /* 6. Core-Local Interrupt & Timer Subsystem Space (PLIC/CLINT: 0x20000000 - 0x20002000) */
+    if (addr >= CORE_LOCAL_PERI_START_ADDR && addr < CORE_LOCAL_PERI_END_ADDR)
+    {
+        return MEM_ACCESS_MMIO;
+    }
+
+    /* 7. Internal ROM (0x40000000 - 0x40050000) */
+    if (addr >= INTERNAL_ROM_START_ADDR && addr < INTERNAL_ROM_END_ADDR)
     {
         return MEM_ACCESS_READONLY;
     }
@@ -511,7 +517,9 @@ void run_validation_suite(void)
     put_dec(wdt_stat.active);
     uart_puts(", Feeds=");
     put_dec(wdt_stat.feed_count);
-    uart_puts("\r\n");
+    uart_puts(" (Epoch=");
+    put_dec(wdt_stat.epoch_count);
+    uart_puts("s)\r\n");
 
     int t12_pass = wdt_enabled && (wdt_stg0 == WDT_ACTION_RESET_SYSTEM) &&
                    (prescale == WDT_PRESCALER_DIV) &&
@@ -608,16 +616,16 @@ void run_validation_suite(void)
     /* TEST 16: INTMTX Routing & INTPRI Priority / Threshold Preempt */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(16, "INTMTX Routing & INTPRI Priority / Threshold Preempt",
-                      "Verify UART0 routing to CPU channel 4, priority 10, and live SW interrupt preemption");
+    print_test_header(16, "INTMTX Routing & PLIC Priority / Threshold Preempt",
+                      "Verify UART0 routing to CPU channel 5, priority 10, and live SW interrupt preemption");
 
-    /* 1. Test UART0 routing and priority configuration per roadmap T16 specification */
-    int route_res = interrupt_route(INT_SRC_UART0, 4);
+    /* 1. Test UART0 routing and priority configuration on external interrupt channel 5 */
+    int route_res = interrupt_route(INT_SRC_UART0, 5);
     uint32_t uart0_map = interrupt_get_map(INT_SRC_UART0);
-    int pri_res = interrupt_set_priority(4, 10);
-    uint32_t pri_val = interrupt_get_priority(4);
+    int pri_res = interrupt_set_priority(5, 10);
+    uint32_t pri_val = interrupt_get_priority(5);
 
-    int part1_pass = (route_res == 0) && (uart0_map == 4) && (pri_res == 0) && (pri_val == 10);
+    int part1_pass = (route_res == 0) && (uart0_map == 5) && (pri_res == 0) && (pri_val == 10);
 
     /* 2. Test live interrupt dispatch via CPU software interrupt 0 routed to CPU channel 2 */
     g_test_isr_hit = 0;
@@ -652,12 +660,12 @@ void run_validation_suite(void)
     interrupt_unregister_handler(2);
     interrupt_unroute(INT_SRC_CPU_INTR_FROM_CPU_0);
     interrupt_unroute(INT_SRC_UART0);
-    interrupt_set_priority(4, 0);
+    interrupt_set_priority(5, 0);
 
-    uart_puts("  Expected:    UART0_MAP=4, PRI_4=10, LiveDispatch=1, ThreshMask=1\r\n");
+    uart_puts("  Expected:    UART0_MAP=5, PRI_5=10, LiveDispatch=1, ThreshMask=1\r\n");
     uart_puts("  Actual:      UART0_MAP=");
     put_dec(uart0_map);
-    uart_puts(", PRI_4=");
+    uart_puts(", PRI_5=");
     put_dec(pri_val);
     uart_puts(", LiveDispatch=");
     put_dec(live_dispatch_pass);

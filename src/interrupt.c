@@ -33,20 +33,20 @@ void interrupt_init(void)
         *map_reg = 0U;
     }
 
-    /* 4. Reset INTPRI core interrupt controller registers */
-    *INTPRI_CPU_INT_ENABLE_REG = 0U;
-    *INTPRI_CPU_INT_TYPE_REG = 0U;   /* Level-triggered by default */
-    *INTPRI_CPU_INT_THRESH_REG = 0U; /* Threshold 0: all priorities >= 1 unmasked */
+    /* 4. Reset PLIC MX core interrupt controller registers (0x20001000) */
+    *PLIC_MXINT_ENABLE_REG = 0U;
+    *PLIC_MXINT_TYPE_REG = 0U;   /* Level-triggered by default */
+    *PLIC_MXINT_THRESH_REG = 0U; /* Threshold 0: all priorities >= 1 unmasked */
 
     for (uint32_t c = 0; c < INTERRUPT_CPU_CHANNELS; c++)
     {
-        volatile uint32_t *pri_reg = INTPRI_CPU_PRI_REG(c);
+        volatile uint32_t *pri_reg = PLIC_MXINT_PRI_REG(c);
         *pri_reg = 0U;
     }
 
-    /* 5. Clear edge-triggered pending states and software interrupts */
-    *INTPRI_CPU_INT_CLEAR_REG = INTPRI_CLEAR_ALL_MASK;
-    *INTPRI_CPU_INT_CLEAR_REG = 0U;
+    /* 5. Clear edge-triggered pending states in PLIC and software interrupts in INTPRI */
+    *PLIC_MXINT_CLEAR_REG = PLIC_CLEAR_ALL_MASK;
+    *PLIC_MXINT_CLEAR_REG = 0U;
 
     for (uint32_t sw = 0; sw < INTPRI_SW_INTR_COUNT; sw++)
     {
@@ -116,8 +116,8 @@ int interrupt_set_priority(uint32_t cpu_channel, uint32_t priority)
     }
 
     uint32_t prev_mstatus = interrupt_global_save_and_disable();
-    volatile uint32_t *pri_reg = INTPRI_CPU_PRI_REG(cpu_channel);
-    *pri_reg = (priority & INTPRI_PRIORITY_MASK);
+    volatile uint32_t *pri_reg = PLIC_MXINT_PRI_REG(cpu_channel);
+    *pri_reg = (priority & PLIC_PRIORITY_MASK);
     asm volatile("fence rw, rw" ::: "memory");
     interrupt_global_restore(prev_mstatus);
 
@@ -131,8 +131,8 @@ uint32_t interrupt_get_priority(uint32_t cpu_channel)
         return 0U;
     }
 
-    volatile uint32_t *pri_reg = INTPRI_CPU_PRI_REG(cpu_channel);
-    return (*pri_reg) & INTPRI_PRIORITY_MASK;
+    volatile uint32_t *pri_reg = PLIC_MXINT_PRI_REG(cpu_channel);
+    return (*pri_reg) & PLIC_PRIORITY_MASK;
 }
 
 int interrupt_set_threshold(uint32_t threshold)
@@ -143,7 +143,7 @@ int interrupt_set_threshold(uint32_t threshold)
     }
 
     uint32_t prev_mstatus = interrupt_global_save_and_disable();
-    *INTPRI_CPU_INT_THRESH_REG = (threshold & INTPRI_THRESH_MASK);
+    *PLIC_MXINT_THRESH_REG = (threshold & PLIC_THRESH_MASK);
     asm volatile("fence rw, rw" ::: "memory");
     interrupt_global_restore(prev_mstatus);
 
@@ -152,7 +152,7 @@ int interrupt_set_threshold(uint32_t threshold)
 
 uint32_t interrupt_get_threshold(void)
 {
-    return (*INTPRI_CPU_INT_THRESH_REG) & INTPRI_THRESH_MASK;
+    return (*PLIC_MXINT_THRESH_REG) & PLIC_THRESH_MASK;
 }
 
 int interrupt_set_type(uint32_t cpu_channel, interrupt_type_t type)
@@ -165,11 +165,11 @@ int interrupt_set_type(uint32_t cpu_channel, interrupt_type_t type)
     uint32_t prev_mstatus = interrupt_global_save_and_disable();
     if (type == INTR_TYPE_EDGE)
     {
-        *INTPRI_CPU_INT_TYPE_REG |= (1U << cpu_channel);
+        *PLIC_MXINT_TYPE_REG |= (1U << cpu_channel);
     }
     else
     {
-        *INTPRI_CPU_INT_TYPE_REG &= ~(1U << cpu_channel);
+        *PLIC_MXINT_TYPE_REG &= ~(1U << cpu_channel);
     }
     asm volatile("fence rw, rw" ::: "memory");
     interrupt_global_restore(prev_mstatus);
@@ -184,7 +184,7 @@ interrupt_type_t interrupt_get_type(uint32_t cpu_channel)
         return INTR_TYPE_LEVEL;
     }
 
-    return ((*INTPRI_CPU_INT_TYPE_REG & (1U << cpu_channel)) != 0U) ? INTR_TYPE_EDGE : INTR_TYPE_LEVEL;
+    return ((*PLIC_MXINT_TYPE_REG & (1U << cpu_channel)) != 0U) ? INTR_TYPE_EDGE : INTR_TYPE_LEVEL;
 }
 
 int interrupt_enable(uint32_t cpu_channel)
@@ -195,7 +195,7 @@ int interrupt_enable(uint32_t cpu_channel)
     }
 
     uint32_t prev_mstatus = interrupt_global_save_and_disable();
-    *INTPRI_CPU_INT_ENABLE_REG |= (1U << cpu_channel);
+    *PLIC_MXINT_ENABLE_REG |= (1U << cpu_channel);
     asm volatile("csrs mie, %0" :: "r"(1U << cpu_channel) : "memory");
     asm volatile("fence rw, rw" ::: "memory");
     interrupt_global_restore(prev_mstatus);
@@ -211,7 +211,7 @@ int interrupt_disable(uint32_t cpu_channel)
     }
 
     uint32_t prev_mstatus = interrupt_global_save_and_disable();
-    *INTPRI_CPU_INT_ENABLE_REG &= ~(1U << cpu_channel);
+    *PLIC_MXINT_ENABLE_REG &= ~(1U << cpu_channel);
     asm volatile("csrc mie, %0" :: "r"(1U << cpu_channel) : "memory");
     asm volatile("fence rw, rw" ::: "memory");
     interrupt_global_restore(prev_mstatus);
@@ -226,7 +226,7 @@ int interrupt_is_enabled(uint32_t cpu_channel)
         return 0;
     }
 
-    return ((*INTPRI_CPU_INT_ENABLE_REG & (1U << cpu_channel)) != 0U);
+    return ((*PLIC_MXINT_ENABLE_REG & (1U << cpu_channel)) != 0U);
 }
 
 int interrupt_register_handler(uint32_t cpu_channel, isr_handler_t handler, void *arg)
@@ -315,11 +315,11 @@ void interrupt_dispatch(uint32_t channel, trapframe_t *tf)
         g_isr_table[channel].count++;
         g_isr_table[channel].handler(g_isr_table[channel].arg);
 
-        /* Acknowledge edge-triggered interrupts in INTPRI */
-        if (*INTPRI_CPU_INT_TYPE_REG & (1U << channel))
+        /* Acknowledge edge-triggered interrupts in PLIC */
+        if (*PLIC_MXINT_TYPE_REG & (1U << channel))
         {
-            *INTPRI_CPU_INT_CLEAR_REG = (1U << channel);
-            *INTPRI_CPU_INT_CLEAR_REG = 0U;
+            *PLIC_MXINT_CLEAR_REG = (1U << channel);
+            *PLIC_MXINT_CLEAR_REG = 0U;
         }
     }
     else

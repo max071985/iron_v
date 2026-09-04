@@ -86,7 +86,12 @@ static void print_info(void)
     {
         uart_puts("Active (");
         put_dec(wdt.feed_interval_ms);
-        uart_puts(" ms timeout)\r\n");
+        uart_puts(" ms timeout, 1s epoch window)\r\n");
+        uart_puts(" Uptime:  ");
+        put_dec(wdt.epoch_count);
+        uart_puts(" s (epoch feeds: ");
+        put_dec(wdt.feed_count);
+        uart_puts(")\r\n");
     }
     else
     {

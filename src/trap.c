@@ -1,4 +1,5 @@
 #include "trap.h"
+#include "interrupt.h"
 #include "utils.h"
 
 static volatile uint32_t g_ecall_count = 0;
@@ -29,8 +30,9 @@ void trap_handler(trapframe_t *tf)
 
     if (is_interrupt)
     {
-        /* Interrupt handling will be wired in Task 2.2 via Interrupt Matrix */
-        panic_dump(tf);
+        interrupt_dispatch(cause, tf);
+        tf->mstatus |= 0x1800; /* Re-arm MPP to Machine Mode */
+        return;
     }
     else
     {

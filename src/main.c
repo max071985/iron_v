@@ -6,6 +6,7 @@
 #include "clock.h"
 #include "wdt.h"
 #include "trap.h"
+#include "interrupt.h"
 
 /*
  * Disables hardware watchdogs safely with memory barriers during early bringup.
@@ -224,6 +225,9 @@ void main(void)
 
     /* Initialize RISC-V machine-mode trap vector table and handler */
     trap_init();
+
+    /* Initialize Interrupt Matrix (INTMTX) and Core Interrupt Controller (INTPRI) */
+    interrupt_init();
 
     uart_puts("\r\n");
     print_info();

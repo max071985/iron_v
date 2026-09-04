@@ -23,8 +23,8 @@ _start:
     csrw mscratch, zero
     csrw mcause, zero
     csrw mtval, zero
-    /* Point mtvec to safe hang handler in direct mode (bits 1:0 = 0) */
-    la t0, _hang
+    /* Point mtvec to 256-byte aligned vector table in vectored mode (bit 0 = 1, TRM Reg 1.9) */
+    la t0, _vector_table
     csrw mtvec, t0
 
     /* 4. Zero-initialize the .bss section */
@@ -45,6 +45,25 @@ _start:
     call main
 
     /* Safety Net infinite loop in case main() ever returns */
+    j _hang
+
+    /*
+     * ESP32-C6 Trap Vector Table
+     * TRM Register 1.9 mandates:
+     * - mtvec.MODE (bits 1:0) is RO and hardwired to 0x1 (Vectored Mode)
+     * - mtvec.BASE (bits 31:8) must be 256-byte aligned (.align 8)
+     * - Vector 0: Synchronous Exceptions
+     * - Vectors 1-31: Interrupts (BASE + 4 * id)
+     */
+    .align 8
+    .global _vector_table
+_vector_table:
+    j _hang             /* Vector 0: All synchronous exceptions */
+    .rept 31
+    j _hang             /* Vectors 1-31: Core & external interrupts */
+    .endr
+
+    .global _hang
 _hang:
     wfi
     j _hang

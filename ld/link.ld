@@ -25,7 +25,7 @@ SECTIONS
         *(.srodata .srodata.*)
         . = ALIGN(16);
         _erodata = .;
-    } > hp_iram
+    } > hp_dram
 
     .data : ALIGN(16) {
         _sdata = .;
@@ -53,6 +53,7 @@ SECTIONS
 
     .lp_sram (NOLOAD) : ALIGN(16) {
         _slp_sram = .;
+        _lp_sram_start = .;
         *(.lp_sram .lp_sram.*)
         . = ALIGN(16);
         _elp_sram = .;
@@ -60,7 +61,9 @@ SECTIONS
 
     .flash_xip : ALIGN(16) {
         _sflash_xip = .;
+        _flash_text_start = .;
         *(.flash.text .flash.text.*)
+        _flash_rodata_start = .;
         *(.flash.rodata .flash.rodata.*)
         . = ALIGN(16);
         _eflash_xip = .;

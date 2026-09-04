@@ -182,15 +182,16 @@ def run_suite():
 
     # TEST 1: Memory Section Topology & Monotonicity
     total += 1
-    t1_pass = (stext == 0x40800000 and stext < etext and etext <= srodata and srodata < erodata
+    t1_pass = (stext == 0x40800000 and stext < etext and etext <= 0x40820000
+               and srodata >= 0x40820000 and srodata < erodata
                and erodata <= sdata and sdata <= edata and edata <= sbss and sbss <= ebss
                and ebss < stack_top and stack_top == 0x40880000)
     passed += print_result_line(
         total,
         "Memory Section Topology & Monotonicity",
         "Verify SRAM section layout conforms to ESP32-C6 Harvard architecture",
-        "0x40800000 == _stext < _srodata < _sdata < _sbss < _stack_top(0x40880000)",
-        f"_stext=0x{stext:08x} _srodata=0x{srodata:08x} _sdata=0x{sdata:08x} _sbss=0x{sbss:08x} _stack=0x{stack_top:08x}",
+        "0x40800000 == _stext < _etext <= 0x40820000 <= _srodata < _sdata < _sbss < _stack_top(0x40880000)",
+        f"_stext=0x{stext:08x} _etext=0x{etext:08x} _srodata=0x{srodata:08x} _sdata=0x{sdata:08x} _sbss=0x{sbss:08x} _stack=0x{stack_top:08x}",
         t1_pass
     )
 
@@ -340,15 +341,22 @@ def run_suite():
         t9_pass
     )
 
-    # TEST 10: Architectural Boundary: Silicon Telemetry vs Static Validation
+    # TEST 10: Low-Power SRAM, Flash XIP & Vector Table Symbols Validation
     total += 1
-    t10_pass = True
+    lp_sym = symbols.get("_lp_sram_start", {}).get("value", None)
+    flash_text_sym = symbols.get("_flash_text_start", {}).get("value", None)
+    vec_table_sym = symbols.get("_vector_table", {}).get("value", None)
+    vec_align_ok = (vec_table_sym is not None) and (vec_table_sym % 256 == 0) and (vec_table_sym >= stext and vec_table_sym < 0x40820000)
+    lp_ok = (lp_sym == 0x50000000)
+    flash_ok = (flash_text_sym == 0x42000000)
+    t10_pass = (lp_ok and flash_ok and vec_align_ok)
+    t10_actual = f"_vector_table=0x{vec_table_sym:08x} (align256={vec_align_ok}), _lp_sram_start=0x{lp_sym:08x}, _flash_text_start=0x{flash_text_sym:08x}"
     passed += print_result_line(
         total,
-        "Architectural Boundary: Silicon Telemetry vs Static Validation",
-        "Verify architectural separation between host offline inspection and physical silicon telemetry",
-        "Host: static ELF/binary inspection & unit tests; Physical: MMIO (*UART0_STATUS_REG, *TIMG0_WDTCONFIG0_REG) via src/test.c",
-        "Host static suite verified; on-board hardware telemetry documented for live execution via 'make flash && make monitor -> do-test'",
+        "Low-Power SRAM, Flash XIP & Vector Table Symbols Validation",
+        "Verify _vector_table (256-byte aligned in IRAM), _lp_sram_start (0x50000000), and _flash_text_start (0x42000000)",
+        "_vector_table%256==0, _lp_sram_start==0x50000000, _flash_text_start==0x42000000",
+        t10_actual,
         t10_pass
     )
 

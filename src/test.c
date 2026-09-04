@@ -414,7 +414,8 @@ void run_validation_suite(void)
     put_hex(mtvec_val);
     uart_puts("\r\n");
 
-    int t10_pass = sp_aligned && sp_in_bounds && (mpp == 3) && (mie_val == 0) && (mtvec_val != 0);
+    int mtvec_valid = ((mtvec_val & 0x1) == 1) && ((mtvec_val & 0xFEU) == 0);
+    int t10_pass = sp_aligned && sp_in_bounds && (mpp == 3) && (mie_val == 0) && mtvec_valid;
     if (t10_pass) passed_tests++;
     print_result(t10_pass);
 
@@ -423,7 +424,7 @@ void run_validation_suite(void)
     /* ------------------------------------------------------------- */
     total_tests++;
     print_test_header(11, "PCR Clock Distribution & Frequency Status",
-                      "Verify SYSCLK operates on PLL (160MHz) with 80MHz APB bus clock in PCR registers");
+                      "Verify SYSCLK operates on PLL (160MHz) with 40MHz APB bus clock in PCR registers");
 
     uint32_t sysclk_reg = *PCR_SYSCLK_CONF_REG;
     uint32_t soc_clk_sel = (sysclk_reg & PCR_SYSCLK_CONF_SOC_CLK_SEL_M) >> PCR_SYSCLK_CONF_SOC_CLK_SEL_S;
@@ -439,7 +440,7 @@ void run_validation_suite(void)
     clock_config_t clk_cfg;
     clock_get_config(&clk_cfg);
 
-    uart_puts("  Expected:    SOC_CLK_SEL=PLL, XTAL=40MHz, PLL_160M=1, PLL_80M=1, APB_DIV=1\r\n");
+    uart_puts("  Expected:    SOC_CLK_SEL=PLL, XTAL=40MHz, PLL_160M=1, PLL_80M=1, APB_DIV=0\r\n");
     uart_puts("  Actual:      CLK_SEL=");
     put_dec(soc_clk_sel);
     uart_puts(" (");
@@ -458,7 +459,7 @@ void run_validation_suite(void)
 
     int t11_pass = (soc_clk_sel == CLK_SOURCE_PLL) && (xtal_freq == SOC_XTAL_FREQ_MHZ) &&
                    pll_160m_en && pll_80m_en &&
-                   (apb_div == SOC_APB_DIVIDER_2) &&
+                   (apb_div == SOC_APB_DIVIDER_1) &&
                    (clk_cfg.cpu_mhz == SOC_CPU_TARGET_FREQ_MHZ) &&
                    (clk_cfg.apb_mhz == SOC_APB_TARGET_FREQ_MHZ);
     if (t11_pass) passed_tests++;
@@ -501,6 +502,35 @@ void run_validation_suite(void)
                    (wdt_stat.active == 1) && (wdt_stat.feed_count > prev_feed);
     if (t12_pass) passed_tests++;
     print_result(t12_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 13: Low-Power (LP) SRAM Retention & Accessibility        */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(13, "Low-Power (LP) SRAM Accessibility & Retention",
+                      "Verify LP SRAM at 0x50000000 is read/write accessible with pattern preservation");
+
+    volatile uint32_t *lp_sram_ptr = (volatile uint32_t *)0x50000000U;
+    uint32_t lp_orig = *lp_sram_ptr;
+    *lp_sram_ptr = 0x55AA33CCU;
+    FENCE();
+    uint32_t lp_read1 = *lp_sram_ptr;
+    *lp_sram_ptr = 0xAA55CC33U;
+    FENCE();
+    uint32_t lp_read2 = *lp_sram_ptr;
+    *lp_sram_ptr = lp_orig;
+    FENCE();
+
+    uart_puts("  Expected:    LP SRAM at 0x50000000 preserves patterns 0x55AA33CC and 0xAA55CC33\r\n");
+    uart_puts("  Actual:      Read1=");
+    put_hex(lp_read1);
+    uart_puts(", Read2=");
+    put_hex(lp_read2);
+    uart_puts("\r\n");
+
+    int t13_pass = (lp_read1 == 0x55AA33CCU) && (lp_read2 == 0xAA55CC33U);
+    if (t13_pass) passed_tests++;
+    print_result(t13_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

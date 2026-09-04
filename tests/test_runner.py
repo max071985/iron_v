@@ -419,6 +419,28 @@ def run_suite():
         t13_pass
     )
 
+    # TEST 14: RISC-V Machine Trap Handler & Vector Table Subsystem Linkage (Task 2.1)
+    total += 1
+    trap_syms = ["_vector_table", "trap_entry_exception", "trap_entry_interrupt", "trap_init", "trap_handler", "panic_dump"]
+    found_trap_syms = [s for s in trap_syms if s in symbols]
+    all_trap_found = len(found_trap_syms) == len(trap_syms)
+    all_trap_in_text = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40820000)
+        for s in found_trap_syms
+    )
+    vec_sym_val = symbols.get("_vector_table", {}).get("value", 0)
+    vec_aligned = (vec_sym_val % 256 == 0)
+    t14_pass = all_trap_found and all_trap_in_text and vec_aligned
+    t14_actual = f"Found {len(found_trap_syms)}/{len(trap_syms)} symbols in IRAM [vector_table=0x{vec_sym_val:08x}, align256={vec_aligned}]"
+    passed += print_result_line(
+        total,
+        "Trap Handler & Vector Table Subsystem Linkage",
+        "Verify trap_init, trap_handler, panic_dump, and 256-byte aligned vector table exist in IRAM",
+        "All 6 trap subsystem symbols present in IRAM, _vector_table 256-byte aligned",
+        t14_actual,
+        t14_pass
+    )
+
     print("\n" + "=" * 70)
     print("                       TEST SUITE SUMMARY                             ")
     print("=" * 70)

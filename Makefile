@@ -18,7 +18,7 @@ CFLAGS = -march=rv32imac_zicsr_zifencei -mabi=ilp32 -ffreestanding -nostdlib -O2
 LDFLAGS = -T ld/link.ld -nostdlib
 
 # Baseline source files
-SRCS = src/crt0.S src/main.c src/string.c src/utils.c src/test.c src/clock.c src/wdt.c
+SRCS = src/crt0.S src/trap_entry.S src/main.c src/string.c src/utils.c src/test.c src/clock.c src/wdt.c src/trap.c src/panic.c
 
 # Flashing parameters
 PORT ?= /dev/ttyUSB0

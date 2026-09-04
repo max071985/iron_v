@@ -5,6 +5,7 @@
 #include "test.h"
 #include "clock.h"
 #include "wdt.h"
+#include "trap.h"
 
 /*
  * Disables hardware watchdogs safely with memory barriers during early bringup.
@@ -54,6 +55,8 @@ static void print_help(void)
     uart_puts("  info                - Show system information\r\n");
     uart_puts("  peek <hex_addr>     - Read 32-bit word from hex address\r\n");
     uart_puts("  poke <addr> <val>   - Write 32-bit hex value to address\r\n");
+    uart_puts("  ecall               - Trigger controlled M-mode software trap (ECALL)\r\n");
+    uart_puts("  panic               - Trigger illegal instruction exception to test panic dump\r\n");
     uart_puts("  do-test             - Run full baseline validation test suite\r\n");
 }
 
@@ -188,6 +191,19 @@ void shell(char *input_buffer)
             uart_puts("Usage: poke <hex_address> <hex_value>\r\n");
         }
     }
+    else if (strcmp(input_buffer, "ecall") == 0)
+    {
+        uart_puts("Executing controlled M-mode software trap (ECALL)...\r\n");
+        asm volatile("ecall");
+        uart_puts("Successfully resumed from ECALL trap! Total ECALLs: ");
+        put_dec(trap_get_ecall_count());
+        uart_puts("\r\n");
+    }
+    else if (strcmp(input_buffer, "panic") == 0)
+    {
+        uart_puts("Triggering illegal instruction (0x00000000) to demonstrate panic dump...\r\n");
+        asm volatile(".word 0x00000000");
+    }
     else
     {
         uart_puts("Unknown command. Type 'help' for available commands.\r\n");
@@ -198,11 +214,14 @@ void main(void)
 {
     char input_buffer[MAX_CMD_LEN];
 
-    /* Initialize PCR clock tree to 160 MHz CPU PLL and 80 MHz APB */
+    /* Initialize PCR clock tree to 160 MHz CPU PLL and 40 MHz APB */
     clock_init();
 
     /* Initialize active multi-tier watchdog supervisor */
     wdt_init(WDT_DEFAULT_TIMEOUT_MS);
+
+    /* Initialize RISC-V machine-mode trap vector table and handler */
+    trap_init();
 
     uart_puts("\r\n");
     print_info();

@@ -4,6 +4,7 @@
 #include "io_constants.h"
 #include "clock.h"
 #include "wdt.h"
+#include "trap.h"
 
 /* Designated static test variables */
 static volatile uint32_t g_test_data_var = 0x12345678U; // Placed in .data
@@ -531,6 +532,60 @@ void run_validation_suite(void)
     int t13_pass = (lp_read1 == 0x55AA33CCU) && (lp_read2 == 0xAA55CC33U);
     if (t13_pass) passed_tests++;
     print_result(t13_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 14: Vectored Trap Vector (mtvec) Alignment & Table Base  */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(14, "Vectored Trap Vector (mtvec) Alignment & Base",
+                      "Verify mtvec operates in Vectored Mode (0x1) with 256-byte aligned vector table");
+
+    uint32_t t14_mtvec = 0;
+    asm volatile("csrr %0, mtvec" : "=r"(t14_mtvec));
+    uint32_t expected_base = (uint32_t)_vector_table;
+    int mtvec_mode_vectored = (t14_mtvec & 0x1U) == 1U;
+    int mtvec_aligned_256 = (t14_mtvec & 0xFEU) == 0U;
+    int mtvec_base_matches = (t14_mtvec & ~0xFFU) == (expected_base & ~0xFFU);
+
+    uart_puts("  Expected:    mtvec.MODE=1 (Vectored), BASE=");
+    put_hex(expected_base & ~0xFFU);
+    uart_puts(", align256=1\r\n");
+    uart_puts("  Actual:      mtvec=");
+    put_hex(t14_mtvec);
+    uart_puts(" (MODE=");
+    put_dec(t14_mtvec & 0x3U);
+    uart_puts(", BASE=");
+    put_hex(t14_mtvec & ~0xFFU);
+    uart_puts(", align256=");
+    put_dec(mtvec_aligned_256);
+    uart_puts(")\r\n");
+
+    int t14_pass = mtvec_mode_vectored && mtvec_aligned_256 && mtvec_base_matches;
+    if (t14_pass) passed_tests++;
+    print_result(t14_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 15: Controlled M-Mode Software Trap (ECALL) & MRET Resume*/
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(15, "Controlled ECALL Trap Execution & MRET Resume",
+                      "Execute ECALL, verify trap entry via Vector 0, advance mepc, and resume via mret");
+
+    uint32_t prev_ecalls = trap_get_ecall_count();
+    /* Execute controlled M-mode software trap */
+    asm volatile("ecall");
+    uint32_t post_ecalls = trap_get_ecall_count();
+
+    uart_puts("  Expected:    ECALL trap dispatched, count increments by 1, execution resumes\r\n");
+    uart_puts("  Actual:      PrevECALLs=");
+    put_dec(prev_ecalls);
+    uart_puts(", PostECALLs=");
+    put_dec(post_ecalls);
+    uart_puts("\r\n");
+
+    int t15_pass = (post_ecalls == prev_ecalls + 1);
+    if (t15_pass) passed_tests++;
+    print_result(t15_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

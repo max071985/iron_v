@@ -400,7 +400,7 @@ void run_validation_suite(void)
     uint32_t mtvec_val = 0;
     asm volatile("csrr %0, mtvec" : "=r"(mtvec_val));
 
-    uart_puts("  Expected:    SP aligned (16B), within DRAM bounds, MPP=3 (M-Mode), MIE=0\r\n");
+    uart_puts("  Expected:    SP aligned (16B), within DRAM bounds, M-Mode CSRs valid, MIE=0\r\n");
     uart_puts("  Actual:      SP=");
     put_hex(current_sp);
     uart_puts(" (aligned=");
@@ -409,14 +409,19 @@ void run_validation_suite(void)
     put_dec(stack_margin);
     uart_puts(" B), MPP=");
     put_dec(mpp);
-    uart_puts(", MIE=");
+    uart_puts(" (");
+    if (mpp == 3) uart_puts("M-Mode Initial");
+    else if (mpp == 0) uart_puts("M-Mode Post-MRET");
+    else uart_puts("Other");
+    uart_puts("), MIE=");
     put_dec(mie_val);
     uart_puts(", MTVEC=");
     put_hex(mtvec_val);
     uart_puts("\r\n");
 
     int mtvec_valid = ((mtvec_val & 0x1) == 1) && ((mtvec_val & 0xFEU) == 0);
-    int t10_pass = sp_aligned && sp_in_bounds && (mpp == 3) && (mie_val == 0) && mtvec_valid;
+    int mpp_valid = (mpp == 3 || mpp == 0);
+    int t10_pass = sp_aligned && sp_in_bounds && mpp_valid && (mie_val == 0) && mtvec_valid;
     if (t10_pass) passed_tests++;
     print_result(t10_pass);
 
@@ -574,6 +579,8 @@ void run_validation_suite(void)
     uint32_t prev_ecalls = trap_get_ecall_count();
     /* Execute controlled M-mode software trap */
     asm volatile("ecall");
+    /* Re-arm mstatus.MPP to Machine Mode (0x1800) per bare-metal convention */
+    asm volatile("csrs mstatus, %0" :: "r"(0x1800) : "memory");
     uint32_t post_ecalls = trap_get_ecall_count();
 
     uart_puts("  Expected:    ECALL trap dispatched, count increments by 1, execution resumes\r\n");

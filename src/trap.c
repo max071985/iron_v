@@ -31,7 +31,7 @@ void trap_handler(trapframe_t *tf)
     if (is_interrupt)
     {
         interrupt_dispatch(cause, tf);
-        tf->mstatus |= 0x1800; /* Re-arm MPP to Machine Mode */
+        tf->mstatus |= MSTATUS_MPP_MACHINE_MODE; /* Re-arm MPP to Machine Mode */
         return;
     }
     else

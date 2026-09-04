@@ -196,8 +196,8 @@ void shell(char *input_buffer)
     {
         uart_puts("Executing controlled M-mode software trap (ECALL)...\r\n");
         asm volatile("ecall");
-        /* Re-arm mstatus.MPP to Machine Mode (0x1800) per bare-metal convention */
-        asm volatile("csrs mstatus, %0" :: "r"(0x1800) : "memory");
+        /* Re-arm mstatus.MPP to Machine Mode per bare-metal convention */
+        asm volatile("csrs mstatus, %0" :: "r"(MSTATUS_MPP_MACHINE_MODE) : "memory");
         uart_puts("Successfully resumed from ECALL trap! Total ECALLs: ");
         put_dec(trap_get_ecall_count());
         uart_puts("\r\n");

@@ -6,8 +6,6 @@
  */
 
 #include "interrupt.h"
-#include "regs/interrupt_core0.h"
-#include "regs/intpri.h"
 #include "utils.h"
 
 typedef struct {
@@ -25,13 +23,13 @@ void interrupt_init(void)
     asm volatile("csrw mie, zero" ::: "memory");
 
     /* 2. Enable clock gates for INTMTX and INTPRI */
-    *INTERRUPT_CORE0_CLOCK_GATE_REG = 1U;
-    *INTPRI_CLOCK_GATE_REG = 1U;
+    *INTERRUPT_CORE0_CLOCK_GATE_REG = INTERRUPT_CORE0_CLOCK_GATE_REG_CLK_EN_M;
+    *INTPRI_CLOCK_GATE_REG = INTPRI_CLOCK_GATE_CLK_EN_M;
 
     /* 3. Disable all 77 INTMTX peripheral mapping registers (writing 0 disables source) */
     for (uint32_t s = 0; s < INTERRUPT_SOURCE_COUNT; s++)
     {
-        volatile uint32_t *map_reg = (volatile uint32_t *)(INTERRUPT_CORE0_BASE + 4U * s);
+        volatile uint32_t *map_reg = INTMTX_SOURCE_MAP_REG(s);
         *map_reg = 0U;
     }
 
@@ -42,17 +40,17 @@ void interrupt_init(void)
 
     for (uint32_t c = 0; c < INTERRUPT_CPU_CHANNELS; c++)
     {
-        volatile uint32_t *pri_reg = (volatile uint32_t *)(INTPRI_BASE + 0xCU + 4U * c);
+        volatile uint32_t *pri_reg = INTPRI_CPU_PRI_REG(c);
         *pri_reg = 0U;
     }
 
     /* 5. Clear edge-triggered pending states and software interrupts */
-    *INTPRI_CPU_INT_CLEAR_REG = 0xFFFFFFFFU;
+    *INTPRI_CPU_INT_CLEAR_REG = INTPRI_CLEAR_ALL_MASK;
     *INTPRI_CPU_INT_CLEAR_REG = 0U;
 
-    for (uint32_t sw = 0; sw < 4U; sw++)
+    for (uint32_t sw = 0; sw < INTPRI_SW_INTR_COUNT; sw++)
     {
-        volatile uint32_t *sw_reg = (volatile uint32_t *)(INTPRI_BASE + 0x90U + 4U * sw);
+        volatile uint32_t *sw_reg = INTPRI_SW_INTR_REG(sw);
         *sw_reg = 0U;
     }
 
@@ -75,8 +73,8 @@ int interrupt_route(interrupt_source_t source, uint32_t cpu_channel)
     }
 
     uint32_t prev_mstatus = interrupt_global_save_and_disable();
-    volatile uint32_t *map_reg = (volatile uint32_t *)(INTERRUPT_CORE0_BASE + 4U * (uint32_t)source);
-    *map_reg = (cpu_channel & 0x1FU);
+    volatile uint32_t *map_reg = INTMTX_SOURCE_MAP_REG(source);
+    *map_reg = (cpu_channel & INTMTX_MAP_CHANNEL_MASK);
     asm volatile("fence rw, rw" ::: "memory");
     interrupt_global_restore(prev_mstatus);
 
@@ -91,7 +89,7 @@ int interrupt_unroute(interrupt_source_t source)
     }
 
     uint32_t prev_mstatus = interrupt_global_save_and_disable();
-    volatile uint32_t *map_reg = (volatile uint32_t *)(INTERRUPT_CORE0_BASE + 4U * (uint32_t)source);
+    volatile uint32_t *map_reg = INTMTX_SOURCE_MAP_REG(source);
     *map_reg = 0U;
     asm volatile("fence rw, rw" ::: "memory");
     interrupt_global_restore(prev_mstatus);
@@ -106,8 +104,8 @@ uint32_t interrupt_get_map(interrupt_source_t source)
         return 0U;
     }
 
-    volatile uint32_t *map_reg = (volatile uint32_t *)(INTERRUPT_CORE0_BASE + 4U * (uint32_t)source);
-    return (*map_reg) & 0x1FU;
+    volatile uint32_t *map_reg = INTMTX_SOURCE_MAP_REG(source);
+    return (*map_reg) & INTMTX_MAP_CHANNEL_MASK;
 }
 
 int interrupt_set_priority(uint32_t cpu_channel, uint32_t priority)
@@ -118,8 +116,8 @@ int interrupt_set_priority(uint32_t cpu_channel, uint32_t priority)
     }
 
     uint32_t prev_mstatus = interrupt_global_save_and_disable();
-    volatile uint32_t *pri_reg = (volatile uint32_t *)(INTPRI_BASE + 0xCU + 4U * cpu_channel);
-    *pri_reg = (priority & 0x0FU);
+    volatile uint32_t *pri_reg = INTPRI_CPU_PRI_REG(cpu_channel);
+    *pri_reg = (priority & INTPRI_PRIORITY_MASK);
     asm volatile("fence rw, rw" ::: "memory");
     interrupt_global_restore(prev_mstatus);
 
@@ -133,8 +131,8 @@ uint32_t interrupt_get_priority(uint32_t cpu_channel)
         return 0U;
     }
 
-    volatile uint32_t *pri_reg = (volatile uint32_t *)(INTPRI_BASE + 0xCU + 4U * cpu_channel);
-    return (*pri_reg) & 0x0FU;
+    volatile uint32_t *pri_reg = INTPRI_CPU_PRI_REG(cpu_channel);
+    return (*pri_reg) & INTPRI_PRIORITY_MASK;
 }
 
 int interrupt_set_threshold(uint32_t threshold)
@@ -145,7 +143,7 @@ int interrupt_set_threshold(uint32_t threshold)
     }
 
     uint32_t prev_mstatus = interrupt_global_save_and_disable();
-    *INTPRI_CPU_INT_THRESH_REG = (threshold & 0xFFU);
+    *INTPRI_CPU_INT_THRESH_REG = (threshold & INTPRI_THRESH_MASK);
     asm volatile("fence rw, rw" ::: "memory");
     interrupt_global_restore(prev_mstatus);
 
@@ -154,7 +152,7 @@ int interrupt_set_threshold(uint32_t threshold)
 
 uint32_t interrupt_get_threshold(void)
 {
-    return (*INTPRI_CPU_INT_THRESH_REG) & 0xFFU;
+    return (*INTPRI_CPU_INT_THRESH_REG) & INTPRI_THRESH_MASK;
 }
 
 int interrupt_set_type(uint32_t cpu_channel, interrupt_type_t type)
@@ -267,9 +265,9 @@ uint32_t interrupt_get_count(uint32_t cpu_channel)
 
 void interrupt_trigger_cpu_intr(uint32_t sw_intr_idx)
 {
-    if (sw_intr_idx < 4U)
+    if (sw_intr_idx < INTPRI_SW_INTR_COUNT)
     {
-        volatile uint32_t *sw_reg = (volatile uint32_t *)(INTPRI_BASE + 0x90U + 4U * sw_intr_idx);
+        volatile uint32_t *sw_reg = INTPRI_SW_INTR_REG(sw_intr_idx);
         *sw_reg = 1U;
         asm volatile("fence rw, rw" ::: "memory");
     }
@@ -277,9 +275,9 @@ void interrupt_trigger_cpu_intr(uint32_t sw_intr_idx)
 
 void interrupt_clear_cpu_intr(uint32_t sw_intr_idx)
 {
-    if (sw_intr_idx < 4U)
+    if (sw_intr_idx < INTPRI_SW_INTR_COUNT)
     {
-        volatile uint32_t *sw_reg = (volatile uint32_t *)(INTPRI_BASE + 0x90U + 4U * sw_intr_idx);
+        volatile uint32_t *sw_reg = INTPRI_SW_INTR_REG(sw_intr_idx);
         *sw_reg = 0U;
         asm volatile("fence rw, rw" ::: "memory");
     }
@@ -287,26 +285,26 @@ void interrupt_clear_cpu_intr(uint32_t sw_intr_idx)
 
 void interrupt_global_enable(void)
 {
-    asm volatile("csrsi mstatus, 0x8" ::: "memory");
+    asm volatile("csrsi mstatus, %0" :: "i"(MSTATUS_MIE_BIT) : "memory");
 }
 
 void interrupt_global_disable(void)
 {
-    asm volatile("csrci mstatus, 0x8" ::: "memory");
+    asm volatile("csrci mstatus, %0" :: "i"(MSTATUS_MIE_BIT) : "memory");
 }
 
 uint32_t interrupt_global_save_and_disable(void)
 {
     uint32_t prev;
-    asm volatile("csrrci %0, mstatus, 0x8" : "=r"(prev) :: "memory");
+    asm volatile("csrrci %0, mstatus, %1" : "=r"(prev) : "i"(MSTATUS_MIE_BIT) : "memory");
     return prev;
 }
 
 void interrupt_global_restore(uint32_t prev_mstatus)
 {
-    if (prev_mstatus & 0x8U)
+    if (prev_mstatus & MSTATUS_MIE_BIT)
     {
-        asm volatile("csrsi mstatus, 0x8" ::: "memory");
+        asm volatile("csrsi mstatus, %0" :: "i"(MSTATUS_MIE_BIT) : "memory");
     }
 }
 

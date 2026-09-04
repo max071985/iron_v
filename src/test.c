@@ -589,8 +589,8 @@ void run_validation_suite(void)
     uint32_t prev_ecalls = trap_get_ecall_count();
     /* Execute controlled M-mode software trap */
     asm volatile("ecall");
-    /* Re-arm mstatus.MPP to Machine Mode (0x1800) per bare-metal convention */
-    asm volatile("csrs mstatus, %0" :: "r"(0x1800) : "memory");
+    /* Re-arm mstatus.MPP to Machine Mode per bare-metal convention */
+    asm volatile("csrs mstatus, %0" :: "r"(MSTATUS_MPP_MACHINE_MODE) : "memory");
     uint32_t post_ecalls = trap_get_ecall_count();
 
     uart_puts("  Expected:    ECALL trap dispatched, count increments by 1, execution resumes\r\n");

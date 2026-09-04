@@ -2,6 +2,7 @@
 #define WDT_H
 
 #include <stdint.h>
+#include "regs/systimer.h"
 
 /* Watchdog register unlock key (TRM §15.2.2.3) */
 #define WDT_UNLOCK_KEY                  0x50D83AA1U
@@ -12,13 +13,20 @@
 #define WDT_TICKS_PER_MS                1000U   /* 1000 ticks per ms at 1 MHz */
 #define WDT_RESET_LENGTH_CYCLES         3U      /* Reset pulse duration: 32 clock cycles */
 
-/*
- * Watchdog polling feed rate-limiter:
- * At 160 MHz CPU execution, uart_getc_blocking executes ~3-4 instructions per spin.
- * 50,000 iterations corresponds to ~1 ms between hardware MMIO register writes,
- * preventing APB bus saturation while keeping the hardware counter reliably refreshed.
- */
-#define WDT_FEED_RATE_LIMIT_CYCLES      50000U
+/* Hardware SYSTIMER clock baseline (16 MHz RC oscillator / XTAL) */
+#define SYSTIMER_FREQ_HZ                16000000ULL
+#define SYSTIMER_TICKS_PER_MS           16000ULL
+#define SYSTIMER_TICKS_PER_SEC          16000000ULL
+
+/* Watchdog supervision epoch and window boundaries */
+#define WDT_EPOCH_PERIOD_MS             1000U   /* 1-second supervisory epoch */
+#define WDT_EPOCH_PERIOD_TICKS          (WDT_EPOCH_PERIOD_MS * SYSTIMER_TICKS_PER_MS)
+
+#define WDT_FEED_INTERVAL_MS            500U    /* Periodic feed interval within epoch (500 ms) */
+#define WDT_FEED_INTERVAL_TICKS         (WDT_FEED_INTERVAL_MS * SYSTIMER_TICKS_PER_MS)
+
+#define WDT_MIN_FEEDS_PER_EPOCH         1U      /* Minimum feeds required to maintain liveness */
+#define WDT_MAX_FEEDS_PER_EPOCH         20U     /* Maximum allowed feeds per epoch (anti-spamming limit) */
 
 /* Watchdog stage timeout actions (TRM Table 15.2-1) */
 typedef enum {
@@ -49,19 +57,22 @@ typedef enum {
 } soc_reset_cause_t;
 
 typedef struct {
-    uint32_t feed_interval_ms;
-    uint32_t feed_count;
-    uint32_t timg0_timeout_ticks;
-    uint8_t  active;
+    uint32_t feed_interval_ms;      /* Hardware timeout in ms (e.g. 5000 ms) */
+    uint32_t feed_count;            /* Feeds recorded in active clock epoch (resets to 0 each epoch) */
+    uint32_t last_epoch_feeds;       /* Snapshot of feeds completed in previous epoch */
+    uint32_t epoch_count;           /* Total elapsed 1-second supervisory epochs (uptime seconds) */
+    uint32_t max_feeds_per_epoch;   /* Maximum allowable feeds per epoch */
+    uint32_t timg0_timeout_ticks;   /* Hardware timeout ticks */
+    uint8_t  active;                /* Supervisor state flag */
 } wdt_supervisor_t;
 
-/* Initialize multi-tier watchdog supervisor (TIMG0 MWDT enabled, flashboot cleared, SWD quiescent) */
+/* Initialize multi-tier watchdog supervisor with windowed epoch tracking */
 void wdt_init(uint32_t timeout_ms);
 
-/* Reload active watchdog counter */
+/* Reload active watchdog counter within current epoch budget */
 void wdt_feed(void);
 
-/* Periodic supervisor tick to service watchdogs and maintain liveness */
+/* Periodic supervisor tick to service watchdogs, advance epochs, and maintain liveness */
 void wdt_supervisor_tick(void);
 
 /* Query supervisor telemetry */

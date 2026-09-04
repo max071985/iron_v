@@ -5,11 +5,21 @@
 #include "clock.h"
 #include "wdt.h"
 #include "trap.h"
+#include "interrupt.h"
 
 /* Designated static test variables */
 static volatile uint32_t g_test_data_var = 0x12345678U; // Placed in .data
 static volatile uint32_t g_test_bss_var;               // Placed in .bss (should be 0)
 static const char g_test_rodata_str[] = "IRON_V_RODATA_TEST_PATTERN"; // Placed in .rodata
+static volatile uint32_t g_test_isr_hit = 0;
+
+static void test_sw_isr(void *arg)
+{
+    (void)arg;
+    g_test_isr_hit++;
+    /* Deassert software interrupt 0 to prevent continuous re-triggering */
+    interrupt_clear_cpu_intr(0);
+}
 
 mem_access_t check_mem_access(uint32_t addr)
 {
@@ -32,19 +42,25 @@ mem_access_t check_mem_access(uint32_t addr)
     }
 
     /* 4. LP SRAM (16 KB @ 0x50000000) */
-    if (addr >= 0x50000000U && addr < 0x50004000U)
+    if (addr >= LP_SRAM_START_ADDR && addr < LP_SRAM_END_ADDR)
     {
         return MEM_ACCESS_READWRITE;
     }
 
     /* 5. Memory-Mapped I/O Peripheral Space (0x60000000 - 0x600D0000) */
-    if (addr >= 0x60000000U && addr < 0x600D0000U)
+    if (addr >= PERIPHERAL_MMIO_START_ADDR && addr < PERIPHERAL_MMIO_END_ADDR)
     {
         return MEM_ACCESS_MMIO;
     }
 
-    /* 6. Internal ROM (0x40000000 - 0x40050000) */
-    if (addr >= 0x40000000U && addr < 0x40050000U)
+    /* 6. Core-Local Interrupt & Timer Subsystem Space (PLIC/CLINT: 0x20000000 - 0x20002000) */
+    if (addr >= CORE_LOCAL_PERI_START_ADDR && addr < CORE_LOCAL_PERI_END_ADDR)
+    {
+        return MEM_ACCESS_MMIO;
+    }
+
+    /* 7. Internal ROM (0x40000000 - 0x40050000) */
+    if (addr >= INTERNAL_ROM_START_ADDR && addr < INTERNAL_ROM_END_ADDR)
     {
         return MEM_ACCESS_READONLY;
     }
@@ -501,7 +517,9 @@ void run_validation_suite(void)
     put_dec(wdt_stat.active);
     uart_puts(", Feeds=");
     put_dec(wdt_stat.feed_count);
-    uart_puts("\r\n");
+    uart_puts(" (Epoch=");
+    put_dec(wdt_stat.epoch_count);
+    uart_puts("s)\r\n");
 
     int t12_pass = wdt_enabled && (wdt_stg0 == WDT_ACTION_RESET_SYSTEM) &&
                    (prescale == WDT_PRESCALER_DIV) &&
@@ -579,8 +597,8 @@ void run_validation_suite(void)
     uint32_t prev_ecalls = trap_get_ecall_count();
     /* Execute controlled M-mode software trap */
     asm volatile("ecall");
-    /* Re-arm mstatus.MPP to Machine Mode (0x1800) per bare-metal convention */
-    asm volatile("csrs mstatus, %0" :: "r"(0x1800) : "memory");
+    /* Re-arm mstatus.MPP to Machine Mode per bare-metal convention */
+    asm volatile("csrs mstatus, %0" :: "r"(MSTATUS_MPP_MACHINE_MODE) : "memory");
     uint32_t post_ecalls = trap_get_ecall_count();
 
     uart_puts("  Expected:    ECALL trap dispatched, count increments by 1, execution resumes\r\n");
@@ -593,6 +611,71 @@ void run_validation_suite(void)
     int t15_pass = (post_ecalls == prev_ecalls + 1);
     if (t15_pass) passed_tests++;
     print_result(t15_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 16: INTMTX Routing & INTPRI Priority / Threshold Preempt */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(16, "INTMTX Routing & PLIC Priority / Threshold Preempt",
+                      "Verify UART0 routing to CPU channel 5, priority 10, and live SW interrupt preemption");
+
+    /* 1. Test UART0 routing and priority configuration on external interrupt channel 5 */
+    int route_res = interrupt_route(INT_SRC_UART0, 5);
+    uint32_t uart0_map = interrupt_get_map(INT_SRC_UART0);
+    int pri_res = interrupt_set_priority(5, 10);
+    uint32_t pri_val = interrupt_get_priority(5);
+
+    int part1_pass = (route_res == 0) && (uart0_map == 5) && (pri_res == 0) && (pri_val == 10);
+
+    /* 2. Test live interrupt dispatch via CPU software interrupt 0 routed to CPU channel 2 */
+    g_test_isr_hit = 0;
+    interrupt_route(INT_SRC_CPU_INTR_FROM_CPU_0, 2);
+    interrupt_set_priority(2, 7);
+    interrupt_set_threshold(3); /* Priority 7 > Threshold 3: unmasked */
+    interrupt_register_handler(2, test_sw_isr, NULL);
+    interrupt_enable(2);
+
+    /* Trigger interrupt with global interrupts enabled */
+    interrupt_global_enable();
+    interrupt_trigger_cpu_intr(0);
+    for (volatile int d = 0; d < 200; d++);
+    interrupt_global_disable();
+
+    int live_dispatch_pass = (g_test_isr_hit == 1);
+
+    /* 3. Test threshold preemption: priority 7 <= threshold 10 -> masked */
+    g_test_isr_hit = 0;
+    interrupt_set_threshold(10);
+    interrupt_trigger_cpu_intr(0);
+    interrupt_global_enable();
+    for (volatile int d = 0; d < 200; d++);
+    interrupt_global_disable();
+
+    int threshold_mask_pass = (g_test_isr_hit == 0);
+
+    /* Clean up software interrupt and reset state */
+    interrupt_clear_cpu_intr(0);
+    interrupt_set_threshold(0);
+    interrupt_disable(2);
+    interrupt_unregister_handler(2);
+    interrupt_unroute(INT_SRC_CPU_INTR_FROM_CPU_0);
+    interrupt_unroute(INT_SRC_UART0);
+    interrupt_set_priority(5, 0);
+
+    uart_puts("  Expected:    UART0_MAP=5, PRI_5=10, LiveDispatch=1, ThreshMask=1\r\n");
+    uart_puts("  Actual:      UART0_MAP=");
+    put_dec(uart0_map);
+    uart_puts(", PRI_5=");
+    put_dec(pri_val);
+    uart_puts(", LiveDispatch=");
+    put_dec(live_dispatch_pass);
+    uart_puts(", ThreshMask=");
+    put_dec(threshold_mask_pass);
+    uart_puts("\r\n");
+
+    int t16_pass = part1_pass && live_dispatch_pass && threshold_mask_pass;
+    if (t16_pass) passed_tests++;
+    print_result(t16_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

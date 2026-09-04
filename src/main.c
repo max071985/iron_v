@@ -6,6 +6,7 @@
 #include "clock.h"
 #include "wdt.h"
 #include "trap.h"
+#include "interrupt.h"
 
 /*
  * Disables hardware watchdogs safely with memory barriers during early bringup.
@@ -85,7 +86,12 @@ static void print_info(void)
     {
         uart_puts("Active (");
         put_dec(wdt.feed_interval_ms);
-        uart_puts(" ms timeout)\r\n");
+        uart_puts(" ms timeout, 1s epoch window)\r\n");
+        uart_puts(" Uptime:  ");
+        put_dec(wdt.epoch_count);
+        uart_puts(" s (epoch feeds: ");
+        put_dec(wdt.feed_count);
+        uart_puts(")\r\n");
     }
     else
     {
@@ -195,8 +201,8 @@ void shell(char *input_buffer)
     {
         uart_puts("Executing controlled M-mode software trap (ECALL)...\r\n");
         asm volatile("ecall");
-        /* Re-arm mstatus.MPP to Machine Mode (0x1800) per bare-metal convention */
-        asm volatile("csrs mstatus, %0" :: "r"(0x1800) : "memory");
+        /* Re-arm mstatus.MPP to Machine Mode per bare-metal convention */
+        asm volatile("csrs mstatus, %0" :: "r"(MSTATUS_MPP_MACHINE_MODE) : "memory");
         uart_puts("Successfully resumed from ECALL trap! Total ECALLs: ");
         put_dec(trap_get_ecall_count());
         uart_puts("\r\n");
@@ -224,6 +230,9 @@ void main(void)
 
     /* Initialize RISC-V machine-mode trap vector table and handler */
     trap_init();
+
+    /* Initialize Interrupt Matrix (INTMTX) and Core Interrupt Controller (INTPRI) */
+    interrupt_init();
 
     uart_puts("\r\n");
     print_info();

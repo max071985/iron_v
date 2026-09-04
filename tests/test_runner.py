@@ -441,6 +441,37 @@ def run_suite():
         t14_pass
     )
 
+    # TEST 15: Interrupt Matrix (INTMTX) & INTPRI Controller Subsystem Linkage (Task 2.2)
+    total += 1
+    intr_syms = [
+        "interrupt_init",
+        "interrupt_route",
+        "interrupt_unroute",
+        "interrupt_get_map",
+        "interrupt_set_priority",
+        "interrupt_get_priority",
+        "interrupt_set_threshold",
+        "interrupt_enable",
+        "interrupt_disable",
+        "interrupt_dispatch"
+    ]
+    found_intr_syms = [s for s in intr_syms if s in symbols]
+    all_intr_found = len(found_intr_syms) == len(intr_syms)
+    all_intr_in_text = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40820000)
+        for s in found_intr_syms
+    )
+    t15_pass = all_intr_found and all_intr_in_text
+    t15_actual = f"Found {len(found_intr_syms)}/{len(intr_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    passed += print_result_line(
+        total,
+        "Interrupt Matrix (INTMTX) & INTPRI Controller Linkage",
+        "Verify interrupt_init, route, priority, threshold, enable/disable, and dispatch in IRAM",
+        "All 10 interrupt subsystem symbols present in IRAM text section [0x40800000, 0x40820000)",
+        t15_actual,
+        t15_pass
+    )
+
     print("\n" + "=" * 70)
     print("                       TEST SUITE SUMMARY                             ")
     print("=" * 70)

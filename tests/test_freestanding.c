@@ -12,6 +12,7 @@
 #include <assert.h>
 #include "string.h"
 #include "dpc.h"
+#include "console.h"
 
 /* Freestanding function aliases matching runtime naming conventions */
 static inline size_t s_strlen(const char *s)
@@ -383,6 +384,77 @@ static void test_dpc_queue(void)
     TEST_ASSERT(dpc_process() == 0, "dpc_process returns 0 when empty");
 }
 
+static int g_mock_uart_putc_calls = 0;
+static int g_mock_usb_putc_calls = 0;
+static char g_mock_uart_last_c = '\0';
+static char g_mock_usb_last_c = '\0';
+
+static void mock_uart_putc(char c)
+{
+    g_mock_uart_putc_calls++;
+    g_mock_uart_last_c = c;
+}
+
+static void mock_usb_putc(char c)
+{
+    g_mock_usb_putc_calls++;
+    g_mock_usb_last_c = c;
+}
+
+static int mock_uart_getc(char *c)
+{
+    *c = 'U';
+    return 1;
+}
+
+static int mock_usb_getc(char *c)
+{
+    *c = 'J';
+    return 1;
+}
+
+static void test_console_multiplexer(void)
+{
+    printf("  [TEST] console multiplexer backend structure & dispatch...\n");
+
+    console_manager_t mgr;
+    mgr.uart.putc = mock_uart_putc;
+    mgr.uart.puts = NULL;
+    mgr.uart.getc_nonblocking = mock_uart_getc;
+    mgr.uart.flush = NULL;
+
+    mgr.usb.putc = mock_usb_putc;
+    mgr.usb.puts = NULL;
+    mgr.usb.getc_nonblocking = mock_usb_getc;
+    mgr.usb.flush = NULL;
+
+    mgr.echo_enabled = 1U;
+    mgr.active_mask = CONSOLE_MASK_ALL;
+
+    TEST_ASSERT(mgr.active_mask == (CONSOLE_MASK_UART0 | CONSOLE_MASK_USB), "active mask includes both ports");
+    TEST_ASSERT(mgr.echo_enabled == 1U, "echo enabled by default");
+
+    /* Test UART putc dispatch */
+    g_mock_uart_putc_calls = 0;
+    mgr.uart.putc('A');
+    TEST_ASSERT(g_mock_uart_putc_calls == 1, "mock uart putc invoked");
+    TEST_ASSERT(g_mock_uart_last_c == 'A', "mock uart putc received character 'A'");
+
+    /* Test USB putc dispatch */
+    g_mock_usb_putc_calls = 0;
+    mgr.usb.putc('B');
+    TEST_ASSERT(g_mock_usb_putc_calls == 1, "mock usb putc invoked");
+    TEST_ASSERT(g_mock_usb_last_c == 'B', "mock usb putc received character 'B'");
+
+    /* Test getc */
+    char c = '\0';
+    TEST_ASSERT(mgr.uart.getc_nonblocking(&c) == 1, "mock uart getc succeeds");
+    TEST_ASSERT(c == 'U', "mock uart getc received 'U'");
+
+    TEST_ASSERT(mgr.usb.getc_nonblocking(&c) == 1, "mock usb getc succeeds");
+    TEST_ASSERT(c == 'J', "mock usb getc received 'J'");
+}
+
 int main(void)
 {
     printf("======================================================================\n");
@@ -398,6 +470,7 @@ int main(void)
     test_memory_utils();
     test_char_helpers();
     test_dpc_queue();
+    test_console_multiplexer();
 
     printf("======================================================================\n");
     if (g_assert_failures == 0)

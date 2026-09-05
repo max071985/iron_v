@@ -539,6 +539,46 @@ def run_suite():
         t17_pass
     )
 
+    # TEST 18: Unified Dual-Console & Interrupt-Driven UART0 Subsystem Linkage (Task 2.5)
+    total += 1
+    console_syms = [
+        "uart_init",
+        "uart_isr",
+        "uart_putc",
+        "uart_puts",
+        "uart_flush",
+        "uart_getc_nonblocking",
+        "uart_getc_blocking",
+        "console_init",
+        "console_putc",
+        "console_puts",
+        "console_getc_nonblocking",
+        "console_getc_blocking",
+        "console_flush",
+        "console_set_active_mask",
+        "console_get_active_mask",
+        "console_set_echo",
+        "console_get_echo",
+        "console_get_manager",
+        "console_read_line_nonblocking"
+    ]
+    found_console_syms = [s for s in console_syms if s in symbols]
+    all_console_found = len(found_console_syms) == len(console_syms)
+    all_console_in_text = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40820000)
+        for s in found_console_syms
+    )
+    t18_pass = all_console_found and all_console_in_text
+    t18_actual = f"Found {len(found_console_syms)}/{len(console_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    passed += print_result_line(
+        total,
+        "Unified Dual-Console & Interrupt-Driven UART0 Subsystem Linkage",
+        "Verify uart and console multiplexer functions exist in IRAM executable section",
+        "All 19 UART0 and Console subsystem symbols present in IRAM text section [0x40800000, 0x40820000)",
+        t18_actual,
+        t18_pass
+    )
+
     print("\n" + "=" * 70)
     print("                       TEST SUITE SUMMARY                             ")
     print("=" * 70)

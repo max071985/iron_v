@@ -9,6 +9,8 @@
 #include "interrupt.h"
 #include "dpc.h"
 #include "usb_serial.h"
+#include "uart.h"
+#include "console.h"
 
 /*
  * Disables hardware watchdogs safely with memory barriers during early bringup.
@@ -53,14 +55,14 @@ void disable_wdt(void)
 
 static void print_help(void)
 {
-    uart_puts("Iron V Shell Commands:\r\n");
-    uart_puts("  help                - Show available commands\r\n");
-    uart_puts("  info                - Show system information\r\n");
-    uart_puts("  peek <hex_addr>     - Read 32-bit word from hex address\r\n");
-    uart_puts("  poke <addr> <val>   - Write 32-bit hex value to address\r\n");
-    uart_puts("  ecall               - Trigger controlled M-mode software trap (ECALL)\r\n");
-    uart_puts("  panic               - Trigger illegal instruction exception to test panic dump\r\n");
-    uart_puts("  do-test             - Run full baseline validation test suite\r\n");
+    console_puts("Iron V Shell Commands:\r\n");
+    console_puts("  help                - Show available commands\r\n");
+    console_puts("  info                - Show system information\r\n");
+    console_puts("  peek <hex_addr>     - Read 32-bit word from hex address\r\n");
+    console_puts("  poke <addr> <val>   - Write 32-bit hex value to address\r\n");
+    console_puts("  ecall               - Trigger controlled M-mode software trap (ECALL)\r\n");
+    console_puts("  panic               - Trigger illegal instruction exception to test panic dump\r\n");
+    console_puts("  do-test             - Run full baseline validation test suite\r\n");
 }
 
 static void print_info(void)
@@ -68,70 +70,77 @@ static void print_info(void)
     clock_config_t clk;
     clock_get_config(&clk);
 
-    uart_puts("========================================\r\n");
-    uart_puts(" Iron V Bare-Metal RISC-V Runtime\r\n");
-    uart_puts(" Target:  ESP32-C6 (RV32IMAC)\r\n");
-    uart_puts(" Mode:    Bare Metal / No ESP-IDF\r\n");
-    uart_puts(" CPU:     ");
+    console_puts("========================================\r\n");
+    console_puts(" Iron V Bare-Metal RISC-V Runtime\r\n");
+    console_puts(" Target:  ESP32-C6 (RV32IMAC)\r\n");
+    console_puts(" Mode:    Bare Metal / No ESP-IDF\r\n");
+    console_puts(" CPU:     ");
     put_dec(clk.cpu_mhz);
-    uart_puts(" MHz (PLL 480M)\r\n");
-    uart_puts(" APB:     ");
+    console_puts(" MHz (PLL 480M)\r\n");
+    console_puts(" APB:     ");
     put_dec(clk.apb_mhz);
-    uart_puts(" MHz\r\n");
-    uart_puts(" Memory:  HP SRAM 512KB (Harvard Split)\r\n");
-    uart_puts(" Flash:   8 MB SPI NOR Flash (DIO @ 80M)\r\n");
+    console_puts(" MHz\r\n");
+    console_puts(" Memory:  HP SRAM 512KB (Harvard Split)\r\n");
+    console_puts(" Flash:   8 MB SPI NOR Flash (DIO @ 80M)\r\n");
 
     wdt_supervisor_t wdt;
     wdt_get_status(&wdt);
-    uart_puts(" WDT:     ");
+    console_puts(" WDT:     ");
     if (wdt.active)
     {
-        uart_puts("Active (");
+        console_puts("Active (");
         put_dec(wdt.feed_interval_ms);
-        uart_puts(" ms timeout, 1s epoch window)\r\n");
-        uart_puts(" Uptime:  ");
+        console_puts(" ms timeout, 1s epoch window)\r\n");
+        console_puts(" Uptime:  ");
         put_dec(wdt.epoch_count);
-        uart_puts(" s (epoch feeds: ");
+        console_puts(" s (epoch feeds: ");
         put_dec(wdt.feed_count);
-        uart_puts(")\r\n");
+        console_puts(")\r\n");
     }
     else
     {
-        uart_puts("Disabled\r\n");
+        console_puts("Disabled\r\n");
     }
 
     soc_reset_cause_t rst_cause = wdt_get_reset_cause();
-    uart_puts(" Reset:   ");
-    uart_puts(wdt_get_reset_cause_desc(rst_cause));
-    uart_puts(" [");
+    console_puts(" Reset:   ");
+    console_puts(wdt_get_reset_cause_desc(rst_cause));
+    console_puts(" [");
     put_hex(rst_cause);
-    uart_puts("]\r\n");
+    console_puts("]\r\n");
 
     dpc_queue_t dpc_stat;
     dpc_get_stats(&dpc_stat);
-    uart_puts(" DPC:     Active (Pending: ");
+    console_puts(" DPC:     Active (Pending: ");
     put_dec(dpc_get_size());
-    uart_puts("/");
+    console_puts("/");
     put_dec(DPC_QUEUE_CAPACITY);
-    uart_puts(", Processed: ");
+    console_puts(", Processed: ");
     put_dec(dpc_get_processed_count());
-    uart_puts(", Drops: ");
+    console_puts(", Drops: ");
     put_dec(dpc_stat.drop_count);
-    uart_puts(")\r\n");
+    console_puts(")\r\n");
 
-    uart_puts(" USB:     CDC-ACM (EP1 TX Ready: ");
+    console_puts(" USB:     CDC-ACM (EP1 TX Ready: ");
     put_dec(usb_serial_is_tx_ready());
-    uart_puts(", RX Avail: ");
+    console_puts(", RX Avail: ");
     put_dec(usb_serial_is_rx_ready());
-    uart_puts(")\r\n");
-    uart_puts("========================================\r\n");
+    console_puts(")\r\n");
+
+    console_manager_t cmgr;
+    console_get_manager(&cmgr);
+    console_puts(" Console: Dual Multiplexed (UART0: ");
+    console_puts((cmgr.active_mask & CONSOLE_MASK_UART0) ? "Active" : "Off");
+    console_puts(", USB: ");
+    console_puts((cmgr.active_mask & CONSOLE_MASK_USB) ? "Active" : "Off");
+    console_puts(", Echo: ");
+    console_puts(cmgr.echo_enabled ? "ON" : "OFF");
+    console_puts(")\r\n");
+    console_puts("========================================\r\n");
 }
 
-void shell(char *input_buffer)
+static void shell_execute(char *input_buffer)
 {
-    uart_puts("iron_v> ");
-    read_line(input_buffer, MAX_CMD_LEN);
-
     if (input_buffer[0] == '\0') return;
 
     if (strcmp(input_buffer, "help") == 0)
@@ -155,31 +164,31 @@ void shell(char *input_buffer)
             mem_access_t access = check_mem_access(addr);
             if (access == MEM_ACCESS_INVALID)
             {
-                uart_puts("ERROR: Address ");
+                console_puts("ERROR: Address ");
                 put_hex(addr);
-                uart_puts(" is out of bounds or not 4-byte aligned. Read rejected.\r\n");
+                console_puts(" is out of bounds or not 4-byte aligned. Read rejected.\r\n");
             }
             else
             {
                 uint32_t val = *(volatile uint32_t *)addr;
-                uart_puts("[");
+                console_puts("[");
                 put_hex(addr);
-                uart_puts("] = ");
+                console_puts("] = ");
                 put_hex(val);
                 if (access == MEM_ACCESS_READONLY)
                 {
-                    uart_puts(" (READ-ONLY)");
+                    console_puts(" (READ-ONLY)");
                 }
                 else if (access == MEM_ACCESS_MMIO)
                 {
-                    uart_puts(" (MMIO)");
+                    console_puts(" (MMIO)");
                 }
-                uart_puts("\r\n");
+                console_puts("\r\n");
             }
         }
         else
         {
-            uart_puts("Usage: peek <hex_address>\r\n");
+            console_puts("Usage: peek <hex_address>\r\n");
         }
     }
     else if (strncmp(input_buffer, "poke", 4) == 0 && (input_buffer[4] == ' ' || input_buffer[4] == '\0'))
@@ -191,57 +200,72 @@ void shell(char *input_buffer)
             mem_access_t access = check_mem_access(addr);
             if (access == MEM_ACCESS_INVALID)
             {
-                uart_puts("ERROR: Address ");
+                console_puts("ERROR: Address ");
                 put_hex(addr);
-                uart_puts(" is out of bounds or not 4-byte aligned. Write rejected.\r\n");
+                console_puts(" is out of bounds or not 4-byte aligned. Write rejected.\r\n");
             }
             else if (access == MEM_ACCESS_READONLY)
             {
-                uart_puts("ERROR: Address ");
+                console_puts("ERROR: Address ");
                 put_hex(addr);
-                uart_puts(" is in READ-ONLY memory. Write prohibited to prevent crash/corruption.\r\n");
+                console_puts(" is in READ-ONLY memory. Write prohibited to prevent crash/corruption.\r\n");
             }
             else
             {
                 *(volatile uint32_t *)addr = val;
                 FENCE();
-                uart_puts("Written [");
+                console_puts("Written [");
                 put_hex(addr);
-                uart_puts("] = ");
+                console_puts("] = ");
                 put_hex(val);
-                uart_puts("\r\n");
+                console_puts("\r\n");
             }
         }
         else
         {
-            uart_puts("Usage: poke <hex_address> <hex_value>\r\n");
+            console_puts("Usage: poke <hex_address> <hex_value>\r\n");
         }
     }
     else if (strcmp(input_buffer, "ecall") == 0)
     {
-        uart_puts("Executing controlled M-mode software trap (ECALL)...\r\n");
+        console_puts("Executing controlled M-mode software trap (ECALL)...\r\n");
         asm volatile("ecall");
         /* Re-arm mstatus.MPP to Machine Mode per bare-metal convention */
         asm volatile("csrs mstatus, %0" :: "r"(MSTATUS_MPP_MACHINE_MODE) : "memory");
-        uart_puts("Successfully resumed from ECALL trap! Total ECALLs: ");
+        console_puts("Successfully resumed from ECALL trap! Total ECALLs: ");
         put_dec(trap_get_ecall_count());
-        uart_puts("\r\n");
+        console_puts("\r\n");
     }
     else if (strcmp(input_buffer, "panic") == 0)
     {
-        uart_puts("Triggering illegal instruction (0x00000000) to demonstrate panic dump...\r\n");
+        console_puts("Triggering illegal instruction (0x00000000) to demonstrate panic dump...\r\n");
         asm volatile(".word 0x00000000");
     }
     else
     {
-        uart_puts("Unknown command. Type 'help' for available commands.\r\n");
+        console_puts("Unknown command. Type 'help' for available commands.\r\n");
     }
+}
+
+void shell_tick(void)
+{
+    char input_buffer[MAX_CMD_LEN];
+    if (console_read_line_nonblocking(input_buffer, MAX_CMD_LEN))
+    {
+        shell_execute(input_buffer);
+        console_puts("iron_v> ");
+    }
+}
+
+void shell(char *input_buffer)
+{
+    console_puts("iron_v> ");
+    read_line(input_buffer, MAX_CMD_LEN);
+    shell_execute(input_buffer);
 }
 
 void main(void)
 {
-    char input_buffer[MAX_CMD_LEN];
-
     /* Initialize PCR clock tree to 160 MHz CPU PLL and 40 MHz APB */
     clock_init();
 
@@ -257,18 +281,19 @@ void main(void)
     /* Initialize Lock-Free SPSC DPC Queue Engine */
     dpc_init();
 
-    /* Initialize USB-Serial-JTAG CDC-ACM Hardware Driver */
-    usb_serial_init();
+    /* Initialize Unified Dual-Console Layer (UART0 interrupt-driven & USB CDC-ACM) */
+    console_init();
 
-    uart_puts("\r\n");
+    console_puts("\r\n");
     print_info();
 
-    uart_puts("Ready. Type 'do-test' for validation suite or 'help' for command list.\r\n");
+    console_puts("Ready. Type 'do-test' for validation suite or 'help' for command list.\r\n");
+    console_puts("iron_v> ");
 
     while (1)
     {
         wdt_supervisor_tick();
         dpc_process_all();
-        shell(input_buffer);
+        shell_tick();
     }
 }

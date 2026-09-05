@@ -8,6 +8,8 @@
 #include "interrupt.h"
 #include "dpc.h"
 #include "usb_serial.h"
+#include "uart.h"
+#include "console.h"
 
 /* Designated static test variables */
 static volatile uint32_t g_test_data_var = 0x12345678U; // Placed in .data
@@ -385,20 +387,27 @@ void run_validation_suite(void)
     uint32_t uart_status = *UART0_STATUS_REG;
     mem_access_t timg_perm = check_mem_access((uint32_t)TIMG0_WDTCONFIG0_REG);
     uint32_t timg_cfg = *TIMG0_WDTCONFIG0_REG;
+    mem_access_t usb_perm = check_mem_access((uint32_t)USB_DEVICE_EP1_CONF_REG);
+    uint32_t usb_conf = *USB_DEVICE_EP1_CONF_REG;
 
-    uart_puts("  Expected:    UART & TIMG in MMIO region (3), non-faulting read\r\n");
+    uart_puts("  Expected:    UART, TIMG & USB in MMIO region (3), non-faulting read\r\n");
     uart_puts("  Actual:      UART_STATUS=");
     put_hex(uart_status);
     uart_puts(" (perm=");
     put_dec((uint32_t)uart_perm);
-    uart_puts("), TIMG_WDTCONFIG0=");
+    uart_puts("), TIMG=");
     put_hex(timg_cfg);
     uart_puts(" (perm=");
     put_dec((uint32_t)timg_perm);
+    uart_puts("), USB_EP1=");
+    put_hex(usb_conf);
+    uart_puts(" (perm=");
+    put_dec((uint32_t)usb_perm);
     uart_puts(")\r\n");
 
     int t9_pass = (uart_perm == MEM_ACCESS_MMIO) &&
-                  (timg_perm == MEM_ACCESS_MMIO);
+                  (timg_perm == MEM_ACCESS_MMIO) &&
+                  (usb_perm == MEM_ACCESS_MMIO);
     if (t9_pass) passed_tests++;
     print_result(t9_pass);
 
@@ -426,7 +435,11 @@ void run_validation_suite(void)
     uint32_t mtvec_val = 0;
     asm volatile("csrr %0, mtvec" : "=r"(mtvec_val));
 
-    uart_puts("  Expected:    SP aligned (16B), within DRAM bounds, M-Mode CSRs valid, MIE=0\r\n");
+    int mtvec_valid = ((mtvec_val & 0x1) == 1) && ((mtvec_val & 0xFEU) == 0);
+    int mpp_valid = (mpp == 3 || mpp == 0);
+    int mie_valid = (mie_val == 0 || (mie_val & (1U << UART0_CPU_INTR_CHANNEL)) != 0);
+
+    uart_puts("  Expected:    SP aligned (16B), within DRAM bounds, M-Mode CSRs valid\r\n");
     uart_puts("  Actual:      SP=");
     put_hex(current_sp);
     uart_puts(" (aligned=");
@@ -445,9 +458,7 @@ void run_validation_suite(void)
     put_hex(mtvec_val);
     uart_puts("\r\n");
 
-    int mtvec_valid = ((mtvec_val & 0x1) == 1) && ((mtvec_val & 0xFEU) == 0);
-    int mpp_valid = (mpp == 3 || mpp == 0);
-    int t10_pass = sp_aligned && sp_in_bounds && mpp_valid && (mie_val == 0) && mtvec_valid;
+    int t10_pass = sp_aligned && sp_in_bounds && mpp_valid && mie_valid && mtvec_valid;
     if (t10_pass) passed_tests++;
     print_result(t10_pass);
 
@@ -687,6 +698,9 @@ void run_validation_suite(void)
     if (t16_pass) passed_tests++;
     print_result(t16_pass);
 
+    /* Restore UART0 interrupt routing and handler */
+    uart_init();
+
     /* ------------------------------------------------------------- */
     /* TEST 17: Lock-Free SPSC DPC Queue Engine                      */
     /* ------------------------------------------------------------- */
@@ -821,6 +835,59 @@ void run_validation_suite(void)
     int t18_pass = non_faulting_read && bit_readable_pass && reg_map_pass && tx_ready_match && timeout_guard_pass;
     if (t18_pass) passed_tests++;
     print_result(t18_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 19: Unified Dual-Console Layer & Multiplexer (Task 2.5)  */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(19, "Unified Dual-Console Multiplexer Subsystem",
+                      "Verify console backend dispatch, active masks, non-blocking polling, and echo control");
+
+    console_init();
+
+    console_manager_t mgr;
+    console_get_manager(&mgr);
+
+    int uart_backend_ok = (mgr.uart.putc != NULL) &&
+                          (mgr.uart.puts != NULL) &&
+                          (mgr.uart.getc_nonblocking != NULL) &&
+                          (mgr.uart.flush != NULL);
+
+    int usb_backend_ok = (mgr.usb.putc != NULL) &&
+                         (mgr.usb.puts != NULL) &&
+                         (mgr.usb.getc_nonblocking != NULL) &&
+                         (mgr.usb.flush != NULL);
+
+    int active_mask_ok = (mgr.active_mask == (CONSOLE_MASK_UART0 | CONSOLE_MASK_USB));
+
+    /* Test non-blocking character receive (safe non-faulting execution) */
+    char dummy_c = '\0';
+    int nonblock_res = console_getc_nonblocking(&dummy_c);
+    int nonblock_pass = (nonblock_res == 0 || nonblock_res == 1);
+
+    /* Test echo toggle control */
+    console_set_echo(0U);
+    int echo_off_pass = (console_get_echo() == 0U);
+    console_set_echo(1U);
+    int echo_on_pass = (console_get_echo() == 1U);
+    int echo_toggle_ok = echo_off_pass && echo_on_pass;
+
+    uart_puts("  Expected:    UARTBackend=1, USBBackend=1, ActiveMask=3, NonblockPass=1, EchoToggle=1\r\n");
+    uart_puts("  Actual:      UARTBackend=");
+    put_dec(uart_backend_ok);
+    uart_puts(", USBBackend=");
+    put_dec(usb_backend_ok);
+    uart_puts(", ActiveMask=");
+    put_dec(mgr.active_mask);
+    uart_puts(", NonblockPass=");
+    put_dec(nonblock_pass);
+    uart_puts(", EchoToggle=");
+    put_dec(echo_toggle_ok);
+    uart_puts("\r\n");
+
+    int t19_pass = uart_backend_ok && usb_backend_ok && active_mask_ok && nonblock_pass && echo_toggle_ok;
+    if (t19_pass) passed_tests++;
+    print_result(t19_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

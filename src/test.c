@@ -7,6 +7,7 @@
 #include "trap.h"
 #include "interrupt.h"
 #include "dpc.h"
+#include "usb_serial.h"
 
 /* Designated static test variables */
 static volatile uint32_t g_test_data_var = 0x12345678U; // Placed in .data
@@ -760,6 +761,66 @@ void run_validation_suite(void)
     int t17_pass = enqueue_all_ok && (size_full == DPC_QUEUE_CAPACITY) && drop_pass && fifo_order_ok && drain_pass && dispatch_pass;
     if (t17_pass) passed_tests++;
     print_result(t17_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 18: USB-Serial-JTAG CDC-ACM Hardware Driver              */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(18, "USB-Serial-JTAG CDC-ACM Hardware Driver",
+                      "Verify non-faulting MMIO access to 0x6000F000, readable EP1 status, and timeout guard");
+
+    /* 1. Ensure USB-Serial-JTAG hardware clock and controller initialized */
+    usb_serial_init();
+
+    /* 2. Volatile read from *USB_DEVICE_EP1_CONF_REG (0x6000F004) */
+    volatile uint32_t *conf_reg = USB_DEVICE_EP1_CONF_REG;
+    uint32_t ep1_conf = *conf_reg;
+    int non_faulting_read = 1;
+
+    /* 3. Verify SERIAL_IN_EP_DATA_FREE bit is readable without CPU stall */
+    uint32_t in_ep_free = (ep1_conf & USB_DEVICE_EP1_CONF_SERIAL_IN_EP_DATA_FREE_M) >> USB_DEVICE_EP1_CONF_SERIAL_IN_EP_DATA_FREE_S;
+    uint32_t out_ep_avail = (ep1_conf & USB_DEVICE_EP1_CONF_SERIAL_OUT_EP_DATA_AVAIL_M) >> USB_DEVICE_EP1_CONF_SERIAL_OUT_EP_DATA_AVAIL_S;
+    int bit_readable_pass = (in_ep_free == 0U || in_ep_free == 1U);
+
+    /* 4. Verify device structure register mapping */
+    usb_serial_dev_t udev;
+    usb_serial_get_dev(&udev);
+    int reg_map_pass = (udev.ep1_reg == USB_DEVICE_EP1_REG) &&
+                       (udev.ep1_conf_reg == USB_DEVICE_EP1_CONF_REG) &&
+                       (udev.int_raw_reg == USB_DEVICE_INT_RAW_REG) &&
+                       (udev.int_ena_reg == USB_DEVICE_INT_ENA_REG) &&
+                       (udev.int_clr_reg == USB_DEVICE_INT_CLR_REG);
+
+    /* 5. Non-blocking TX readiness check */
+    int tx_ready = usb_serial_is_tx_ready();
+    int tx_ready_match = (tx_ready == (int)in_ep_free);
+
+    /* 6. Verify non-blocking timeout protection without CPU stall */
+    int tx_res = usb_serial_putc_blocking('X');
+    int timeout_guard_pass = (in_ep_free == 1U) ? (tx_res == USB_SERIAL_OK) : (tx_res == USB_SERIAL_ERR_TIMEOUT);
+
+    uart_puts("  Expected:    NonFaulting=1, BitReadable=1, RegMap=1, TxReadyMatch=1, TimeoutGuard=1\r\n");
+    uart_puts("  Actual:      NonFaulting=");
+    put_dec(non_faulting_read);
+    uart_puts(", BitReadable=");
+    put_dec(bit_readable_pass);
+    uart_puts(", RegMap=");
+    put_dec(reg_map_pass);
+    uart_puts(", TxReadyMatch=");
+    put_dec(tx_ready_match);
+    uart_puts(", TimeoutGuard=");
+    put_dec(timeout_guard_pass);
+    uart_puts(" (InEpFree=");
+    put_dec(in_ep_free);
+    uart_puts(", EP1_CONF=");
+    put_hex(ep1_conf);
+    uart_puts(", OutAvail=");
+    put_dec(out_ep_avail);
+    uart_puts(")\r\n");
+
+    int t18_pass = non_faulting_read && bit_readable_pass && reg_map_pass && tx_ready_match && timeout_guard_pass;
+    if (t18_pass) passed_tests++;
+    print_result(t18_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

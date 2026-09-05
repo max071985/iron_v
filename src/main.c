@@ -8,6 +8,7 @@
 #include "trap.h"
 #include "interrupt.h"
 #include "dpc.h"
+#include "usb_serial.h"
 
 /*
  * Disables hardware watchdogs safely with memory barriers during early bringup.
@@ -116,6 +117,12 @@ static void print_info(void)
     put_dec(dpc_get_processed_count());
     uart_puts(", Drops: ");
     put_dec(dpc_stat.drop_count);
+    uart_puts(")\r\n");
+
+    uart_puts(" USB:     CDC-ACM (EP1 TX Ready: ");
+    put_dec(usb_serial_is_tx_ready());
+    uart_puts(", RX Avail: ");
+    put_dec(usb_serial_is_rx_ready());
     uart_puts(")\r\n");
     uart_puts("========================================\r\n");
 }
@@ -249,6 +256,9 @@ void main(void)
 
     /* Initialize Lock-Free SPSC DPC Queue Engine */
     dpc_init();
+
+    /* Initialize USB-Serial-JTAG CDC-ACM Hardware Driver */
+    usb_serial_init();
 
     uart_puts("\r\n");
     print_info();

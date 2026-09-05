@@ -506,6 +506,39 @@ def run_suite():
         t16_pass
     )
 
+    # TEST 17: USB-Serial-JTAG CDC-ACM Driver Subsystem Linkage (Task 2.4)
+    total += 1
+    usb_syms = [
+        "usb_serial_init",
+        "usb_serial_is_tx_ready",
+        "usb_serial_is_rx_ready",
+        "usb_serial_putc_blocking",
+        "usb_serial_putc_nonblocking",
+        "usb_serial_puts",
+        "usb_serial_write",
+        "usb_serial_flush",
+        "usb_serial_getc_nonblocking",
+        "usb_serial_getc_blocking",
+        "usb_serial_read",
+        "usb_serial_get_dev"
+    ]
+    found_usb_syms = [s for s in usb_syms if s in symbols]
+    all_usb_found = len(found_usb_syms) == len(usb_syms)
+    all_usb_in_text = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40820000)
+        for s in found_usb_syms
+    )
+    t17_pass = all_usb_found and all_usb_in_text
+    t17_actual = f"Found {len(found_usb_syms)}/{len(usb_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    passed += print_result_line(
+        total,
+        "USB-Serial-JTAG CDC-ACM Hardware Driver Linkage",
+        "Verify usb_serial_init, tx/rx, read/write, flush, and dev symbols exist in IRAM",
+        "All 12 USB-Serial-JTAG driver symbols present in IRAM text section [0x40800000, 0x40820000)",
+        t17_actual,
+        t17_pass
+    )
+
     print("\n" + "=" * 70)
     print("                       TEST SUITE SUMMARY                             ")
     print("=" * 70)

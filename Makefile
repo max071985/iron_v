@@ -20,9 +20,19 @@ LDFLAGS = -T ld/link.ld -nostdlib
 # Baseline source files
 SRCS = src/crt0.S src/trap_entry.S src/main.c src/string.c src/utils.c src/test.c src/clock.c src/wdt.c src/trap.c src/panic.c src/interrupt.c src/dpc.c src/usb_serial.c src/uart.c src/console.c src/timer.c
 
-# Flashing parameters
-PORT ?= /dev/ttyUSB0
-FLASH_BAUD ?= 921600
+# Interface selection: 'usb' (default) or 'uart'
+INTERFACE ?= usb
+
+ifeq ($(INTERFACE),uart)
+  PORT ?= /dev/ttyUSB0
+  FLASH_BAUD ?= 460800
+  MONITOR_FLAGS ?= -b $(MONITOR_BAUD)
+else
+  PORT ?= /dev/ttyACM0
+  FLASH_BAUD ?= 460800
+  MONITOR_FLAGS ?= --noreset --lower-rts --lower-dtr
+endif
+
 MONITOR_BAUD ?= 115200
 
 # Targets
@@ -41,7 +51,7 @@ erase_flash:
 	esptool --chip esp32c6 --port $(PORT) erase_flash
 
 monitor:
-	picocom -b $(MONITOR_BAUD) $(PORT)
+	picocom $(MONITOR_FLAGS) $(PORT)
 
 tests/test_freestanding: tests/test_freestanding.c src/string.c src/string.h src/dpc.c src/dpc.h
 	gcc -O2 -Wall -Wextra -Werror -Isrc tests/test_freestanding.c src/string.c src/dpc.c -o $@

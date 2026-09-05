@@ -42,10 +42,21 @@ void trap_handler(trapframe_t *tf);
 /* Crash dump and panic routine */
 void panic_dump(const trapframe_t *tf);
 
+/* mcause bitfield definitions (Privileged Spec Table 3.6) */
+#define MCAUSE_INTERRUPT_FLAG    (1U << 31)
+#define MCAUSE_CAUSE_CODE_MASK   0x7FFFFFFFU
+
 /* Query controlled exception (ECALL) execution count */
 uint32_t trap_get_ecall_count(void);
 
 /* Get human-readable description of exception cause */
 const char *trap_get_exception_desc(uint32_t cause);
+
+/* Panic stack preview configuration */
+#define PANIC_STACK_WORDS        8U
+#define PANIC_SP_ALIGNMENT_MASK  3U
+
+/* Panic stack preview dump (prints up to 8 words within DRAM bounds) */
+void panic_print_stack_preview(const trapframe_t *tf);
 
 #endif // TRAP_H

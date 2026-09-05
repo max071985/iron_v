@@ -39,6 +39,10 @@ static void usb_backend_putc(char c)
 
 static void usb_backend_puts(const char *str)
 {
+    if (!str || !usb_serial_is_tx_ready())
+    {
+        return;
+    }
     usb_serial_puts(str);
 }
 
@@ -123,21 +127,44 @@ int console_getc_nonblocking(char *c)
 {
     if (!c) return 0;
 
-    /* 1. Check UART0 backend if active */
-    if ((g_console_manager.active_mask & CONSOLE_MASK_UART0) && g_console_manager.uart.getc_nonblocking)
+    static uint8_t s_poll_turn = 0U;
+    uint8_t turn = s_poll_turn;
+    s_poll_turn ^= 1U;
+
+    if (turn == 0U)
     {
-        if (g_console_manager.uart.getc_nonblocking(c))
+        /* Primary UART0, secondary USB */
+        if ((g_console_manager.active_mask & CONSOLE_MASK_UART0) && g_console_manager.uart.getc_nonblocking)
         {
-            return 1;
+            if (g_console_manager.uart.getc_nonblocking(c))
+            {
+                return 1;
+            }
+        }
+        if ((g_console_manager.active_mask & CONSOLE_MASK_USB) && g_console_manager.usb.getc_nonblocking)
+        {
+            if (g_console_manager.usb.getc_nonblocking(c))
+            {
+                return 1;
+            }
         }
     }
-
-    /* 2. Check USB CDC-ACM backend if active */
-    if ((g_console_manager.active_mask & CONSOLE_MASK_USB) && g_console_manager.usb.getc_nonblocking)
+    else
     {
-        if (g_console_manager.usb.getc_nonblocking(c))
+        /* Primary USB, secondary UART0 */
+        if ((g_console_manager.active_mask & CONSOLE_MASK_USB) && g_console_manager.usb.getc_nonblocking)
         {
-            return 1;
+            if (g_console_manager.usb.getc_nonblocking(c))
+            {
+                return 1;
+            }
+        }
+        if ((g_console_manager.active_mask & CONSOLE_MASK_UART0) && g_console_manager.uart.getc_nonblocking)
+        {
+            if (g_console_manager.uart.getc_nonblocking(c))
+            {
+                return 1;
+            }
         }
     }
 
@@ -193,6 +220,8 @@ void console_get_manager(console_manager_t *out_mgr)
     *out_mgr = g_console_manager;
 }
 
+static uint8_t s_prev_was_cr = 0U;
+
 int console_read_line_nonblocking(char *out_buffer, size_t max_len)
 {
     if (!out_buffer || max_len == 0U) return 0;
@@ -200,8 +229,21 @@ int console_read_line_nonblocking(char *out_buffer, size_t max_len)
     char c = '\0';
     while (console_getc_nonblocking(&c))
     {
+        /* Drop isolated '\n' immediately following '\r' to prevent duplicate blank prompts on CRLF */
+        if (s_prev_was_cr && c == '\n')
+        {
+            s_prev_was_cr = 0U;
+            continue;
+        }
+        s_prev_was_cr = 0U;
+
         if (c == '\r' || c == '\n')
         {
+            if (c == '\r')
+            {
+                s_prev_was_cr = 1U;
+            }
+
             s_line_buf[s_line_idx] = '\0';
             if (g_console_manager.echo_enabled)
             {
@@ -226,6 +268,7 @@ int console_read_line_nonblocking(char *out_buffer, size_t max_len)
                 if (g_console_manager.echo_enabled)
                 {
                     console_puts("\b \b");
+                    console_flush();
                 }
             }
         }
@@ -237,6 +280,7 @@ int console_read_line_nonblocking(char *out_buffer, size_t max_len)
                 if (g_console_manager.echo_enabled)
                 {
                     console_putc(c);
+                    console_flush();
                 }
             }
         }

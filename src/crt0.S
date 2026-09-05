@@ -1,3 +1,5 @@
+#include "interrupt.h"
+
 .section .text.entry, "ax"
 .global _start
 .global _hang
@@ -17,8 +19,8 @@ _start:
     csrw mie, zero
     /* Clear pending interrupts */
     csrw mip, zero
-    /* Set mstatus MPP to Machine Mode (bits 12:11 = 2'b11 = 0x1800), MIE = 0 */
-    li t0, 0x1800
+    /* Set mstatus MPP to Machine Mode, MIE = 0 */
+    li t0, MSTATUS_MPP_MACHINE_MODE
     csrw mstatus, t0
     /* Clear supervisory/scratch registers */
     csrw mscratch, zero

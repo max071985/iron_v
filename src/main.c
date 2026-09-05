@@ -12,47 +12,6 @@
 #include "uart.h"
 #include "console.h"
 
-/*
- * Disables hardware watchdogs safely with memory barriers during early bringup.
- * Ref: ESP32-C6 TRM Ch. 13.5 (TIMG WDT) & Ch. 14.3 (RTC WDT).
- */
-void disable_wdt(void)
-{
-    // 1. TIMG0 Watchdog
-    *TIMG0_WDTWPROTECT = TIMG_WDT_WKEY;
-    FENCE();
-    *TIMG0_WDTCONFIG0 = 0;
-    FENCE();
-    *TIMG0_WDTWPROTECT = 0;
-    FENCE();
-
-    // 2. TIMG1 Watchdog
-    *TIMG1_WDTWPROTECT = TIMG_WDT_WKEY;
-    FENCE();
-    *TIMG1_WDTCONFIG0 = 0;
-    FENCE();
-    *TIMG1_WDTWPROTECT = 0;
-    FENCE();
-
-    // 3. RTC / LP Watchdog
-    *RTC_WDT_WPROTECT_REG = TIMG_WDT_WKEY;
-    FENCE();
-    *RTC_WDT_CONFIG0_REG = 0;
-    FENCE();
-    *RTC_WDT_WPROTECT_REG = 0;
-    FENCE();
-
-    // 4. Super Watchdog (SWD)
-    *RTC_WDT_SWD_WPROTECT_REG = TIMG_WDT_WKEY;
-    FENCE();
-    *RTC_WDT_SWD_CONFIG_REG |= (1u << 30); // Disable SWD
-    FENCE();
-    *RTC_WDT_SWD_WPROTECT_REG = 0;
-    FENCE();
-
-    uart_puts("[WDT] Early bringup watchdogs disabled.\r\n");
-}
-
 static void print_help(void)
 {
     console_puts("Iron V Shell Commands:\r\n");
@@ -254,12 +213,14 @@ void shell_tick(void)
     {
         shell_execute(input_buffer);
         console_puts("iron_v> ");
+        console_flush();
     }
 }
 
 void shell(char *input_buffer)
 {
     console_puts("iron_v> ");
+    console_flush();
     read_line(input_buffer, MAX_CMD_LEN);
     shell_execute(input_buffer);
 }
@@ -289,6 +250,7 @@ void main(void)
 
     console_puts("Ready. Type 'do-test' for validation suite or 'help' for command list.\r\n");
     console_puts("iron_v> ");
+    console_flush();
 
     while (1)
     {

@@ -61,7 +61,7 @@ void uart_isr(void *arg)
     while ((*UART0_STATUS_REG & UART_RX_FIFO_CNT) > 0U)
     {
         uint32_t val = *UART0_FIFO;
-        uint8_t byte = (uint8_t)(val & 0xFFU);
+        uint8_t byte = (uint8_t)(val & UART0_FIFO_RXFIFO_RD_BYTE_M);
 
         uint32_t next_head = (g_uart_rx_ring.head + 1U) % UART0_RX_BUFFER_SIZE;
         if (next_head != g_uart_rx_ring.tail)
@@ -103,12 +103,14 @@ void uart_puts(const char *str)
 {
     if (!str) return;
 
+    char prev = '\0';
     while (*str)
     {
-        if (*str == '\n')
+        if (*str == '\n' && prev != '\r')
         {
             uart_putc('\r');
         }
+        prev = *str;
         uart_putc(*str++);
     }
 }
@@ -143,7 +145,7 @@ int uart_getc_nonblocking(char *c)
     {
         if ((*UART0_STATUS_REG & UART_RX_FIFO_CNT) > 0U)
         {
-            *c = (char)(*UART0_FIFO & 0xFFU);
+            *c = (char)(*UART0_FIFO & UART0_FIFO_RXFIFO_RD_BYTE_M);
             FENCE();
             g_uart_rx_ring.rx_bytes_total++;
             return 1;
@@ -167,7 +169,9 @@ char uart_getc_blocking(void)
 void uart_get_stats(uart_ring_buffer_t *out_stats)
 {
     if (!out_stats) return;
+    uint32_t prev_mstatus = interrupt_global_save_and_disable();
     *out_stats = g_uart_rx_ring;
+    interrupt_global_restore(prev_mstatus);
 }
 
 uint32_t uart_get_rx_count(void)

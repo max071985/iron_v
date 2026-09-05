@@ -8,6 +8,8 @@
 #include "usb_serial.h"
 #include "io_constants.h"
 #include "regs/pcr.h"
+#include "wdt.h"
+#include "dpc.h"
 
 static usb_serial_dev_t g_usb_serial_dev = {
     .ep1_reg = USB_DEVICE_EP1_REG,
@@ -20,6 +22,8 @@ static usb_serial_dev_t g_usb_serial_dev = {
     .tx_bytes_total = 0U,
     .rx_bytes_total = 0U
 };
+
+static uint32_t s_tx_buffered_bytes = 0U;
 
 void usb_serial_init(void)
 {
@@ -38,6 +42,7 @@ void usb_serial_init(void)
     g_usb_serial_dev.tx_dropped_bytes = 0U;
     g_usb_serial_dev.tx_bytes_total = 0U;
     g_usb_serial_dev.rx_bytes_total = 0U;
+    s_tx_buffered_bytes = 0U;
 
     /* 3. Mask interrupts by default (unmasked when registering DPC handlers) */
     *USB_DEVICE_INT_ENA_REG = 0U;
@@ -57,7 +62,7 @@ int usb_serial_is_rx_ready(void)
 
 int usb_serial_putc_nonblocking(char c)
 {
-    if (!usb_serial_is_tx_ready())
+    if (s_tx_buffered_bytes == 0U && !usb_serial_is_tx_ready())
     {
         g_usb_serial_dev.tx_dropped_bytes++;
         return USB_SERIAL_ERR_TIMEOUT;
@@ -65,32 +70,47 @@ int usb_serial_putc_nonblocking(char c)
 
     *USB_DEVICE_EP1_REG = (uint32_t)(uint8_t)c;
     FENCE();
-    *USB_DEVICE_EP1_CONF_REG |= USB_DEVICE_EP1_CONF_WR_DONE_M;
-    FENCE();
-
+    s_tx_buffered_bytes++;
     g_usb_serial_dev.tx_bytes_total++;
+
+    if (c == '\n' || s_tx_buffered_bytes >= USB_SERIAL_EP1_FIFO_SIZE)
+    {
+        *USB_DEVICE_EP1_CONF_REG |= USB_DEVICE_EP1_CONF_WR_DONE_M;
+        FENCE();
+        s_tx_buffered_bytes = 0U;
+    }
+
     return USB_SERIAL_OK;
 }
 
 int usb_serial_putc_blocking(char c)
 {
-    uint32_t timeout = g_usb_serial_dev.tx_timeout_cycles;
-    while (!usb_serial_is_tx_ready())
+    if (s_tx_buffered_bytes == 0U)
     {
-        if (timeout == 0U)
+        uint32_t timeout = g_usb_serial_dev.tx_timeout_cycles;
+        while (!usb_serial_is_tx_ready())
         {
-            g_usb_serial_dev.tx_dropped_bytes++;
-            return USB_SERIAL_ERR_TIMEOUT;
+            if (timeout == 0U)
+            {
+                g_usb_serial_dev.tx_dropped_bytes++;
+                return USB_SERIAL_ERR_TIMEOUT;
+            }
+            timeout--;
         }
-        timeout--;
     }
 
     *USB_DEVICE_EP1_REG = (uint32_t)(uint8_t)c;
     FENCE();
-    *USB_DEVICE_EP1_CONF_REG |= USB_DEVICE_EP1_CONF_WR_DONE_M;
-    FENCE();
-
+    s_tx_buffered_bytes++;
     g_usb_serial_dev.tx_bytes_total++;
+
+    if (c == '\n' || s_tx_buffered_bytes >= USB_SERIAL_EP1_FIFO_SIZE)
+    {
+        *USB_DEVICE_EP1_CONF_REG |= USB_DEVICE_EP1_CONF_WR_DONE_M;
+        FENCE();
+        s_tx_buffered_bytes = 0U;
+    }
+
     return USB_SERIAL_OK;
 }
 
@@ -126,8 +146,12 @@ int usb_serial_write(const uint8_t *data, size_t len)
 
 void usb_serial_flush(void)
 {
-    *USB_DEVICE_EP1_CONF_REG |= USB_DEVICE_EP1_CONF_WR_DONE_M;
-    FENCE();
+    if (s_tx_buffered_bytes > 0U)
+    {
+        *USB_DEVICE_EP1_CONF_REG |= USB_DEVICE_EP1_CONF_WR_DONE_M;
+        FENCE();
+        s_tx_buffered_bytes = 0U;
+    }
 }
 
 int usb_serial_getc_nonblocking(char *c)
@@ -153,7 +177,8 @@ int usb_serial_getc_blocking(char *c)
 
     while (!usb_serial_is_rx_ready())
     {
-        /* Spin until byte received */
+        wdt_supervisor_tick();
+        dpc_process_all();
     }
 
     uint32_t val = *USB_DEVICE_EP1_REG;

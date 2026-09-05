@@ -15,8 +15,8 @@
 #include <stddef.h>
 #include "regs/usb_device.h"
 
-/* Default non-blocking transmission timeout cycles (~50,000 cycles at 160MHz ~= 312us) */
-#define USB_SERIAL_DEFAULT_TX_TIMEOUT_CYCLES   50000U
+/* Default non-blocking transmission timeout cycles (~320,000 cycles at 160MHz ~= 2ms) */
+#define USB_SERIAL_DEFAULT_TX_TIMEOUT_CYCLES   320000U
 
 /* CDC-ACM Endpoint 1 Hardware Buffer Size */
 #define USB_SERIAL_EP1_FIFO_SIZE               64U

@@ -206,5 +206,11 @@ uint32_t dpc_get_processed_count(void)
 void dpc_get_stats(dpc_queue_t *stats_out)
 {
     if (!stats_out) return;
+#if defined(__riscv)
+    uint32_t prev_mstatus = interrupt_global_save_and_disable();
     *stats_out = g_system_dpc_queue;
+    interrupt_global_restore(prev_mstatus);
+#else
+    *stats_out = g_system_dpc_queue;
+#endif
 }

@@ -12,7 +12,7 @@ LD = $(CROSS_COMPILE)ld
 OBJCOPY = $(CROSS_COMPILE)objcopy
 
 # Compiler flags
-CFLAGS = -march=rv32imac_zicsr_zifencei -mabi=ilp32 -ffreestanding -nostdlib -O2 -g -Wall -Wextra -Isrc
+CFLAGS = -march=rv32imac_zicsr_zifencei -mabi=ilp32 -ffreestanding -nostdlib -O2 -g -Wall -Wextra -Werror -Isrc
 
 # Linker flags
 LDFLAGS = -T ld/link.ld -nostdlib
@@ -44,7 +44,7 @@ monitor:
 	picocom -b $(MONITOR_BAUD) $(PORT)
 
 tests/test_freestanding: tests/test_freestanding.c src/string.c src/string.h src/dpc.c src/dpc.h
-	gcc -O2 -Wall -Wextra -Isrc tests/test_freestanding.c src/string.c src/dpc.c -o $@
+	gcc -O2 -Wall -Wextra -Werror -Isrc tests/test_freestanding.c src/string.c src/dpc.c -o $@
 
 do-test: firmware.elf firmware.bin tests/test_freestanding
 	@./tests/test_freestanding

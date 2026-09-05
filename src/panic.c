@@ -1,5 +1,7 @@
 #include "trap.h"
 #include "utils.h"
+#include "console.h"
+#include "io_constants.h"
 
 const char *trap_get_exception_desc(uint32_t cause)
 {
@@ -21,95 +23,110 @@ const char *trap_get_exception_desc(uint32_t cause)
 
 static void print_reg(const char *name, uint32_t val)
 {
-    uart_puts("  ");
-    uart_puts(name);
-    uart_puts(" = ");
+    console_puts("  ");
+    console_puts(name);
+    console_puts(" = ");
     put_hex(val);
 }
 
-void panic_dump(const trapframe_t *tf)
+void panic_print_stack_preview(const trapframe_t *tf)
 {
-    uart_puts("\r\n======================================================================\r\n");
-    uart_puts("                     !!! FATAL KERNEL PANIC !!!                       \r\n");
-    uart_puts("======================================================================\r\n");
-
+    console_puts("----------------------------------------------------------------------\r\n");
     if (!tf)
     {
-        uart_puts("Panic called with NULL trapframe.\r\n");
-        while (1) { asm volatile("wfi"); }
+        console_puts("  (NULL trapframe)\r\n");
+        return;
     }
 
-    uint32_t is_interrupt = (tf->mcause >> 31) & 1U;
-    uint32_t code = tf->mcause & 0x7FFFFFFFU;
-
-    uart_puts(" Trap Type:  ");
-    if (is_interrupt)
-    {
-        uart_puts("INTERRUPT (ID: ");
-        put_dec(code);
-        uart_puts(")\r\n");
-    }
-    else
-    {
-        uart_puts("SYNCHRONOUS EXCEPTION\r\n");
-        uart_puts(" Cause:      ");
-        uart_puts(trap_get_exception_desc(code));
-        uart_puts(" (0x");
-        put_hex(code);
-        uart_puts(")\r\n");
-    }
-
-    uart_puts(" MEPC:       0x");
-    put_hex(tf->mepc);
-    uart_puts(" (Faulting Instruction PC)\r\n");
-
-    uart_puts(" MTVAL:      0x");
-    put_hex(tf->mtval);
-    uart_puts(" (Bad Address / Value)\r\n");
-
-    uart_puts(" MSTATUS:    0x");
-    put_hex(tf->mstatus);
-    uart_puts("\r\n");
-
-    uart_puts("----------------------------------------------------------------------\r\n");
-    uart_puts(" General Purpose Register Dump:\r\n");
-    print_reg("ra", tf->ra); print_reg("sp", tf->sp); print_reg("gp", tf->gp); uart_puts("\r\n");
-    print_reg("tp", tf->tp); print_reg("t0", tf->t0); print_reg("t1", tf->t1); uart_puts("\r\n");
-    print_reg("t2", tf->t2); print_reg("s0", tf->s0); print_reg("s1", tf->s1); uart_puts("\r\n");
-    print_reg("a0", tf->a0); print_reg("a1", tf->a1); print_reg("a2", tf->a2); uart_puts("\r\n");
-    print_reg("a3", tf->a3); print_reg("a4", tf->a4); print_reg("a5", tf->a5); uart_puts("\r\n");
-    print_reg("a6", tf->a6); print_reg("a7", tf->a7); print_reg("s2", tf->s2); uart_puts("\r\n");
-    print_reg("s3", tf->s3); print_reg("s4", tf->s4); print_reg("s5", tf->s5); uart_puts("\r\n");
-    print_reg("s6", tf->s6); print_reg("s7", tf->s7); print_reg("s8", tf->s8); uart_puts("\r\n");
-    print_reg("s9", tf->s9); print_reg("s10", tf->s10); print_reg("s11", tf->s11); uart_puts("\r\n");
-    print_reg("t3", tf->t3); print_reg("t4", tf->t4); print_reg("t5", tf->t5); uart_puts("\r\n");
-    print_reg("t6", tf->t6); uart_puts("\r\n");
-
-    uart_puts("----------------------------------------------------------------------\r\n");
-    uart_puts(" Stack Memory Preview (SP = 0x");
+    console_puts(" Stack Memory Preview (SP = ");
     put_hex(tf->sp);
-    uart_puts("):\r\n");
+    console_puts("):\r\n");
 
-    uint32_t *sp_ptr = (uint32_t *)tf->sp;
-    if (tf->sp >= 0x40820000 && tf->sp <= 0x40880000)
+    if (((tf->sp & PANIC_SP_ALIGNMENT_MASK) == 0U) &&
+        (tf->sp >= HP_DRAM_START_ADDR) &&
+        (tf->sp <= (HP_DRAM_END_ADDR - (PANIC_STACK_WORDS * sizeof(uint32_t)))))
     {
-        for (int i = 0; i < 8; i++)
+        uint32_t *sp_ptr = (uint32_t *)tf->sp;
+        for (uint32_t i = 0U; i < PANIC_STACK_WORDS; i++)
         {
-            uart_puts("  [0x");
+            console_puts("  [");
             put_hex((uint32_t)(sp_ptr + i));
-            uart_puts("] = 0x");
+            console_puts("] = ");
             put_hex(sp_ptr[i]);
-            uart_puts("\r\n");
+            console_puts("\r\n");
         }
     }
     else
     {
-        uart_puts("  (SP out of DRAM bounds)\r\n");
+        console_puts("  (SP out of DRAM bounds)\r\n");
+    }
+}
+
+void panic_dump(const trapframe_t *tf)
+{
+    console_puts("\r\n======================================================================\r\n");
+    console_puts("                     !!! FATAL KERNEL PANIC !!!                       \r\n");
+    console_puts("======================================================================\r\n");
+
+    if (!tf)
+    {
+        console_puts("Panic called with NULL trapframe.\r\n");
+        while (1) { asm volatile("wfi"); }
     }
 
-    uart_puts("======================================================================\r\n");
-    uart_puts(" SYSTEM HALTED. RESET REQUIRED.\r\n");
-    uart_puts("======================================================================\r\n");
+    uint32_t is_interrupt = (tf->mcause & MCAUSE_INTERRUPT_FLAG) != 0U;
+    uint32_t code = tf->mcause & MCAUSE_CAUSE_CODE_MASK;
+
+    console_puts(" Trap Type:  ");
+    if (is_interrupt)
+    {
+        console_puts("INTERRUPT (ID: ");
+        put_dec(code);
+        console_puts(")\r\n");
+    }
+    else
+    {
+        console_puts("SYNCHRONOUS EXCEPTION\r\n");
+        console_puts(" Cause:      ");
+        console_puts(trap_get_exception_desc(code));
+        console_puts(" (");
+        put_hex(code);
+        console_puts(")\r\n");
+    }
+
+    console_puts(" MEPC:       ");
+    put_hex(tf->mepc);
+    console_puts(" (Faulting Instruction PC)\r\n");
+
+    console_puts(" MTVAL:      ");
+    put_hex(tf->mtval);
+    console_puts(" (Bad Address / Value)\r\n");
+
+    console_puts(" MSTATUS:    ");
+    put_hex(tf->mstatus);
+    console_puts("\r\n");
+
+    console_puts("----------------------------------------------------------------------\r\n");
+    console_puts(" General Purpose Register Dump:\r\n");
+    print_reg("ra", tf->ra); print_reg("sp", tf->sp); print_reg("gp", tf->gp); console_puts("\r\n");
+    print_reg("tp", tf->tp); print_reg("t0", tf->t0); print_reg("t1", tf->t1); console_puts("\r\n");
+    print_reg("t2", tf->t2); print_reg("s0", tf->s0); print_reg("s1", tf->s1); console_puts("\r\n");
+    print_reg("a0", tf->a0); print_reg("a1", tf->a1); print_reg("a2", tf->a2); console_puts("\r\n");
+    print_reg("a3", tf->a3); print_reg("a4", tf->a4); print_reg("a5", tf->a5); console_puts("\r\n");
+    print_reg("a6", tf->a6); print_reg("a7", tf->a7); print_reg("s2", tf->s2); console_puts("\r\n");
+    print_reg("s3", tf->s3); print_reg("s4", tf->s4); print_reg("s5", tf->s5); console_puts("\r\n");
+    print_reg("s6", tf->s6); print_reg("s7", tf->s7); print_reg("s8", tf->s8); console_puts("\r\n");
+    print_reg("s9", tf->s9); print_reg("s10", tf->s10); print_reg("s11", tf->s11); console_puts("\r\n");
+    print_reg("t3", tf->t3); print_reg("t4", tf->t4); print_reg("t5", tf->t5); console_puts("\r\n");
+    print_reg("t6", tf->t6); console_puts("\r\n");
+
+    panic_print_stack_preview(tf);
+
+    console_puts("======================================================================\r\n");
+    console_puts(" SYSTEM HALTED. RESET REQUIRED.\r\n");
+    console_puts("======================================================================\r\n");
+
+    console_flush();
 
     while (1)
     {

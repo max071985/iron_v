@@ -55,6 +55,10 @@
 #define RTC_WDT_SWD_CONFIG_REG      LP_WDT_SWD_CONF_REG
 
 /* Memory Region Boundaries for Address Validation */
+#define HP_IRAM_START_ADDR          0x40800000U
+#define HP_IRAM_END_ADDR            0x40820000U
+#define HP_DRAM_START_ADDR          0x40820000U
+#define HP_DRAM_END_ADDR            0x40880000U
 #define LP_SRAM_START_ADDR          0x50000000U
 #define LP_SRAM_END_ADDR            0x50004000U
 #define PERIPHERAL_MMIO_START_ADDR  0x60000000U

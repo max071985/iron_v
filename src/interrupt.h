@@ -8,12 +8,14 @@
 #ifndef INTERRUPT_H
 #define INTERRUPT_H
 
+#ifndef __ASSEMBLER__
 #include <stdint.h>
 #include <stddef.h>
 #include "trap.h"
 #include "regs/interrupt_core0.h"
 #include "regs/intpri.h"
 #include "regs/plic.h"
+#endif
 
 /* Total CPU interrupt channels in ESP-RISC-V core (0 to 31) */
 #define INTERRUPT_CPU_CHANNELS 32U
@@ -38,6 +40,7 @@
 #define MSTATUS_MIE_BIT           (1U << 3)   /* Bit 3: Machine Interrupt Enable */
 #define MSTATUS_MPP_MACHINE_MODE  (3U << 11)  /* Bits 12:11: MPP = 2'b11 (Machine Mode) */
 
+#ifndef __ASSEMBLER__
 /* Register array address calculation macros */
 #define INTMTX_SOURCE_MAP_REG(src)   ((volatile uint32_t *)(INTERRUPT_CORE0_BASE + ((uint32_t)(src) * 4U)))
 #define INTPRI_SW_INTR_BASE_OFFSET   0x90U
@@ -176,5 +179,7 @@ void interrupt_global_restore(uint32_t prev_mstatus);
 
 /* Central interrupt dispatcher invoked from trap_handler */
 void interrupt_dispatch(uint32_t channel, trapframe_t *tf);
+
+#endif /* __ASSEMBLER__ */
 
 #endif // INTERRUPT_H

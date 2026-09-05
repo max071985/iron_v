@@ -759,7 +759,7 @@ void run_validation_suite(void)
     /* 6. Clean reset of DPC engine to pristine state for subsequent runtime execution */
     dpc_init();
 
-    uart_puts("  Expected:    FullSize=64, DropPass=1, FIFOPass=1, HeadTailMatch=1, Dispatch=2\r\n");
+    uart_puts("  Expected:    FullSize=64, DropPass=1, FIFOPass=1, HeadTailMatch=1, Dispatch=1\r\n");
     uart_puts("  Actual:      FullSize=");
     put_dec(size_full);
     uart_puts(", DropPass=");
@@ -791,10 +791,14 @@ void run_validation_suite(void)
     uint32_t ep1_conf = *conf_reg;
     int non_faulting_read = 1;
 
-    /* 3. Verify SERIAL_IN_EP_DATA_FREE bit is readable without CPU stall */
+    /* 3. Verify EP1 configuration register status and valid bitfield geometry */
     uint32_t in_ep_free = (ep1_conf & USB_DEVICE_EP1_CONF_SERIAL_IN_EP_DATA_FREE_M) >> USB_DEVICE_EP1_CONF_SERIAL_IN_EP_DATA_FREE_S;
     uint32_t out_ep_avail = (ep1_conf & USB_DEVICE_EP1_CONF_SERIAL_OUT_EP_DATA_AVAIL_M) >> USB_DEVICE_EP1_CONF_SERIAL_OUT_EP_DATA_AVAIL_S;
-    int bit_readable_pass = (in_ep_free == 0U || in_ep_free == 1U);
+    uint32_t ep1_conf_valid_mask = USB_DEVICE_EP1_CONF_WR_DONE_M |
+                                   USB_DEVICE_EP1_CONF_SERIAL_IN_EP_DATA_FREE_M |
+                                   USB_DEVICE_EP1_CONF_SERIAL_OUT_EP_DATA_AVAIL_M;
+    int bit_readable_pass = ((ep1_conf & ~ep1_conf_valid_mask) == 0U) &&
+                            ((ep1_conf & USB_DEVICE_EP1_CONF_WR_DONE_M) == 0U);
 
     /* 4. Verify device structure register mapping */
     usb_serial_dev_t udev;
@@ -812,6 +816,10 @@ void run_validation_suite(void)
     /* 6. Verify non-blocking timeout protection without CPU stall */
     int tx_res = usb_serial_putc_blocking('X');
     int timeout_guard_pass = (in_ep_free == 1U) ? (tx_res == USB_SERIAL_OK) : (tx_res == USB_SERIAL_ERR_TIMEOUT);
+    if (tx_res == USB_SERIAL_OK)
+    {
+        usb_serial_flush();
+    }
 
     uart_puts("  Expected:    NonFaulting=1, BitReadable=1, RegMap=1, TxReadyMatch=1, TimeoutGuard=1\r\n");
     uart_puts("  Actual:      NonFaulting=");
@@ -860,10 +868,17 @@ void run_validation_suite(void)
 
     int active_mask_ok = (mgr.active_mask == (CONSOLE_MASK_UART0 | CONSOLE_MASK_USB));
 
-    /* Test non-blocking character receive (safe non-faulting execution) */
+    /* Test non-blocking character receive with NULL guard and active mask gating */
+    int null_guard_ok = (console_getc_nonblocking(NULL) == 0);
+    uint8_t orig_mask = console_get_active_mask();
+    console_set_active_mask(0U);
     char dummy_c = '\0';
-    int nonblock_res = console_getc_nonblocking(&dummy_c);
-    int nonblock_pass = (nonblock_res == 0 || nonblock_res == 1);
+    int disabled_mask_ok = (console_getc_nonblocking(&dummy_c) == 0);
+    console_set_active_mask(orig_mask);
+    int mask_restore_ok = (console_get_active_mask() == orig_mask);
+    int readline_null_guard = (console_read_line_nonblocking(NULL, 10U) == 0) &&
+                              (console_read_line_nonblocking(&dummy_c, 0U) == 0);
+    int nonblock_pass = null_guard_ok && disabled_mask_ok && mask_restore_ok && readline_null_guard;
 
     /* Test echo toggle control */
     console_set_echo(0U);

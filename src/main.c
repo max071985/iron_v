@@ -108,10 +108,14 @@ static void print_info(void)
 
     dpc_queue_t dpc_stat;
     dpc_get_stats(&dpc_stat);
-    uart_puts(" DPC:     Active (Queue: 64, Drops: ");
-    put_dec(dpc_stat.drop_count);
+    uart_puts(" DPC:     Active (Pending: ");
+    put_dec(dpc_get_size());
+    uart_puts("/");
+    put_dec(DPC_QUEUE_CAPACITY);
     uart_puts(", Processed: ");
     put_dec(dpc_get_processed_count());
+    uart_puts(", Drops: ");
+    put_dec(dpc_stat.drop_count);
     uart_puts(")\r\n");
     uart_puts("========================================\r\n");
 }

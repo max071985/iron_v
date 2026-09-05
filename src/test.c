@@ -13,6 +13,14 @@ static volatile uint32_t g_test_data_var = 0x12345678U; // Placed in .data
 static volatile uint32_t g_test_bss_var;               // Placed in .bss (should be 0)
 static const char g_test_rodata_str[] = "IRON_V_RODATA_TEST_PATTERN"; // Placed in .rodata
 static volatile uint32_t g_test_isr_hit = 0;
+static volatile uint32_t g_test_dpc_hit = 0;
+
+static void test_dpc_callback(uint32_t arg0, uint32_t arg1)
+{
+    (void)arg0;
+    (void)arg1;
+    g_test_dpc_hit++;
+}
 
 static void test_sw_isr(void *arg)
 {
@@ -726,7 +734,17 @@ void run_validation_suite(void)
     uint32_t size_drained = dpc_get_size();
     int drain_pass = (size_drained == 0U) && head_tail_match;
 
-    uart_puts("  Expected:    FullSize=64, DropPass=1, FIFOPass=1, HeadTailMatch=1\r\n");
+    /* 5. Verify live dispatch and execution via dpc_process_all() with registered handler */
+    g_test_dpc_hit = 0;
+    dpc_enqueue(DPC_TYPE_TEST_EVENT, 111U, 222U, test_dpc_callback);
+    dpc_enqueue(DPC_TYPE_TEST_EVENT, 333U, 444U, test_dpc_callback);
+    uint32_t processed_count = dpc_process_all();
+    int dispatch_pass = (processed_count == 2U) && (g_test_dpc_hit == 2U) && (dpc_get_size() == 0U);
+
+    /* 6. Clean reset of DPC engine to pristine state for subsequent runtime execution */
+    dpc_init();
+
+    uart_puts("  Expected:    FullSize=64, DropPass=1, FIFOPass=1, HeadTailMatch=1, Dispatch=2\r\n");
     uart_puts("  Actual:      FullSize=");
     put_dec(size_full);
     uart_puts(", DropPass=");
@@ -735,15 +753,11 @@ void run_validation_suite(void)
     put_dec(fifo_order_ok);
     uart_puts(", HeadTailMatch=");
     put_dec(head_tail_match);
-    uart_puts(" (Head=");
-    put_dec(stats.head);
-    uart_puts(", Tail=");
-    put_dec(stats.tail);
-    uart_puts(", Drops=");
-    put_dec(stats.drop_count);
-    uart_puts(")\r\n");
+    uart_puts(", Dispatch=");
+    put_dec(dispatch_pass);
+    uart_puts("\r\n");
 
-    int t17_pass = enqueue_all_ok && (size_full == DPC_QUEUE_CAPACITY) && drop_pass && fifo_order_ok && drain_pass;
+    int t17_pass = enqueue_all_ok && (size_full == DPC_QUEUE_CAPACITY) && drop_pass && fifo_order_ok && drain_pass && dispatch_pass;
     if (t17_pass) passed_tests++;
     print_result(t17_pass);
 

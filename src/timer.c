@@ -120,13 +120,12 @@ void timer_isr(void *arg)
 
 void timer_dpc_handler(uint32_t tick_count, uint32_t arg1)
 {
+    (void)tick_count;
     (void)arg1;
     g_timer_status.dpc_count++;
 
-    console_puts("\r\n[INTERRUPT] Timer tick #");
-    put_dec(tick_count);
-    console_puts(" fired!\r\n");
-    console_reprint_prompt_and_buffer();
+    /* Asynchronous console notice silenced for clean interactive shell operation.
+     * Telemetry remains fully inspectable via 'timer' and 'info' commands. */
 }
 
 void timer_start(void)

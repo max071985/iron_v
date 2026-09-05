@@ -53,4 +53,8 @@ void console_flush(void);
 /* Non-blocking line accumulator / reader */
 int console_read_line_nonblocking(char *out_buffer, size_t max_len);
 
+/* Prompt & asynchronous notification line redrawing */
+void console_reprint_prompt_and_buffer(void);
+void console_print_async_notice(const char *msg);
+
 #endif /* CONSOLE_H */

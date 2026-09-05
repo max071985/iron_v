@@ -10,6 +10,7 @@
 #include "usb_serial.h"
 #include "uart.h"
 #include "console.h"
+#include "timer.h"
 
 /* Designated static test variables */
 static volatile uint32_t g_test_data_var = 0x12345678U; // Placed in .data
@@ -540,7 +541,9 @@ void run_validation_suite(void)
     put_dec(wdt_stat.feed_count);
     uart_puts(" (Epoch=");
     put_dec(wdt_stat.epoch_count);
-    uart_puts("s)\r\n");
+    uart_puts("s, TotalFeeds=");
+    put_dec(wdt_stat.total_feed_count);
+    uart_puts(")\r\n");
 
     int t12_pass = wdt_enabled && (wdt_stg0 == WDT_ACTION_RESET_SYSTEM) &&
                    (prescale == WDT_PRESCALER_DIV) &&
@@ -903,6 +906,58 @@ void run_validation_suite(void)
     int t19_pass = uart_backend_ok && usb_backend_ok && active_mask_ok && nonblock_pass && echo_toggle_ok;
     if (t19_pass) passed_tests++;
     print_result(t19_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 20: Hardware Periodic Timer (TIMG0 T0) Configuration     */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(20, "Hardware Periodic Timer (TIMG0 T0) Configuration",
+                      "Verify TIMG0 Timer 0 is enabled, prescaled, auto-reloading, and routed via INTMTX");
+
+    uint32_t t0_cfg = *TIMG0_T0CONFIG_REG;
+    int t0_en = (t0_cfg & TIMG0_T0CONFIG_EN_M) != 0;
+    int t0_autoreload = (t0_cfg & TIMG0_T0CONFIG_AUTORELOAD_M) != 0;
+    uint32_t t0_divider = (t0_cfg & TIMG0_T0CONFIG_DIVIDER_M) >> TIMG0_T0CONFIG_DIVIDER_S;
+    uint32_t timer_route = interrupt_get_map(INT_SRC_TG0_T0);
+    uint32_t timer_pri = interrupt_get_priority(TIMER_CPU_INTR_CHANNEL);
+    int timer_intr_en = interrupt_is_enabled(TIMER_CPU_INTR_CHANNEL);
+
+    timer_status_t tmr_stat;
+    timer_get_status(&tmr_stat);
+
+    /* Verify 54-bit hardware counter advances */
+    uint64_t t_start = timer_get_current_ticks();
+    for (volatile int i = 0; i < 5000; i++) { }
+    uint64_t t_end = timer_get_current_ticks();
+    int ticks_advancing = (t_end > t_start);
+
+    uart_puts("  Expected:    EN=1, AutoReload=1, Prescale=40, Route=6, Priority=8, Active=1, Advancing=1\r\n");
+    uart_puts("  Actual:      EN=");
+    put_dec(t0_en);
+    uart_puts(", AutoReload=");
+    put_dec(t0_autoreload);
+    uart_puts(", Prescale=");
+    put_dec(t0_divider);
+    uart_puts(", Route=");
+    put_dec(timer_route);
+    uart_puts(", Priority=");
+    put_dec(timer_pri);
+    uart_puts(", IntrEn=");
+    put_dec(timer_intr_en);
+    uart_puts(", Active=");
+    put_dec(tmr_stat.active);
+    uart_puts(", Advancing=");
+    put_dec(ticks_advancing);
+    uart_puts(", Ticks=");
+    put_dec(tmr_stat.isr_count);
+    uart_puts("\r\n");
+
+    int t20_pass = t0_en && t0_autoreload && (t0_divider == TIMER_PRESCALER_DIV) &&
+                   (timer_route == TIMER_CPU_INTR_CHANNEL) &&
+                   (timer_pri == TIMER_INTR_PRIORITY) &&
+                   timer_intr_en && (tmr_stat.active == 1) && ticks_advancing;
+    if (t20_pass) passed_tests++;
+    print_result(t20_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

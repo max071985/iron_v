@@ -288,3 +288,28 @@ int console_read_line_nonblocking(char *out_buffer, size_t max_len)
 
     return 0;
 }
+
+void console_reprint_prompt_and_buffer(void)
+{
+    if (!g_console_manager.echo_enabled)
+    {
+        return;
+    }
+
+    console_puts("iron_v> ");
+    for (size_t i = 0; i < s_line_idx; i++)
+    {
+        console_putc(s_line_buf[i]);
+    }
+    console_flush();
+}
+
+void console_print_async_notice(const char *msg)
+{
+    if (msg)
+    {
+        console_puts(msg);
+    }
+    console_reprint_prompt_and_buffer();
+}
+

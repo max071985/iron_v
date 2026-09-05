@@ -382,6 +382,13 @@ static void test_dpc_queue(void)
     TEST_ASSERT(g_host_dpc_last_arg0 == 42U, "handler received arg0");
     TEST_ASSERT(g_host_dpc_last_arg1 == 84U, "handler received arg1");
     TEST_ASSERT(dpc_process() == 0, "dpc_process returns 0 when empty");
+
+    /* 7. Timer tick DPC event enqueue & execution */
+    g_host_dpc_handler_hit = 0;
+    TEST_ASSERT(dpc_enqueue(DPC_TYPE_TIMER_TICK, 77U, 99U, host_test_dpc_handler) == DPC_STATUS_OK, "timer tick dpc enqueue succeeds");
+    TEST_ASSERT(dpc_process() == 1, "timer tick dpc processed");
+    TEST_ASSERT(g_host_dpc_handler_hit == 1, "timer tick handler hit");
+    TEST_ASSERT(g_host_dpc_last_arg0 == 77U, "timer tick received tick count");
 }
 
 static int g_mock_uart_putc_calls = 0;

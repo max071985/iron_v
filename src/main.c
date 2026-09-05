@@ -11,6 +11,7 @@
 #include "usb_serial.h"
 #include "uart.h"
 #include "console.h"
+#include "timer.h"
 
 static void print_help(void)
 {
@@ -21,6 +22,7 @@ static void print_help(void)
     console_puts("  poke <addr> <val>   - Write 32-bit hex value to address\r\n");
     console_puts("  ecall               - Trigger controlled M-mode software trap (ECALL)\r\n");
     console_puts("  panic               - Trigger illegal instruction exception to test panic dump\r\n");
+    console_puts("  timer [start|stop]  - Show or control periodic timer telemetry\r\n");
     console_puts("  do-test             - Run full baseline validation test suite\r\n");
 }
 
@@ -52,8 +54,28 @@ static void print_info(void)
         console_puts(" ms timeout, 1s epoch window)\r\n");
         console_puts(" Uptime:  ");
         put_dec(wdt.epoch_count);
-        console_puts(" s (epoch feeds: ");
+        console_puts(" s (total feeds: ");
+        put_dec(wdt.total_feed_count);
+        console_puts(", epoch feeds: ");
         put_dec(wdt.feed_count);
+        console_puts(")\r\n");
+    }
+    else
+    {
+        console_puts("Disabled\r\n");
+    }
+
+    timer_status_t tmr;
+    timer_get_status(&tmr);
+    console_puts(" Timer:   ");
+    if (tmr.active)
+    {
+        console_puts("Active (TIMG0 T0, ");
+        put_dec(tmr.interval_sec);
+        console_puts("s period, ticks: ");
+        put_dec(tmr.isr_count);
+        console_puts(", DPC: ");
+        put_dec(tmr.dpc_count);
         console_puts(")\r\n");
     }
     else
@@ -200,6 +222,44 @@ static void shell_execute(char *input_buffer)
         console_puts("Triggering illegal instruction (0x00000000) to demonstrate panic dump...\r\n");
         asm volatile(".word 0x00000000");
     }
+    else if (strcmp(input_buffer, "timer") == 0)
+    {
+        timer_status_t tmr;
+        timer_get_status(&tmr);
+        console_puts("Hardware Periodic Timer Status (TIMG0 Timer 0):\r\n");
+        console_puts("  State:         ");
+        console_puts(tmr.active ? "RUNNING\r\n" : "STOPPED\r\n");
+        console_puts("  Interval:      ");
+        put_dec(tmr.interval_sec);
+        console_puts(" seconds (");
+        put_dec((uint32_t)tmr.interval_ticks);
+        console_puts(" ticks @ 1MHz)\r\n");
+        console_puts("  Routing:       INT_SRC_TG0_T0 (");
+        put_dec(INT_SRC_TG0_T0);
+        console_puts(") -> CPU Channel ");
+        put_dec(TIMER_CPU_INTR_CHANNEL);
+        console_puts(" (Priority ");
+        put_dec(TIMER_INTR_PRIORITY);
+        console_puts(")\r\n");
+        console_puts("  ISR Ticks:     ");
+        put_dec(tmr.isr_count);
+        console_puts("\r\n  DPC Dispatches:");
+        put_dec(tmr.dpc_count);
+        console_puts("\r\n  Current Ticks: ");
+        uint64_t cur_ticks = timer_get_current_ticks();
+        put_dec((uint32_t)cur_ticks);
+        console_puts("\r\n");
+    }
+    else if (strcmp(input_buffer, "timer stop") == 0)
+    {
+        timer_stop();
+        console_puts("[TIMER] TIMG0 Timer 0 stopped.\r\n");
+    }
+    else if (strcmp(input_buffer, "timer start") == 0)
+    {
+        timer_start();
+        console_puts("[TIMER] TIMG0 Timer 0 started.\r\n");
+    }
     else
     {
         console_puts("Unknown command. Type 'help' for available commands.\r\n");
@@ -244,6 +304,9 @@ void main(void)
 
     /* Initialize Unified Dual-Console Layer (UART0 interrupt-driven & USB CDC-ACM) */
     console_init();
+
+    /* Initialize Hardware Periodic Timer (TIMG0 Timer 0 @ 10s period) */
+    timer_init(TIMER_DEFAULT_INTERVAL_SEC);
 
     console_puts("\r\n");
     print_info();

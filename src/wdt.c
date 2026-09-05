@@ -9,7 +9,8 @@ static wdt_supervisor_t g_wdt_supervisor = {
     .epoch_count = 0,
     .max_feeds_per_epoch = WDT_MAX_FEEDS_PER_EPOCH,
     .timg0_timeout_ticks = 0,
-    .active = 0
+    .active = 0,
+    .total_feed_count = 0
 };
 
 static uint64_t g_wdt_epoch_start_ticks = 0;
@@ -106,6 +107,7 @@ void wdt_init(uint32_t timeout_ms)
     g_wdt_supervisor.epoch_count = 0;
     g_wdt_supervisor.max_feeds_per_epoch = WDT_MAX_FEEDS_PER_EPOCH;
     g_wdt_supervisor.active = 1;
+    g_wdt_supervisor.total_feed_count = 1;
 
     uart_puts("[WDT] Active windowed epoch supervisor armed (TIMG0 MWDT, SYSTIMER epoch 1000ms).\r\n");
 }
@@ -123,6 +125,7 @@ void wdt_feed(void)
         FENCE();
 
         g_wdt_supervisor.feed_count++;
+        g_wdt_supervisor.total_feed_count++;
         g_wdt_last_feed_ticks = wdt_get_systimer_ticks();
     }
 }
@@ -145,6 +148,7 @@ void wdt_supervisor_tick(void)
             *TIMG0_WDTFEED = 1;
             FENCE();
             g_wdt_last_feed_ticks = current_ticks;
+            g_wdt_supervisor.total_feed_count++;
         }
 
         /* Snapshot current epoch feeds and reset counter to zero for next epoch */

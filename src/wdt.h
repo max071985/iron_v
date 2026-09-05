@@ -64,6 +64,7 @@ typedef struct {
     uint32_t max_feeds_per_epoch;   /* Maximum allowable feeds per epoch */
     uint32_t timg0_timeout_ticks;   /* Hardware timeout ticks */
     uint8_t  active;                /* Supervisor state flag */
+    uint32_t total_feed_count;      /* Monotonic cumulative feeds across all epochs */
 } wdt_supervisor_t;
 
 /* Initialize multi-tier watchdog supervisor with windowed epoch tracking */

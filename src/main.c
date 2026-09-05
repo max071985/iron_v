@@ -7,6 +7,7 @@
 #include "wdt.h"
 #include "trap.h"
 #include "interrupt.h"
+#include "dpc.h"
 
 /*
  * Disables hardware watchdogs safely with memory barriers during early bringup.
@@ -104,6 +105,14 @@ static void print_info(void)
     uart_puts(" [");
     put_hex(rst_cause);
     uart_puts("]\r\n");
+
+    dpc_queue_t dpc_stat;
+    dpc_get_stats(&dpc_stat);
+    uart_puts(" DPC:     Active (Queue: 64, Drops: ");
+    put_dec(dpc_stat.drop_count);
+    uart_puts(", Processed: ");
+    put_dec(dpc_get_processed_count());
+    uart_puts(")\r\n");
     uart_puts("========================================\r\n");
 }
 
@@ -231,8 +240,11 @@ void main(void)
     /* Initialize RISC-V machine-mode trap vector table and handler */
     trap_init();
 
-    /* Initialize Interrupt Matrix (INTMTX) and Core Interrupt Controller (INTPRI) */
+    /* Initialize Interrupt Matrix (INTMTX) and Core Interrupt Controller (PLIC_MX) */
     interrupt_init();
+
+    /* Initialize Lock-Free SPSC DPC Queue Engine */
+    dpc_init();
 
     uart_puts("\r\n");
     print_info();
@@ -242,6 +254,7 @@ void main(void)
     while (1)
     {
         wdt_supervisor_tick();
+        dpc_process_all();
         shell(input_buffer);
     }
 }

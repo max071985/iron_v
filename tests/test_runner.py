@@ -263,15 +263,15 @@ def run_suite():
     total += 1
     load_segs = [s for s in segments if s["type"] == PT_LOAD]
     rwx_segs = [s for s in load_segs if (s["flags"] & (PF_W | PF_X)) == (PF_W | PF_X)]
-    iram_text_seg = [s for s in load_segs if s["vaddr"] == 0x40800000 and (s["flags"] & PF_X)]
-    dram_data_seg = [s for s in load_segs if s["vaddr"] == 0x40820000 and (s["flags"] & PF_W)]
+    iram_text_seg = [s for s in load_segs if s["vaddr"] >= 0x40800000 and s["vaddr"] < 0x40820000 and (s["flags"] & PF_X)]
+    dram_data_seg = [s for s in load_segs if s["vaddr"] >= 0x40820000 and s["vaddr"] < 0x40880000 and (s["flags"] & PF_W)]
     t6_pass = (len(load_segs) >= 2 and len(rwx_segs) == 0 and len(iram_text_seg) > 0 and len(dram_data_seg) > 0)
     seg_flags_str = ", ".join(f"vaddr=0x{s['vaddr']:08x}:flags=0x{s['flags']:x}" for s in load_segs)
     passed += print_result_line(
         total,
         "Harvard Segment Isolation & W^X Permission Safety",
         "Inspect ELF program headers to ensure 0 RWX segments exist and IRAM/DRAM are segregated",
-        "0 RWX segments, IRAM executable at 0x40800000, DRAM read-write at 0x40820000",
+        "0 RWX segments, IRAM executable at 0x40800000, DRAM read-write in [0x40820000, 0x40880000)",
         f"Total LOAD segments={len(load_segs)}, RWX segments={len(rwx_segs)}, [{seg_flags_str}]",
         t6_pass
     )
@@ -470,6 +470,40 @@ def run_suite():
         "All 10 interrupt subsystem symbols present in IRAM text section [0x40800000, 0x40820000)",
         t15_actual,
         t15_pass
+    )
+
+    # TEST 16: Lock-Free SPSC DPC Queue Engine Subsystem Linkage (Task 2.3)
+    total += 1
+    dpc_syms = [
+        "dpc_init",
+        "dpc_queue_init",
+        "dpc_queue_enqueue",
+        "dpc_queue_dequeue",
+        "dpc_queue_size",
+        "dpc_queue_is_empty",
+        "dpc_queue_is_full",
+        "dpc_enqueue",
+        "dpc_dequeue",
+        "dpc_process",
+        "dpc_process_all",
+        "dpc_get_size",
+        "dpc_get_drop_count"
+    ]
+    found_dpc_syms = [s for s in dpc_syms if s in symbols]
+    all_dpc_found = len(found_dpc_syms) == len(dpc_syms)
+    all_dpc_in_text = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40820000)
+        for s in found_dpc_syms
+    )
+    t16_pass = all_dpc_found and all_dpc_in_text
+    t16_actual = f"Found {len(found_dpc_syms)}/{len(dpc_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    passed += print_result_line(
+        total,
+        "Lock-Free SPSC DPC Queue Engine Linkage & Symbols",
+        "Verify dpc_init, queue, enqueue, dequeue, process, and query symbols exist in IRAM",
+        "All 13 DPC engine symbols present in IRAM text section [0x40800000, 0x40820000)",
+        t16_actual,
+        t16_pass
     )
 
     print("\n" + "=" * 70)

@@ -18,7 +18,7 @@ CFLAGS = -march=rv32imac_zicsr_zifencei -mabi=ilp32 -ffreestanding -nostdlib -O2
 LDFLAGS = -T ld/link.ld -nostdlib
 
 # Baseline source files
-SRCS = src/crt0.S src/trap_entry.S src/main.c src/string.c src/utils.c src/test.c src/clock.c src/wdt.c src/trap.c src/panic.c src/interrupt.c
+SRCS = src/crt0.S src/trap_entry.S src/main.c src/string.c src/utils.c src/test.c src/clock.c src/wdt.c src/trap.c src/panic.c src/interrupt.c src/dpc.c
 
 # Flashing parameters
 PORT ?= /dev/ttyUSB0
@@ -43,8 +43,8 @@ erase_flash:
 monitor:
 	picocom -b $(MONITOR_BAUD) $(PORT)
 
-tests/test_freestanding: tests/test_freestanding.c src/string.c src/string.h
-	gcc -O2 -Wall -Wextra -Isrc tests/test_freestanding.c src/string.c -o $@
+tests/test_freestanding: tests/test_freestanding.c src/string.c src/string.h src/dpc.c src/dpc.h
+	gcc -O2 -Wall -Wextra -Isrc tests/test_freestanding.c src/string.c src/dpc.c -o $@
 
 do-test: firmware.elf firmware.bin tests/test_freestanding
 	@./tests/test_freestanding

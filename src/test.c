@@ -6,6 +6,7 @@
 #include "wdt.h"
 #include "trap.h"
 #include "interrupt.h"
+#include "dpc.h"
 
 /* Designated static test variables */
 static volatile uint32_t g_test_data_var = 0x12345678U; // Placed in .data
@@ -676,6 +677,75 @@ void run_validation_suite(void)
     int t16_pass = part1_pass && live_dispatch_pass && threshold_mask_pass;
     if (t16_pass) passed_tests++;
     print_result(t16_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 17: Lock-Free SPSC DPC Queue Engine                      */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(17, "Lock-Free SPSC DPC Queue Engine",
+                      "Enqueue 64 events, verify FIFO order, assert 65th drop, and assert head == tail");
+
+    dpc_init();
+
+    /* 1. Enqueue exactly DPC_QUEUE_CAPACITY (64) events */
+    int enqueue_all_ok = 1;
+    for (uint32_t i = 0; i < DPC_QUEUE_CAPACITY; i++)
+    {
+        int res = dpc_enqueue(DPC_TYPE_TIMER_TICK, i, i * 10U, NULL);
+        if (res != DPC_STATUS_OK)
+        {
+            enqueue_all_ok = 0;
+        }
+    }
+    uint32_t size_full = dpc_get_size();
+
+    /* 2. Attempt 65th enqueue: assert drop counter increments by 1 */
+    int res_65 = dpc_enqueue(DPC_TYPE_WIFI_PACKET, 999U, 999U, NULL);
+    uint32_t drop_cnt = dpc_get_drop_count();
+    int drop_pass = (res_65 == DPC_STATUS_ERR_FULL) && (drop_cnt == 1U);
+
+    /* 3. Drain all 64 events and verify strict FIFO ordering */
+    int fifo_order_ok = 1;
+    for (uint32_t i = 0; i < DPC_QUEUE_CAPACITY; i++)
+    {
+        dpc_event_t ev;
+        int dq_res = dpc_dequeue(&ev);
+        if (dq_res != DPC_STATUS_OK ||
+            ev.type != DPC_TYPE_TIMER_TICK ||
+            ev.arg0 != i ||
+            ev.arg1 != (i * 10U))
+        {
+            fifo_order_ok = 0;
+        }
+    }
+
+    /* 4. Assert empty condition and head == tail */
+    dpc_queue_t stats;
+    dpc_get_stats(&stats);
+    int head_tail_match = (stats.head == stats.tail) && (stats.head == DPC_QUEUE_CAPACITY);
+    uint32_t size_drained = dpc_get_size();
+    int drain_pass = (size_drained == 0U) && head_tail_match;
+
+    uart_puts("  Expected:    FullSize=64, DropPass=1, FIFOPass=1, HeadTailMatch=1\r\n");
+    uart_puts("  Actual:      FullSize=");
+    put_dec(size_full);
+    uart_puts(", DropPass=");
+    put_dec(drop_pass);
+    uart_puts(", FIFOPass=");
+    put_dec(fifo_order_ok);
+    uart_puts(", HeadTailMatch=");
+    put_dec(head_tail_match);
+    uart_puts(" (Head=");
+    put_dec(stats.head);
+    uart_puts(", Tail=");
+    put_dec(stats.tail);
+    uart_puts(", Drops=");
+    put_dec(stats.drop_count);
+    uart_puts(")\r\n");
+
+    int t17_pass = enqueue_all_ok && (size_full == DPC_QUEUE_CAPACITY) && drop_pass && fifo_order_ok && drain_pass;
+    if (t17_pass) passed_tests++;
+    print_result(t17_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

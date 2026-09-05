@@ -11,6 +11,7 @@
 #include <stddef.h>
 #include <assert.h>
 #include "string.h"
+#include "dpc.h"
 
 /* Freestanding function aliases matching runtime naming conventions */
 static inline size_t s_strlen(const char *s)
@@ -275,6 +276,113 @@ static void test_char_helpers(void)
     TEST_ASSERT(*p3 == '\0', "skip_space all whitespace reaches null");
 }
 
+static uint32_t g_host_dpc_handler_hit = 0;
+static uint32_t g_host_dpc_last_arg0 = 0;
+static uint32_t g_host_dpc_last_arg1 = 0;
+
+static void host_test_dpc_handler(uint32_t a0, uint32_t a1)
+{
+    g_host_dpc_handler_hit++;
+    g_host_dpc_last_arg0 = a0;
+    g_host_dpc_last_arg1 = a1;
+}
+
+static void test_dpc_queue(void)
+{
+    printf("  [TEST] dpc_queue lock-free SPSC engine...\n");
+
+    dpc_queue_t q;
+    dpc_queue_init(&q);
+
+    TEST_ASSERT(dpc_queue_size(&q) == 0, "initial queue size is 0");
+    TEST_ASSERT(dpc_queue_is_empty(&q) == 1, "initial queue is empty");
+    TEST_ASSERT(dpc_queue_is_full(&q) == 0, "initial queue is not full");
+    TEST_ASSERT(q.drop_count == 0, "initial drop count is 0");
+
+    dpc_event_t dummy;
+    TEST_ASSERT(dpc_queue_dequeue(&q, &dummy) == DPC_STATUS_ERR_EMPTY, "dequeue from empty returns ERR_EMPTY");
+
+    /* 1. Fill exactly DPC_QUEUE_CAPACITY (64) entries */
+    for (uint32_t i = 0; i < DPC_QUEUE_CAPACITY; i++)
+    {
+        dpc_event_t ev;
+        ev.type = DPC_TYPE_TIMER_TICK;
+        ev.arg0 = i;
+        ev.arg1 = i * 100U;
+        ev.handler = host_test_dpc_handler;
+
+        int res = dpc_queue_enqueue(&q, &ev);
+        TEST_ASSERT(res == DPC_STATUS_OK, "enqueue within capacity succeeds");
+    }
+
+    TEST_ASSERT(dpc_queue_size(&q) == DPC_QUEUE_CAPACITY, "queue size is 64 when full");
+    TEST_ASSERT(dpc_queue_is_full(&q) == 1, "queue is full");
+    TEST_ASSERT(dpc_queue_is_empty(&q) == 0, "full queue is not empty");
+
+    /* 2. Attempt 65th enqueue: assert failure and drop_count increment */
+    dpc_event_t ev65;
+    ev65.type = DPC_TYPE_WIFI_PACKET;
+    ev65.arg0 = 999U;
+    ev65.arg1 = 888U;
+    ev65.handler = host_test_dpc_handler;
+
+    int res65 = dpc_queue_enqueue(&q, &ev65);
+    TEST_ASSERT(res65 == DPC_STATUS_ERR_FULL, "65th enqueue rejected with ERR_FULL");
+    TEST_ASSERT(q.drop_count == 1, "drop_count incremented to 1");
+    TEST_ASSERT(dpc_queue_size(&q) == DPC_QUEUE_CAPACITY, "queue size remains 64 after drop");
+
+    /* 3. Drain all 64 entries and verify strict FIFO ordering */
+    for (uint32_t i = 0; i < DPC_QUEUE_CAPACITY; i++)
+    {
+        dpc_event_t out;
+        int dq_res = dpc_queue_dequeue(&q, &out);
+        TEST_ASSERT(dq_res == DPC_STATUS_OK, "dequeue succeeds");
+        TEST_ASSERT(out.type == DPC_TYPE_TIMER_TICK, "event type matches");
+        TEST_ASSERT(out.arg0 == i, "FIFO order: arg0 matches index");
+        TEST_ASSERT(out.arg1 == i * 100U, "FIFO order: arg1 matches expected");
+        TEST_ASSERT(out.handler == host_test_dpc_handler, "handler pointer matches");
+    }
+
+    /* 4. Assert empty condition and head == tail */
+    TEST_ASSERT(q.head == q.tail, "after drain: head == tail");
+    TEST_ASSERT(dpc_queue_size(&q) == 0, "after drain: size == 0");
+    TEST_ASSERT(dpc_queue_is_empty(&q) == 1, "after drain: queue is empty");
+    TEST_ASSERT(dpc_queue_dequeue(&q, &dummy) == DPC_STATUS_ERR_EMPTY, "dequeue after drain returns ERR_EMPTY");
+
+    /* 5. Circular wrap-around stress test */
+    for (uint32_t round = 0; round < 4; round++)
+    {
+        for (uint32_t k = 0; k < 32; k++)
+        {
+            dpc_event_t ev;
+            ev.type = DPC_TYPE_UART0_RX;
+            ev.arg0 = round * 100U + k;
+            ev.arg1 = k;
+            ev.handler = host_test_dpc_handler;
+            TEST_ASSERT(dpc_queue_enqueue(&q, &ev) == DPC_STATUS_OK, "wraparound enqueue succeeds");
+        }
+        for (uint32_t k = 0; k < 32; k++)
+        {
+            dpc_event_t out;
+            TEST_ASSERT(dpc_queue_dequeue(&q, &out) == DPC_STATUS_OK, "wraparound dequeue succeeds");
+            TEST_ASSERT(out.arg0 == round * 100U + k, "wraparound FIFO arg0 matches");
+        }
+    }
+    TEST_ASSERT(q.head == q.tail, "after wraparound rounds: head == tail");
+
+    /* 6. Global DPC system engine test */
+    dpc_init();
+    g_host_dpc_handler_hit = 0;
+    TEST_ASSERT(dpc_enqueue(DPC_TYPE_USB_SERIAL_RX, 42U, 84U, host_test_dpc_handler) == DPC_STATUS_OK, "global enqueue succeeds");
+    TEST_ASSERT(dpc_get_size() == 1, "global queue size is 1");
+    int proc_res = dpc_process();
+    TEST_ASSERT(proc_res == 1, "dpc_process dispatched 1 event");
+    TEST_ASSERT(g_host_dpc_handler_hit == 1, "handler was executed");
+    TEST_ASSERT(g_host_dpc_last_arg0 == 42U, "handler received arg0");
+    TEST_ASSERT(g_host_dpc_last_arg1 == 84U, "handler received arg1");
+    TEST_ASSERT(dpc_process() == 0, "dpc_process returns 0 when empty");
+}
+
 int main(void)
 {
     printf("======================================================================\n");
@@ -289,6 +397,7 @@ int main(void)
     test_s_hextoa();
     test_memory_utils();
     test_char_helpers();
+    test_dpc_queue();
 
     printf("======================================================================\n");
     if (g_assert_failures == 0)

@@ -15,6 +15,7 @@
 #include "console.h"
 #include "arena.h"
 #include "systimer.h"
+#include "task.h"
 
 /* Freestanding function aliases matching runtime naming conventions */
 static inline size_t s_strlen(const char *s)
@@ -688,6 +689,25 @@ static void test_systimer_timebase(void)
     TEST_ASSERT((uintptr_t)SYSTIMER_COMP_LOAD_REG(0) == (SYSTIMER_BASE_ADDR + 0x50U), "COMP0 LOAD offset is 0x50");
 }
 
+static void test_task_structures(void)
+{
+    /* 1. Alignment geometry */
+    uint32_t base = 0x40821003U; /* Misaligned base */
+    uint32_t size = 1024U;
+    uint32_t top = (base + size) & ~(TASK_STACK_ALIGNMENT - 1U);
+    TEST_ASSERT((top % TASK_STACK_ALIGNMENT) == 0U, "Stack top is 16-byte aligned");
+
+    uint32_t frame_sp = top - TASK_FRAME_SIZE;
+    TEST_ASSERT((frame_sp % TASK_STACK_ALIGNMENT) == 0U, "Frame SP is 16-byte aligned");
+    TEST_ASSERT(TASK_FRAME_SIZE == 64U, "Task frame size is 64 bytes (16 words)");
+
+    /* 2. Priority and Task Limits */
+    TEST_ASSERT(TASK_MAX_COUNT == 8U, "Max tasks is 8");
+    TEST_ASSERT(TASK_PRIORITY_MIN == 1U, "Min priority is 1");
+    TEST_ASSERT(TASK_PRIORITY_MAX == 15U, "Max priority is 15");
+    TEST_ASSERT(TASK_DEFAULT_STACK_SIZE == 2048U, "Default stack size is 2048");
+}
+
 int main(void)
 {
     printf("======================================================================\n");
@@ -706,6 +726,7 @@ int main(void)
     test_console_multiplexer();
     test_arena_allocator();
     test_systimer_timebase();
+    test_task_structures();
 
     printf("======================================================================\n");
     if (g_assert_failures == 0)

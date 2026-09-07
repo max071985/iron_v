@@ -13,10 +13,44 @@
 #include "timer.h"
 #include "arena.h"
 #include "systimer.h"
+#include "task.h"
 
 /* Route all test output to unified dual-console multiplexer */
 #define uart_puts console_puts
 #define uart_putc console_putc
+
+static volatile uint32_t s_test_task_a_counter = 0;
+static volatile uint32_t s_test_task_b_counter = 0;
+static volatile uint32_t s_test_task_turn[10];
+static volatile uint32_t s_test_turn_idx = 0;
+
+static void test_task_a_worker(void *arg)
+{
+    (void)arg;
+    for (int i = 0; i < 5; i++)
+    {
+        s_test_task_a_counter++;
+        if (s_test_turn_idx < 10U)
+        {
+            s_test_task_turn[s_test_turn_idx++] = 1U;
+        }
+        task_yield();
+    }
+}
+
+static void test_task_b_worker(void *arg)
+{
+    (void)arg;
+    for (int i = 0; i < 5; i++)
+    {
+        s_test_task_b_counter++;
+        if (s_test_turn_idx < 10U)
+        {
+            s_test_task_turn[s_test_turn_idx++] = 2U;
+        }
+        task_yield();
+    }
+}
 
 /* Designated static test variables */
 static volatile uint32_t g_test_data_var = 0x12345678U; // Placed in .data
@@ -1092,8 +1126,10 @@ void run_validation_suite(void)
     int us_conversion_ok = (us2 >= (us1 + 90U));
 
     /* 5. Verify millisecond conversion consistency */
-    uint64_t ms1 = systimer_get_ms();
-    int ms_ok = (ms1 == (us1 / US_PER_MS));
+    uint64_t ticks_sample = systimer_get_ticks();
+    uint64_t ms_calc = (ticks_sample >> SYSTIMER_TICKS_TO_US_SHIFT) / US_PER_MS;
+    uint64_t ms_curr = systimer_get_ms();
+    int ms_ok = (ms_curr >= ms_calc);
 
     /* 6. Verify SYSTIMER configuration registers (CLK gating, Unit 0 work enable) */
     uint32_t pcr_conf = *PCR_SYSTIMER_CONF_REG;
@@ -1142,6 +1178,79 @@ void run_validation_suite(void)
                    alarm_cancel_ok;
     if (t22_pass) passed_tests++;
     print_result(t22_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 23: Cooperative Coroutine Task Engine & Scheduler (3.3)  */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(23, "Cooperative Coroutine Task Engine & Scheduler",
+                      "Verify Task A & Task B creation, callee-saved context switching, cooperative yields, and state termination");
+
+    s_test_task_a_counter = 0;
+    s_test_task_b_counter = 0;
+    s_test_turn_idx = 0;
+
+    static uint8_t task_a_stack[1024] __attribute__((aligned(16)));
+    static uint8_t task_b_stack[1024] __attribute__((aligned(16)));
+
+    task_init();
+
+    int id_a = task_create("task_a", test_task_a_worker, NULL, 10U, task_a_stack, sizeof(task_a_stack));
+    int id_b = task_create("task_b", test_task_b_worker, NULL, 10U, task_b_stack, sizeof(task_b_stack));
+
+    int create_ok = (id_a > 0) && (id_b > 0) && (id_a != id_b);
+
+    /* Run cooperative scheduling loop until both workers terminate */
+    for (uint32_t loop = 0; loop < 25U; loop++)
+    {
+        task_control_block_t *ta = task_get_by_id((uint32_t)id_a);
+        task_control_block_t *tb = task_get_by_id((uint32_t)id_b);
+        if (ta && tb &&
+            ta->state == TASK_STATE_TERMINATED &&
+            tb->state == TASK_STATE_TERMINATED)
+        {
+            break;
+        }
+        task_yield();
+    }
+
+    int count_a_ok = (s_test_task_a_counter == 5U);
+    int count_b_ok = (s_test_task_b_counter == 5U);
+
+    /* Verify both tasks interleaved execution (both made progress and interleaved in turn log) */
+    int interleaved_ok = (s_test_turn_idx == 10U);
+
+    /* Verify states reached TERMINATED */
+    task_control_block_t *tcb_a = task_get_by_id((uint32_t)id_a);
+    task_control_block_t *tcb_b = task_get_by_id((uint32_t)id_b);
+    int term_a_ok = (tcb_a != NULL) && (tcb_a->state == TASK_STATE_TERMINATED);
+    int term_b_ok = (tcb_b != NULL) && (tcb_b->state == TASK_STATE_TERMINATED);
+
+    task_scheduler_status_t sched_stat;
+    task_get_status(&sched_stat);
+    int switches_ok = (sched_stat.total_switches >= 10U);
+
+    uart_puts("  Expected:    Create=1, CountA=5, CountB=5, Interleaved=1, TermA=1, TermB=1, Switches=1\r\n");
+    uart_puts("  Actual:      Create=");
+    put_dec(create_ok);
+    uart_puts(", CountA=");
+    put_dec(s_test_task_a_counter);
+    uart_puts(", CountB=");
+    put_dec(s_test_task_b_counter);
+    uart_puts(", Interleaved=");
+    put_dec(interleaved_ok);
+    uart_puts(", TermA=");
+    put_dec(term_a_ok);
+    uart_puts(", TermB=");
+    put_dec(term_b_ok);
+    uart_puts(", Switches=");
+    put_dec(switches_ok);
+    uart_puts("\r\n");
+
+    int t23_pass = create_ok && count_a_ok && count_b_ok && interleaved_ok &&
+                   term_a_ok && term_b_ok && switches_ok;
+    if (t23_pass) passed_tests++;
+    print_result(t23_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

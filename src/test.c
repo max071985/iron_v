@@ -11,10 +11,47 @@
 #include "uart.h"
 #include "console.h"
 #include "timer.h"
+#include "arena.h"
+#include "systimer.h"
+#include "task.h"
+#include "pmp.h"
 
 /* Route all test output to unified dual-console multiplexer */
 #define uart_puts console_puts
 #define uart_putc console_putc
+
+static volatile uint32_t s_test_task_a_counter = 0;
+static volatile uint32_t s_test_task_b_counter = 0;
+static volatile uint32_t s_test_task_turn[10];
+static volatile uint32_t s_test_turn_idx = 0;
+
+static void test_task_a_worker(void *arg)
+{
+    (void)arg;
+    for (int i = 0; i < 5; i++)
+    {
+        s_test_task_a_counter++;
+        if (s_test_turn_idx < 10U)
+        {
+            s_test_task_turn[s_test_turn_idx++] = 1U;
+        }
+        task_yield();
+    }
+}
+
+static void test_task_b_worker(void *arg)
+{
+    (void)arg;
+    for (int i = 0; i < 5; i++)
+    {
+        s_test_task_b_counter++;
+        if (s_test_turn_idx < 10U)
+        {
+            s_test_task_turn[s_test_turn_idx++] = 2U;
+        }
+        task_yield();
+    }
+}
 
 /* Designated static test variables */
 static volatile uint32_t g_test_data_var = 0x12345678U; // Placed in .data
@@ -967,6 +1004,369 @@ void run_validation_suite(void)
                    timer_intr_en && (tmr_stat.active == 1) && ticks_advancing;
     if (t20_pass) passed_tests++;
     print_result(t20_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 21: Deterministic Static Arena Allocator (Task 3.1)      */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(21, "Deterministic Static Arena Allocator",
+                      "Verify 32 small block allocations, 33rd exhaustion guard, block reuse on free, and scratch mark/reset");
+
+    arena_init();
+
+    void *small_ptrs[ARENA_POOL_BLOCK_COUNT_SMALL];
+    int alloc_32_ok = 1;
+    int align_ok = 1;
+    int unique_ok = 1;
+
+    for (uint32_t i = 0; i < ARENA_POOL_BLOCK_COUNT_SMALL; i++)
+    {
+        small_ptrs[i] = arena_alloc(ARENA_POOL_BLOCK_SIZE_SMALL);
+        if (small_ptrs[i] == NULL)
+        {
+            alloc_32_ok = 0;
+        }
+        else if (((uintptr_t)small_ptrs[i] & WORD_ALIGN_MASK) != 0U)
+        {
+            align_ok = 0;
+        }
+
+        for (uint32_t j = 0; j < i; j++)
+        {
+            if (small_ptrs[j] == small_ptrs[i])
+            {
+                unique_ok = 0;
+            }
+        }
+    }
+
+    /* Exhaustion guard: 33rd small allocation returns NULL */
+    void *exhaust_ptr = arena_alloc(ARENA_POOL_BLOCK_SIZE_SMALL);
+    int exhaust_ok = (exhaust_ptr == NULL);
+
+    /* Free block 15 and verify it enables subsequent re-allocation reusing block 15 */
+    void *block15_orig = small_ptrs[15];
+    int free15_ok = (arena_free(block15_orig) == ARENA_FREE_SUCCESS);
+    void *block15_realloc = arena_alloc(ARENA_POOL_BLOCK_SIZE_SMALL);
+    int reuse_ok = (block15_realloc == block15_orig);
+
+    /* Free all small blocks */
+    small_ptrs[15] = block15_realloc;
+    int free_all_ok = 1;
+    for (uint32_t i = 0; i < ARENA_POOL_BLOCK_COUNT_SMALL; i++)
+    {
+        if (arena_free(small_ptrs[i]) != ARENA_FREE_SUCCESS)
+        {
+            free_all_ok = 0;
+        }
+    }
+
+    arena_pool_stats_t small_stats;
+    arena_get_pool_stats(ARENA_POOL_SMALL, &small_stats);
+    int pool_clean_ok = (small_stats.active_count == 0U) &&
+                        (small_stats.allocated_mask == ARENA_BITMASK_EMPTY);
+
+    /* Scratch arena test: mark, alloc, reset restores original pointer */
+    arena_scratch_mark_t mark_before = arena_scratch_mark();
+    void *sc_p1 = arena_scratch_alloc(128U);
+    int sc_p1_ok = (sc_p1 != NULL) && (((uintptr_t)sc_p1 & WORD_ALIGN_MASK) == 0U);
+    void *sc_p2 = arena_scratch_alloc(256U);
+    int sc_p2_ok = (sc_p2 != NULL) && ((uintptr_t)sc_p2 > (uintptr_t)sc_p1);
+
+    arena_scratch_reset(mark_before);
+    void *sc_p3 = arena_scratch_alloc(128U);
+    int scratch_restore_ok = (sc_p3 == sc_p1);
+
+    arena_scratch_reset(mark_before);
+
+    uart_puts("  Expected:    Alloc32=1, ExhaustGuard=1, Free15=1, Reused15=1, CleanPool=1, ScratchRestore=1\r\n");
+    uart_puts("  Actual:      Alloc32=");
+    put_dec(alloc_32_ok && align_ok && unique_ok);
+    uart_puts(", ExhaustGuard=");
+    put_dec(exhaust_ok);
+    uart_puts(", Free15=");
+    put_dec(free15_ok);
+    uart_puts(", Reused15=");
+    put_dec(reuse_ok);
+    uart_puts(", CleanPool=");
+    put_dec(free_all_ok && pool_clean_ok);
+    uart_puts(", ScratchRestore=");
+    put_dec(sc_p1_ok && sc_p2_ok && scratch_restore_ok);
+    uart_puts("\r\n");
+
+    int t21_pass = alloc_32_ok && align_ok && unique_ok && exhaust_ok &&
+                   free15_ok && reuse_ok && free_all_ok && pool_clean_ok &&
+                   sc_p1_ok && sc_p2_ok && scratch_restore_ok;
+    if (t21_pass) passed_tests++;
+    print_result(t21_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 22: High-Resolution SYSTIMER & Event Engine (Task 3.2)   */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(22, "High-Resolution SYSTIMER & Event Engine",
+                      "Verify 16 MHz Unit 0 counter monotonic increase (T2 > T1), microsecond conversion, and alarm routing");
+
+    /* 1. Latch Unit 0 counter T1 */
+    uint64_t t1 = systimer_get_ticks();
+
+    /* 2. Precision hardware delay: burn CPU cycles */
+    for (volatile int i = 0; i < 2000; i++)
+    {
+        asm volatile("nop");
+    }
+
+    /* 3. Latch Unit 0 counter T2 */
+    uint64_t t2 = systimer_get_ticks();
+    int monotonic_ok = (t2 > t1);
+
+    /* 4. Verify microsecond conversion */
+    uint64_t us1 = systimer_get_us();
+    systimer_delay_us(100U);
+    uint64_t us2 = systimer_get_us();
+    int us_conversion_ok = (us2 >= (us1 + 90U));
+
+    /* 5. Verify millisecond conversion consistency */
+    uint64_t ticks_sample = systimer_get_ticks();
+    uint64_t ms_calc = (ticks_sample >> SYSTIMER_TICKS_TO_US_SHIFT) / US_PER_MS;
+    uint64_t ms_curr = systimer_get_ms();
+    int ms_ok = (ms_curr >= ms_calc);
+
+    /* 6. Verify SYSTIMER configuration registers (CLK gating, Unit 0 work enable) */
+    uint32_t pcr_conf = *PCR_SYSTIMER_CONF_REG;
+    int pcr_clk_ok = ((pcr_conf & PCR_SYSTIMER_CONF_SYSTIMER_CLK_EN_M) != 0U) &&
+                     ((pcr_conf & PCR_SYSTIMER_CONF_SYSTIMER_RST_EN_M) == 0U);
+
+    uint32_t pcr_func = *PCR_SYSTIMER_FUNC_CLK_CONF_REG;
+    int pcr_func_ok = (pcr_func & PCR_SYSTIMER_FUNC_CLK_CONF_SYSTIMER_FUNC_CLK_EN_M) != 0U;
+
+    uint32_t sys_conf = *SYSTIMER_CONF_REG;
+    int unit0_work_ok = (sys_conf & SYSTIMER_CONF_TIMER_UNIT0_WORK_EN_M) != 0U;
+
+    /* 7. Verify Target 0 alarm configuration and INTMTX routing */
+    int alarm_init_ok = (systimer_alarm_init(50000U, NULL) == 0);
+    uint32_t route_target0 = interrupt_get_map(INT_SRC_SYSTIMER_TARGET0);
+    uint32_t pri_target0 = interrupt_get_priority(SYSTIMER_CPU_INTR_CHANNEL);
+    int intr_en_target0 = interrupt_is_enabled(SYSTIMER_CPU_INTR_CHANNEL);
+    int alarm_route_ok = (route_target0 == SYSTIMER_CPU_INTR_CHANNEL) &&
+                         (pri_target0 == SYSTIMER_INTR_PRIORITY) &&
+                         intr_en_target0;
+
+    systimer_alarm_cancel();
+    int alarm_cancel_ok = !interrupt_is_enabled(SYSTIMER_CPU_INTR_CHANNEL);
+
+    uart_puts("  Expected:    Monotonic=1, UsConvert=1, MsValid=1, PcrClk=1, FuncClk=1, Unit0Work=1, AlarmRoute=1, Cancel=1\r\n");
+    uart_puts("  Actual:      Monotonic=");
+    put_dec(monotonic_ok);
+    uart_puts(", UsConvert=");
+    put_dec(us_conversion_ok);
+    uart_puts(", MsValid=");
+    put_dec(ms_ok);
+    uart_puts(", PcrClk=");
+    put_dec(pcr_clk_ok);
+    uart_puts(", FuncClk=");
+    put_dec(pcr_func_ok);
+    uart_puts(", Unit0Work=");
+    put_dec(unit0_work_ok);
+    uart_puts(", AlarmRoute=");
+    put_dec(alarm_init_ok && alarm_route_ok);
+    uart_puts(", Cancel=");
+    put_dec(alarm_cancel_ok);
+    uart_puts("\r\n");
+
+    int t22_pass = monotonic_ok && us_conversion_ok && ms_ok && pcr_clk_ok &&
+                   pcr_func_ok && unit0_work_ok && alarm_init_ok && alarm_route_ok &&
+                   alarm_cancel_ok;
+    if (t22_pass) passed_tests++;
+    print_result(t22_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 23: Cooperative Coroutine Task Engine & Scheduler (3.3)  */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(23, "Cooperative Coroutine Task Engine & Scheduler",
+                      "Verify Task A & Task B creation, callee-saved context switching, cooperative yields, and state termination");
+
+    s_test_task_a_counter = 0;
+    s_test_task_b_counter = 0;
+    s_test_turn_idx = 0;
+
+    static uint8_t task_a_stack[1024] __attribute__((aligned(16)));
+    static uint8_t task_b_stack[1024] __attribute__((aligned(16)));
+
+    task_init();
+
+    int id_a = task_create("task_a", test_task_a_worker, NULL, 10U, task_a_stack, sizeof(task_a_stack));
+    int id_b = task_create("task_b", test_task_b_worker, NULL, 10U, task_b_stack, sizeof(task_b_stack));
+
+    int create_ok = (id_a > 0) && (id_b > 0) && (id_a != id_b);
+
+    /* Run cooperative scheduling loop until both workers terminate */
+    for (uint32_t loop = 0; loop < 25U; loop++)
+    {
+        task_control_block_t *ta = task_get_by_id((uint32_t)id_a);
+        task_control_block_t *tb = task_get_by_id((uint32_t)id_b);
+        if (ta && tb &&
+            ta->state == TASK_STATE_TERMINATED &&
+            tb->state == TASK_STATE_TERMINATED)
+        {
+            break;
+        }
+        task_yield();
+    }
+
+    int count_a_ok = (s_test_task_a_counter == 5U);
+    int count_b_ok = (s_test_task_b_counter == 5U);
+
+    /* Verify both tasks interleaved execution (both made progress and interleaved in turn log) */
+    int interleaved_ok = (s_test_turn_idx == 10U);
+
+    /* Verify states reached TERMINATED */
+    task_control_block_t *tcb_a = task_get_by_id((uint32_t)id_a);
+    task_control_block_t *tcb_b = task_get_by_id((uint32_t)id_b);
+    int term_a_ok = (tcb_a != NULL) && (tcb_a->state == TASK_STATE_TERMINATED);
+    int term_b_ok = (tcb_b != NULL) && (tcb_b->state == TASK_STATE_TERMINATED);
+
+    task_scheduler_status_t sched_stat;
+    task_get_status(&sched_stat);
+    int switches_ok = (sched_stat.total_switches >= 10U);
+
+    uart_puts("  Expected:    Create=1, CountA=5, CountB=5, Interleaved=1, TermA=1, TermB=1, Switches=1\r\n");
+    uart_puts("  Actual:      Create=");
+    put_dec(create_ok);
+    uart_puts(", CountA=");
+    put_dec(s_test_task_a_counter);
+    uart_puts(", CountB=");
+    put_dec(s_test_task_b_counter);
+    uart_puts(", Interleaved=");
+    put_dec(interleaved_ok);
+    uart_puts(", TermA=");
+    put_dec(term_a_ok);
+    uart_puts(", TermB=");
+    put_dec(term_b_ok);
+    uart_puts(", Switches=");
+    put_dec(switches_ok);
+    uart_puts("\r\n");
+
+    int t23_pass = create_ok && count_a_ok && count_b_ok && interleaved_ok &&
+                   term_a_ok && term_b_ok && switches_ok;
+    if (t23_pass) passed_tests++;
+    print_result(t23_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 24: RISC-V PMP & APM Hardware Fault Isolation (3.4)      */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(24, "RISC-V PMP & APM Fault Isolation",
+                      "Configure PMP Region 0 over kernel data read-only in User Mode; assert pmpcfg0 and APM bitfields match");
+
+    /* 1. Initialize PMP and APM subsystems */
+    int pmp_init_ok = (pmp_init() == PMP_OK);
+    int apm_init_ok = (apm_init() == APM_OK);
+
+    /* 2. Configure PMP Region 0 over kernel data with read-only permission in User Mode */
+    /* DRAM data partition starts at HP_DRAM_START_ADDR; naturally aligned to 64KB (0x10000) */
+    uint32_t kernel_data_base = HP_DRAM_START_ADDR;
+    uint32_t kernel_data_len  = 65536U; /* 64 KB */
+
+    pmp_region_cfg_t pmp_r0 = {
+        .region_idx    = 0U,
+        .start_addr    = kernel_data_base,
+        .length        = kernel_data_len,
+        .read_allow    = 1U,
+        .write_allow   = 0U,
+        .execute_allow = 0U,
+        .lock          = 0U,
+        .addr_mode     = (uint8_t)PMP_ADDR_MODE_NAPOT
+    };
+
+    int pmp_set_ok = (pmp_set_region(&pmp_r0) == PMP_OK);
+
+    /* 3. Read back pmpcfg0 CSR directly; assert bitfields match requested configuration */
+    uint32_t raw_pmpcfg0 = pmp_read_cfg(0U);
+    uint8_t pmp0cfg = (uint8_t)(raw_pmpcfg0 & PMP_CFG_ENTRY_MASK);
+
+    int pmp_r_ok = ((pmp0cfg & PMP_CFG_R_BIT) != 0U);
+    int pmp_w_ok = ((pmp0cfg & PMP_CFG_W_BIT) == 0U);
+    int pmp_x_ok = ((pmp0cfg & PMP_CFG_X_BIT) == 0U);
+    int pmp_a_ok = ((pmp0cfg & PMP_CFG_A_MASK) == PMP_CFG_A_NAPOT);
+    int pmp_l_ok = ((pmp0cfg & PMP_CFG_L_BIT) == 0U);
+
+    /* Expected entry byte = PMP_CFG_R_BIT | PMP_CFG_A_NAPOT = 0x01 | 0x18 = 0x19 */
+    uint8_t expected_pmp0cfg = PMP_CFG_R_BIT | PMP_CFG_A_NAPOT;
+    int pmp_cfg_match = (pmp0cfg == expected_pmp0cfg);
+
+    /* 4. Read back pmpaddr0 CSR; assert NAPOT address encoding matches */
+    uint32_t raw_pmpaddr0 = pmp_read_addr(0U);
+    uint32_t expected_pmpaddr0 = (kernel_data_base >> PMP_ADDR_SHIFT) |
+                                 ((kernel_data_len - 1U) >> PMP_NAPOT_MASK_SHIFT);
+    int pmp_addr_match = (raw_pmpaddr0 == expected_pmpaddr0);
+
+    /* 5. Read back through pmp_get_region() abstraction */
+    pmp_region_cfg_t pmp_readback;
+    int pmp_get_ok = (pmp_get_region(0U, &pmp_readback) == PMP_OK);
+    int pmp_decode_ok = (pmp_readback.start_addr == kernel_data_base) &&
+                        (pmp_readback.length == kernel_data_len) &&
+                        (pmp_readback.read_allow == 1U) &&
+                        (pmp_readback.write_allow == 0U) &&
+                        (pmp_readback.execute_allow == 0U) &&
+                        (pmp_readback.lock == 0U) &&
+                        (pmp_readback.addr_mode == (uint8_t)PMP_ADDR_MODE_NAPOT);
+
+    /* 6. Configure HP_APM Region 1 authority attributes over DRAM bounds (Region 0 preserves 4GB pass-through) */
+    apm_region_cfg_t apm_r1 = {
+        .region_idx    = 1U,
+        .start_addr    = HP_DRAM_START_ADDR,
+        .end_addr      = HP_DRAM_END_ADDR,
+        .read_allow    = 1U,
+        .write_allow   = 1U,
+        .execute_allow = 0U,
+        .filter_enable = 1U
+    };
+    int apm_set_ok = (apm_set_region(&apm_r1) == APM_OK);
+
+    /* 7. Verify APM register configuration directly */
+    uint32_t apm_start = *HP_APM_REGION_START_REG(1U);
+    uint32_t apm_end   = *HP_APM_REGION_END_REG(1U);
+    uint32_t apm_pms   = *HP_APM_REGION_PMS_ATTR_REG(1U);
+    uint32_t apm_flt   = *HP_APM_REGION_FILTER_ENABLE_REG;
+
+    int apm_reg_ok = (apm_start == HP_DRAM_START_ADDR) &&
+                     (apm_end == HP_DRAM_END_ADDR) &&
+                     ((apm_pms & APM_PMS_R_BIT) != 0U) &&
+                     ((apm_pms & APM_PMS_W_BIT) != 0U) &&
+                     ((apm_pms & APM_PMS_X_BIT) == 0U) &&
+                     ((apm_flt & (1U << 1U)) != 0U) &&
+                     ((apm_flt & (1U << 0U)) != 0U); /* Region 0 remains enabled */
+
+    /* 8. Clean up test regions so system stays unconstrained */
+    pmp_disable_region(0U);
+    apm_disable_region(1U);
+    int pmp_cleanup_ok = ((pmp_read_cfg(0U) & PMP_CFG_ENTRY_MASK) == 0U);
+    int apm_cleanup_ok = ((*HP_APM_REGION_FILTER_ENABLE_REG & (1U << 1U)) == 0U);
+
+    uart_puts("  Expected:    PmpInit=1, Set=1, CfgMatch=1, AddrMatch=1, Decode=1, ApmReg=1, Cleanup=1\r\n");
+    uart_puts("  Actual:      PmpInit=");
+    put_dec(pmp_init_ok && apm_init_ok);
+    uart_puts(", Set=");
+    put_dec(pmp_set_ok);
+    uart_puts(", CfgMatch=");
+    put_dec(pmp_cfg_match && pmp_r_ok && pmp_w_ok && pmp_x_ok && pmp_a_ok && pmp_l_ok);
+    uart_puts(", AddrMatch=");
+    put_dec(pmp_addr_match);
+    uart_puts(", Decode=");
+    put_dec(pmp_get_ok && pmp_decode_ok);
+    uart_puts(", ApmReg=");
+    put_dec(apm_set_ok && apm_reg_ok);
+    uart_puts(", Cleanup=");
+    put_dec(pmp_cleanup_ok && apm_cleanup_ok);
+    uart_puts("\r\n");
+
+    int t24_pass = pmp_init_ok && apm_init_ok && pmp_set_ok && pmp_cfg_match &&
+                   pmp_addr_match && pmp_get_ok && pmp_decode_ok && apm_set_ok &&
+                   apm_reg_ok && pmp_cleanup_ok && apm_cleanup_ok;
+    if (t24_pass) passed_tests++;
+    print_result(t24_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

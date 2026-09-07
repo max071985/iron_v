@@ -579,6 +579,169 @@ def run_suite():
         t18_pass
     )
 
+    # TEST 19: Hardware Periodic Timer (TIMG0 T0) Driver Linkage (Task 2.6)
+    total += 1
+    timer_syms = [
+        "timer_init",
+        "timer_start",
+        "timer_stop",
+        "timer_isr",
+        "timer_dpc_handler",
+        "timer_get_tick_count",
+        "timer_get_status",
+        "timer_get_current_ticks"
+    ]
+    found_timer_syms = [s for s in timer_syms if s in symbols]
+    all_timer_found = len(found_timer_syms) == len(timer_syms)
+    all_timer_in_text = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40820000)
+        for s in found_timer_syms
+    )
+    t19_pass = all_timer_found and all_timer_in_text
+    t19_actual = f"Found {len(found_timer_syms)}/{len(timer_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    passed += print_result_line(
+        total,
+        "Hardware Periodic Timer (TIMG0 T0) Driver Linkage",
+        "Verify timer_init, start/stop, ISR, DPC handler, and query symbols exist in IRAM",
+        "All 8 timer driver symbols present in IRAM text section [0x40800000, 0x40820000)",
+        t19_actual,
+        t19_pass
+    )
+
+    # TEST 20: Deterministic Static Arena Memory Allocator Linkage (Task 3.1)
+    total += 1
+    arena_syms = [
+        "arena_init",
+        "arena_alloc",
+        "arena_alloc_pool",
+        "arena_free",
+        "arena_scratch_alloc",
+        "arena_scratch_mark",
+        "arena_scratch_reset",
+        "arena_get_stats",
+        "arena_get_pool_stats",
+        "arena_get_scratch_stats"
+    ]
+    found_arena_syms = [s for s in arena_syms if s in symbols]
+    all_arena_found = len(found_arena_syms) == len(arena_syms)
+    all_arena_in_text = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40820000)
+        for s in found_arena_syms
+    )
+    t20_pass = all_arena_found and all_arena_in_text
+    t20_actual = f"Found {len(found_arena_syms)}/{len(arena_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    passed += print_result_line(
+        total,
+        "Deterministic Static Arena Memory Allocator Linkage",
+        "Verify arena_init, alloc/free, scratch mark/reset, and telemetry symbols exist in IRAM",
+        "All 10 arena allocator symbols present in IRAM text section [0x40800000, 0x40820000)",
+        t20_actual,
+        t20_pass
+    )
+
+    # TEST 21: High-Resolution SYSTIMER Driver Linkage (Task 3.2)
+    total += 1
+    systimer_syms = [
+        "systimer_init",
+        "systimer_get_ticks",
+        "systimer_get_us",
+        "systimer_get_ms",
+        "systimer_delay_us",
+        "systimer_delay_ms",
+        "systimer_alarm_init",
+        "systimer_alarm_set_oneshot",
+        "systimer_alarm_cancel",
+        "systimer_isr",
+        "systimer_get_telemetry"
+    ]
+    found_systimer_syms = [s for s in systimer_syms if s in symbols]
+    all_systimer_found = len(found_systimer_syms) == len(systimer_syms)
+    all_systimer_in_text = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40820000)
+        for s in found_systimer_syms
+    )
+    t21_pass = all_systimer_found and all_systimer_in_text
+    t21_actual = f"Found {len(found_systimer_syms)}/{len(systimer_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    passed += print_result_line(
+        total,
+        "High-Resolution SYSTIMER Driver Linkage",
+        "Verify systimer_init, get_ticks/us/ms, delay, alarm, and telemetry symbols exist in IRAM",
+        "All 11 SYSTIMER driver symbols present in IRAM text section [0x40800000, 0x40820000)",
+        t21_actual,
+        t21_pass
+    )
+
+    # TEST 22: Cooperative Coroutine Scheduler Linkage (Task 3.3)
+    total += 1
+    task_syms = [
+        "task_init",
+        "task_create",
+        "task_yield",
+        "task_exit",
+        "task_terminate",
+        "task_get_current",
+        "task_get_by_id",
+        "task_get_count",
+        "task_get_status",
+        "task_state_name",
+        "task_switch_asm"
+    ]
+    found_task_syms = [s for s in task_syms if s in symbols]
+    all_task_found = len(found_task_syms) == len(task_syms)
+    all_task_in_text = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40820000)
+        for s in found_task_syms
+    )
+    t22_pass = all_task_found and all_task_in_text
+    t22_actual = f"Found {len(found_task_syms)}/{len(task_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    passed += print_result_line(
+        total,
+        "Cooperative Coroutine Task Engine Linkage",
+        "Verify task_init, create, yield, exit, status, and task_switch_asm symbols exist in IRAM",
+        "All 11 coroutine scheduler symbols present in IRAM text section [0x40800000, 0x40820000)",
+        t22_actual,
+        t22_pass
+    )
+
+    # TEST 23: RISC-V PMP & APM Fault Isolation Linkage (Task 3.4)
+    total += 1
+    pmp_syms = [
+        "pmp_init",
+        "pmp_calc_napot",
+        "pmp_decode_napot",
+        "pmp_set_region",
+        "pmp_get_region",
+        "pmp_disable_region",
+        "pmp_read_cfg",
+        "pmp_write_cfg",
+        "pmp_read_addr",
+        "pmp_write_addr",
+        "apm_init",
+        "apm_set_region",
+        "apm_get_region",
+        "apm_disable_region",
+        "apm_enable_master",
+        "apm_get_exception_info",
+        "apm_clear_exception",
+        "pmp_get_telemetry"
+    ]
+    found_pmp_syms = [s for s in pmp_syms if s in symbols]
+    all_pmp_found = len(found_pmp_syms) == len(pmp_syms)
+    all_pmp_in_text = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40820000)
+        for s in found_pmp_syms
+    )
+    t23_pass = all_pmp_found and all_pmp_in_text
+    t23_actual = f"Found {len(found_pmp_syms)}/{len(pmp_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    passed += print_result_line(
+        total,
+        "RISC-V PMP & APM Fault Isolation Linkage",
+        "Verify pmp_init, napot calc/decode, set/get/disable, and apm driver symbols exist in IRAM",
+        f"All {len(pmp_syms)} PMP and APM symbols present in IRAM text section [0x40800000, 0x40820000)",
+        t23_actual,
+        t23_pass
+    )
+
     print("\n" + "=" * 70)
     print("                       TEST SUITE SUMMARY                             ")
     print("=" * 70)

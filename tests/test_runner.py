@@ -639,6 +639,38 @@ def run_suite():
         t20_pass
     )
 
+    # TEST 21: High-Resolution SYSTIMER Driver Linkage (Task 3.2)
+    total += 1
+    systimer_syms = [
+        "systimer_init",
+        "systimer_get_ticks",
+        "systimer_get_us",
+        "systimer_get_ms",
+        "systimer_delay_us",
+        "systimer_delay_ms",
+        "systimer_alarm_init",
+        "systimer_alarm_set_oneshot",
+        "systimer_alarm_cancel",
+        "systimer_isr",
+        "systimer_get_telemetry"
+    ]
+    found_systimer_syms = [s for s in systimer_syms if s in symbols]
+    all_systimer_found = len(found_systimer_syms) == len(systimer_syms)
+    all_systimer_in_text = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40820000)
+        for s in found_systimer_syms
+    )
+    t21_pass = all_systimer_found and all_systimer_in_text
+    t21_actual = f"Found {len(found_systimer_syms)}/{len(systimer_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    passed += print_result_line(
+        total,
+        "High-Resolution SYSTIMER Driver Linkage",
+        "Verify systimer_init, get_ticks/us/ms, delay, alarm, and telemetry symbols exist in IRAM",
+        "All 11 SYSTIMER driver symbols present in IRAM text section [0x40800000, 0x40820000)",
+        t21_actual,
+        t21_pass
+    )
+
     print("\n" + "=" * 70)
     print("                       TEST SUITE SUMMARY                             ")
     print("=" * 70)

@@ -18,7 +18,7 @@ CFLAGS = -march=rv32imac_zicsr_zifencei -mabi=ilp32 -ffreestanding -nostdlib -O2
 LDFLAGS = -T ld/link.ld -nostdlib
 
 # Baseline source files
-SRCS = src/crt0.S src/trap_entry.S src/main.c src/string.c src/utils.c src/test.c src/clock.c src/wdt.c src/trap.c src/panic.c src/interrupt.c src/dpc.c src/usb_serial.c src/uart.c src/console.c src/timer.c src/arena.c
+SRCS = src/crt0.S src/trap_entry.S src/main.c src/string.c src/utils.c src/test.c src/clock.c src/wdt.c src/trap.c src/panic.c src/interrupt.c src/dpc.c src/usb_serial.c src/uart.c src/console.c src/timer.c src/arena.c src/systimer.c
 
 # Interface selection: 'usb' (default) or 'uart'
 INTERFACE ?= usb
@@ -39,7 +39,7 @@ MONITOR_BAUD ?= 115200
 all: firmware.bin
 
 firmware.elf: $(SRCS)
-	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
+	$(CC) $(CFLAGS) $(LDFLAGS) $^ -lgcc -o $@
 
 firmware.bin: firmware.elf
 	esptool --chip esp32c6 elf2image --flash-mode dio --flash-size 8MB --flash-freq 80m -o $@ $<

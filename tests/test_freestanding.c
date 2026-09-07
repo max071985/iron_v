@@ -14,6 +14,7 @@
 #include "dpc.h"
 #include "console.h"
 #include "arena.h"
+#include "systimer.h"
 
 /* Freestanding function aliases matching runtime naming conventions */
 static inline size_t s_strlen(const char *s)
@@ -638,6 +639,55 @@ static void test_arena_allocator(void)
     TEST_ASSERT(invalid_pool_stats.block_size == 0U, "invalid pool stats returns zeroed struct");
 }
 
+static void test_systimer_timebase(void)
+{
+    /* 1. Tick conversion correctness */
+    uint64_t ticks_1us = 16ULL;
+    TEST_ASSERT((ticks_1us >> SYSTIMER_TICKS_TO_US_SHIFT) == 1ULL, "16 ticks is exactly 1 us via shift");
+    TEST_ASSERT((ticks_1us / SYSTIMER_TICKS_PER_US) == 1ULL, "16 ticks is 1 us via division");
+
+    uint64_t ticks_1s = SYSTIMER_TICKS_PER_SEC;
+    uint64_t us_1s = ticks_1s >> SYSTIMER_TICKS_TO_US_SHIFT;
+    TEST_ASSERT(us_1s == US_PER_SECOND, "16,000,000 ticks is 1,000,000 us");
+    TEST_ASSERT((us_1s / US_PER_MS) == MS_PER_SECOND, "1,000,000 us is 1,000 ms");
+    TEST_ASSERT((us_1s / US_PER_SECOND) == 1ULL, "1,000,000 us is 1 second");
+
+    /* 2. Precision remainders */
+    uint64_t arbitrary_us = 12345678ULL; /* 12.345678 seconds */
+    uint32_t sec = (uint32_t)(arbitrary_us / US_PER_SECOND);
+    uint32_t ms_rem = (uint32_t)((arbitrary_us % US_PER_SECOND) / US_PER_MS);
+    uint32_t us_rem = (uint32_t)(arbitrary_us % US_PER_MS);
+    TEST_ASSERT(sec == 12U, "12345678 us has 12 seconds");
+    TEST_ASSERT(ms_rem == 345U, "12345678 us has 345 ms remainder");
+    TEST_ASSERT(us_rem == 678U, "12345678 us has 678 us remainder");
+
+    /* 3. Uptime calendar math */
+    uint32_t uptime_test_sec = 90061U; /* 1 day (86400) + 1 hour (3600) + 1 min (60) + 1 sec (1) */
+    uint32_t d = uptime_test_sec / SEC_PER_DAY;
+    uint32_t rem = uptime_test_sec % SEC_PER_DAY;
+    uint32_t h = rem / SEC_PER_HOUR;
+    rem %= SEC_PER_HOUR;
+    uint32_t m = rem / SEC_PER_MINUTE;
+    uint32_t s = rem % SEC_PER_MINUTE;
+    TEST_ASSERT(d == 1U, "90061s is 1 day");
+    TEST_ASSERT(h == 1U, "90061s is 1 hour");
+    TEST_ASSERT(m == 1U, "90061s is 1 minute");
+    TEST_ASSERT(s == 1U, "90061s is 1 second");
+
+    /* 4. Bitfield limits & clamp boundaries */
+    TEST_ASSERT(SYSTIMER_MAX_COUNTER_TICKS == 0x000FFFFFFFFFFFFFULL, "52-bit counter maximum is 0xFFFFFFFFFFFFF");
+    TEST_ASSERT(SYSTIMER_MAX_PERIOD_TICKS == 0x03FFFFFFU, "26-bit period maximum is 0x3FFFFFF");
+    TEST_ASSERT(SYSTIMER_MAX_PERIOD_US == (0x03FFFFFFU / 16U), "Max period us matches tick shift");
+
+    /* 5. Parameterized register calculation offsets */
+    TEST_ASSERT((uintptr_t)SYSTIMER_UNIT_OP_REG(0) == (SYSTIMER_BASE_ADDR + 0x04U), "Unit 0 OP offset is 0x04");
+    TEST_ASSERT((uintptr_t)SYSTIMER_UNIT_OP_REG(1) == (SYSTIMER_BASE_ADDR + 0x08U), "Unit 1 OP offset is 0x08");
+    TEST_ASSERT((uintptr_t)SYSTIMER_TARGET_CONF_REG(0) == (SYSTIMER_BASE_ADDR + 0x34U), "Target 0 CONF offset is 0x34");
+    TEST_ASSERT((uintptr_t)SYSTIMER_TARGET_CONF_REG(1) == (SYSTIMER_BASE_ADDR + 0x38U), "Target 1 CONF offset is 0x38");
+    TEST_ASSERT((uintptr_t)SYSTIMER_TARGET_CONF_REG(2) == (SYSTIMER_BASE_ADDR + 0x3CU), "Target 2 CONF offset is 0x3C");
+    TEST_ASSERT((uintptr_t)SYSTIMER_COMP_LOAD_REG(0) == (SYSTIMER_BASE_ADDR + 0x50U), "COMP0 LOAD offset is 0x50");
+}
+
 int main(void)
 {
     printf("======================================================================\n");
@@ -655,6 +705,7 @@ int main(void)
     test_dpc_queue();
     test_console_multiplexer();
     test_arena_allocator();
+    test_systimer_timebase();
 
     printf("======================================================================\n");
     if (g_assert_failures == 0)

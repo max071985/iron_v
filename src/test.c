@@ -11,6 +11,7 @@
 #include "uart.h"
 #include "console.h"
 #include "timer.h"
+#include "arena.h"
 
 /* Route all test output to unified dual-console multiplexer */
 #define uart_puts console_puts
@@ -967,6 +968,101 @@ void run_validation_suite(void)
                    timer_intr_en && (tmr_stat.active == 1) && ticks_advancing;
     if (t20_pass) passed_tests++;
     print_result(t20_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 21: Deterministic Static Arena Allocator (Task 3.1)      */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(21, "Deterministic Static Arena Allocator",
+                      "Verify 32 small block allocations, 33rd exhaustion guard, block reuse on free, and scratch mark/reset");
+
+    arena_init();
+
+    void *small_ptrs[ARENA_POOL_BLOCK_COUNT_SMALL];
+    int alloc_32_ok = 1;
+    int align_ok = 1;
+    int unique_ok = 1;
+
+    for (uint32_t i = 0; i < ARENA_POOL_BLOCK_COUNT_SMALL; i++)
+    {
+        small_ptrs[i] = arena_alloc(ARENA_POOL_BLOCK_SIZE_SMALL);
+        if (small_ptrs[i] == NULL)
+        {
+            alloc_32_ok = 0;
+        }
+        else if (((uint32_t)small_ptrs[i] & WORD_ALIGN_MASK) != 0U)
+        {
+            align_ok = 0;
+        }
+
+        for (uint32_t j = 0; j < i; j++)
+        {
+            if (small_ptrs[j] == small_ptrs[i])
+            {
+                unique_ok = 0;
+            }
+        }
+    }
+
+    /* Exhaustion guard: 33rd small allocation returns NULL */
+    void *exhaust_ptr = arena_alloc(ARENA_POOL_BLOCK_SIZE_SMALL);
+    int exhaust_ok = (exhaust_ptr == NULL);
+
+    /* Free block 15 and verify it enables subsequent re-allocation reusing block 15 */
+    void *block15_orig = small_ptrs[15];
+    int free15_ok = (arena_free(block15_orig) == ARENA_FREE_SUCCESS);
+    void *block15_realloc = arena_alloc(ARENA_POOL_BLOCK_SIZE_SMALL);
+    int reuse_ok = (block15_realloc == block15_orig);
+
+    /* Free all small blocks */
+    small_ptrs[15] = block15_realloc;
+    int free_all_ok = 1;
+    for (uint32_t i = 0; i < ARENA_POOL_BLOCK_COUNT_SMALL; i++)
+    {
+        if (arena_free(small_ptrs[i]) != ARENA_FREE_SUCCESS)
+        {
+            free_all_ok = 0;
+        }
+    }
+
+    arena_pool_stats_t small_stats;
+    arena_get_pool_stats(ARENA_POOL_SMALL, &small_stats);
+    int pool_clean_ok = (small_stats.active_count == 0U) &&
+                        (small_stats.allocated_mask == ARENA_BITMASK_EMPTY);
+
+    /* Scratch arena test: mark, alloc, reset restores original pointer */
+    arena_scratch_mark_t mark_before = arena_scratch_mark();
+    void *sc_p1 = arena_scratch_alloc(128U);
+    int sc_p1_ok = (sc_p1 != NULL) && (((uint32_t)sc_p1 & WORD_ALIGN_MASK) == 0U);
+    void *sc_p2 = arena_scratch_alloc(256U);
+    int sc_p2_ok = (sc_p2 != NULL) && (sc_p2 > sc_p1);
+
+    arena_scratch_reset(mark_before);
+    void *sc_p3 = arena_scratch_alloc(128U);
+    int scratch_restore_ok = (sc_p3 == sc_p1);
+
+    arena_scratch_reset(mark_before);
+
+    uart_puts("  Expected:    Alloc32=1, ExhaustGuard=1, Free15=1, Reused15=1, CleanPool=1, ScratchRestore=1\r\n");
+    uart_puts("  Actual:      Alloc32=");
+    put_dec(alloc_32_ok && align_ok && unique_ok);
+    uart_puts(", ExhaustGuard=");
+    put_dec(exhaust_ok);
+    uart_puts(", Free15=");
+    put_dec(free15_ok);
+    uart_puts(", Reused15=");
+    put_dec(reuse_ok);
+    uart_puts(", CleanPool=");
+    put_dec(free_all_ok && pool_clean_ok);
+    uart_puts(", ScratchRestore=");
+    put_dec(sc_p1_ok && sc_p2_ok && scratch_restore_ok);
+    uart_puts("\r\n");
+
+    int t21_pass = alloc_32_ok && align_ok && unique_ok && exhaust_ok &&
+                   free15_ok && reuse_ok && free_all_ok && pool_clean_ok &&
+                   sc_p1_ok && sc_p2_ok && scratch_restore_ok;
+    if (t21_pass) passed_tests++;
+    print_result(t21_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

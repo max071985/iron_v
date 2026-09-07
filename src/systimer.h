@@ -49,20 +49,25 @@
 #define SYSTIMER_CPU_INTR_CHANNEL        8U
 #define SYSTIMER_INTR_PRIORITY           9U
 
-/* Parameterized Register Accessor Macros (AGENTS.md Compliance) */
-#define SYSTIMER_UNIT_OP_REG(u)          ((volatile uint32_t *)(SYSTIMER_BASE_ADDR + 0x04U + ((uint32_t)(u) * 0x04U)))
-#define SYSTIMER_UNIT_LOAD_HI_REG(u)     ((volatile uint32_t *)(SYSTIMER_BASE_ADDR + 0x0CU + ((uint32_t)(u) * 0x08U)))
-#define SYSTIMER_UNIT_LOAD_LO_REG(u)     ((volatile uint32_t *)(SYSTIMER_BASE_ADDR + 0x10U + ((uint32_t)(u) * 0x08U)))
-#define SYSTIMER_UNIT_VALUE_HI_REG(u)    ((volatile uint32_t *)(SYSTIMER_BASE_ADDR + 0x40U + ((uint32_t)(u) * 0x08U)))
-#define SYSTIMER_UNIT_VALUE_LO_REG(u)    ((volatile uint32_t *)(SYSTIMER_BASE_ADDR + 0x44U + ((uint32_t)(u) * 0x08U)))
-#define SYSTIMER_UNIT_LOAD_REG(u)        ((volatile uint32_t *)(SYSTIMER_BASE_ADDR + 0x5CU + ((uint32_t)(u) * 0x04U)))
+/* Status & Error Codes */
+#define SYSTIMER_OK                      0
+#define SYSTIMER_ERR_INVALID_PARAM       (-1)
+#define SYSTIMER_ERR_OVERFLOW            (-2)
 
-#define SYSTIMER_TARGET_HI_REG(t)        ((volatile uint32_t *)(SYSTIMER_BASE_ADDR + 0x1CU + ((uint32_t)(t) * 0x08U)))
-#define SYSTIMER_TARGET_LO_REG(t)        ((volatile uint32_t *)(SYSTIMER_BASE_ADDR + 0x20U + ((uint32_t)(t) * 0x08U)))
-#define SYSTIMER_TARGET_CONF_REG(t)      ((volatile uint32_t *)(SYSTIMER_BASE_ADDR + 0x34U + ((uint32_t)(t) * 0x04U)))
-#define SYSTIMER_COMP_LOAD_REG(t)        ((volatile uint32_t *)(SYSTIMER_BASE_ADDR + 0x50U + ((uint32_t)(t) * 0x04U)))
-#define SYSTIMER_REAL_TARGET_LO_REG(t)   ((volatile uint32_t *)(SYSTIMER_BASE_ADDR + 0x74U + ((uint32_t)(t) * 0x08U)))
-#define SYSTIMER_REAL_TARGET_HI_REG(t)   ((volatile uint32_t *)(SYSTIMER_BASE_ADDR + 0x78U + ((uint32_t)(t) * 0x08U)))
+/* Parameterized Register Accessor Macros (AGENTS.md Compliance) */
+#define SYSTIMER_UNIT_OP_REG(u)          ((volatile uint32_t *)(uintptr_t)(SYSTIMER_BASE_ADDR + 0x04U + ((uint32_t)(u) * 0x04U)))
+#define SYSTIMER_UNIT_LOAD_HI_REG(u)     ((volatile uint32_t *)(uintptr_t)(SYSTIMER_BASE_ADDR + 0x0CU + ((uint32_t)(u) * 0x08U)))
+#define SYSTIMER_UNIT_LOAD_LO_REG(u)     ((volatile uint32_t *)(uintptr_t)(SYSTIMER_BASE_ADDR + 0x10U + ((uint32_t)(u) * 0x08U)))
+#define SYSTIMER_UNIT_VALUE_HI_REG(u)    ((volatile uint32_t *)(uintptr_t)(SYSTIMER_BASE_ADDR + 0x40U + ((uint32_t)(u) * 0x08U)))
+#define SYSTIMER_UNIT_VALUE_LO_REG(u)    ((volatile uint32_t *)(uintptr_t)(SYSTIMER_BASE_ADDR + 0x44U + ((uint32_t)(u) * 0x08U)))
+#define SYSTIMER_UNIT_LOAD_REG(u)        ((volatile uint32_t *)(uintptr_t)(SYSTIMER_BASE_ADDR + 0x5CU + ((uint32_t)(u) * 0x04U)))
+
+#define SYSTIMER_TARGET_HI_REG(t)        ((volatile uint32_t *)(uintptr_t)(SYSTIMER_BASE_ADDR + 0x1CU + ((uint32_t)(t) * 0x08U)))
+#define SYSTIMER_TARGET_LO_REG(t)        ((volatile uint32_t *)(uintptr_t)(SYSTIMER_BASE_ADDR + 0x20U + ((uint32_t)(t) * 0x08U)))
+#define SYSTIMER_TARGET_CONF_REG(t)      ((volatile uint32_t *)(uintptr_t)(SYSTIMER_BASE_ADDR + 0x34U + ((uint32_t)(t) * 0x04U)))
+#define SYSTIMER_COMP_LOAD_REG(t)        ((volatile uint32_t *)(uintptr_t)(SYSTIMER_BASE_ADDR + 0x50U + ((uint32_t)(t) * 0x04U)))
+#define SYSTIMER_REAL_TARGET_LO_REG(t)   ((volatile uint32_t *)(uintptr_t)(SYSTIMER_BASE_ADDR + 0x74U + ((uint32_t)(t) * 0x08U)))
+#define SYSTIMER_REAL_TARGET_HI_REG(t)   ((volatile uint32_t *)(uintptr_t)(SYSTIMER_BASE_ADDR + 0x78U + ((uint32_t)(t) * 0x08U)))
 
 /* SYSTIMER Units and Targets */
 typedef enum {

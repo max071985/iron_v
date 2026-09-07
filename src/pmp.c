@@ -153,25 +153,25 @@ int pmp_decode_napot(uint32_t pmpaddr, uint32_t *base, uint32_t *len)
     }
 
     uint32_t trailing_ones;
-    if (pmpaddr == 0xFFFFFFFFU)
+    if (pmpaddr == PMP_ALL_BITS_MASK)
     {
-        trailing_ones = 32U;
+        trailing_ones = PMP_NAPOT_MAX_BITS;
     }
     else
     {
         trailing_ones = (uint32_t)__builtin_ctz(~pmpaddr);
     }
 
-    if (trailing_ones >= 29U)
+    if (trailing_ones >= PMP_NAPOT_MAX_TRAILING_ONES)
     {
-        *len = 0xFFFFFFFFU;
+        *len = PMP_ALL_BITS_MASK;
     }
     else
     {
         *len = 1U << (trailing_ones + PMP_NAPOT_MASK_SHIFT);
     }
 
-    uint32_t mask = (trailing_ones >= 32U) ? 0xFFFFFFFFU : ((1U << trailing_ones) - 1U);
+    uint32_t mask = (trailing_ones >= PMP_NAPOT_MAX_BITS) ? PMP_ALL_BITS_MASK : ((1U << trailing_ones) - 1U);
     *base = (pmpaddr & ~mask) << PMP_ADDR_SHIFT;
     return PMP_OK;
 }
@@ -204,7 +204,7 @@ int pmp_set_region(const pmp_region_cfg_t *cfg)
         {
             mode = PMP_ADDR_MODE_OFF;
         }
-        else if (cfg->length == PMP_NA4_LEN && ((cfg->start_addr & 3U) == 0U))
+        else if (cfg->length == PMP_NA4_LEN && ((cfg->start_addr & PMP_WORD_ALIGN_MASK) == 0U))
         {
             mode = PMP_ADDR_MODE_NA4;
         }
@@ -214,9 +214,16 @@ int pmp_set_region(const pmp_region_cfg_t *cfg)
         {
             mode = PMP_ADDR_MODE_NAPOT;
         }
-        else
+        else if (((cfg->start_addr & PMP_WORD_ALIGN_MASK) == 0U) &&
+                 ((cfg->region_idx == 0U && cfg->start_addr == 0U) ||
+                  (cfg->region_idx > 0U &&
+                   cfg->start_addr == (pmp_csr_read_pmpaddr(cfg->region_idx - 1U) << PMP_ADDR_SHIFT))))
         {
             mode = PMP_ADDR_MODE_TOR;
+        }
+        else
+        {
+            return PMP_ERR_INVALID_ALIGN;
         }
     }
 
@@ -231,16 +238,31 @@ int pmp_set_region(const pmp_region_cfg_t *cfg)
         break;
 
     case PMP_ADDR_MODE_TOR:
-        if ((cfg->start_addr & 3U) != 0U)
+        if ((cfg->start_addr & PMP_WORD_ALIGN_MASK) != 0U)
         {
             return PMP_ERR_INVALID_ALIGN;
+        }
+        if (cfg->region_idx == 0U)
+        {
+            if (cfg->start_addr != 0U)
+            {
+                return PMP_ERR_INVALID_ADDR;
+            }
+        }
+        else
+        {
+            uint32_t prev_addr = pmp_csr_read_pmpaddr(cfg->region_idx - 1U) << PMP_ADDR_SHIFT;
+            if (cfg->start_addr != prev_addr)
+            {
+                return PMP_ERR_INVALID_ADDR;
+            }
         }
         pmpaddr = (cfg->start_addr + cfg->length) >> PMP_ADDR_SHIFT;
         a_field = PMP_CFG_A_TOR;
         break;
 
     case PMP_ADDR_MODE_NA4:
-        if ((cfg->start_addr & 3U) != 0U)
+        if ((cfg->start_addr & PMP_WORD_ALIGN_MASK) != 0U)
         {
             return PMP_ERR_INVALID_ALIGN;
         }
@@ -404,7 +426,7 @@ int apm_init(void)
 
     /* 2. Preserve Region 0 default boot mapping (0x0 - 0xFFFFFFFF) and clear dynamic filters 1..15 */
     uint32_t filter_en = APM_REG_RD(HP_APM_REGION_FILTER_ENABLE_REG);
-    APM_REG_WR(HP_APM_REGION_FILTER_ENABLE_REG, filter_en & 0x00000001U);
+    APM_REG_WR(HP_APM_REGION_FILTER_ENABLE_REG, (filter_en & APM_REGION0_FILTER_EN_BIT) | APM_REGION0_FILTER_EN_BIT);
 
     return APM_OK;
 }
@@ -418,6 +440,11 @@ int apm_set_region(const apm_region_cfg_t *cfg)
     if (cfg->region_idx >= APM_MAX_REGIONS)
     {
         return APM_ERR_INVALID_REGION;
+    }
+    if (cfg->region_idx == 0U && !cfg->filter_enable)
+    {
+        /* Region 0 is reserved as the global hardware boot pass-through window */
+        return APM_ERR_RESERVED_REGION;
     }
     if (cfg->start_addr > cfg->end_addr)
     {
@@ -482,6 +509,11 @@ int apm_disable_region(uint32_t region_idx)
     {
         return APM_ERR_INVALID_REGION;
     }
+    if (region_idx == 0U)
+    {
+        /* Region 0 is reserved as the global hardware boot pass-through window */
+        return APM_ERR_RESERVED_REGION;
+    }
 
     uint32_t filter_en = APM_REG_RD(HP_APM_REGION_FILTER_ENABLE_REG);
     filter_en &= ~(1U << region_idx);
@@ -542,7 +574,7 @@ int apm_clear_exception(uint32_t master_idx)
     {
         return APM_ERR_INVALID_MASTER;
     }
-    APM_REG_WR(HP_APM_M_STATUS_CLR_REG(master_idx), 1U);
+    APM_REG_WR(HP_APM_M_STATUS_CLR_REG(master_idx), APM_M_STATUS_CLR_BIT);
     return APM_OK;
 }
 

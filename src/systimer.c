@@ -104,7 +104,7 @@ int systimer_alarm_init(uint32_t period_us, systimer_alarm_cb_t callback)
 {
     if (period_us == 0U || period_us > SYSTIMER_MAX_PERIOD_US)
     {
-        return -1;
+        return SYSTIMER_ERR_INVALID_PARAM;
     }
 
     uint32_t period_ticks = period_us * (uint32_t)SYSTIMER_TICKS_PER_US;
@@ -140,7 +140,7 @@ int systimer_alarm_init(uint32_t period_us, systimer_alarm_cb_t callback)
     *SYSTIMER_INT_CLR_REG = SYSTIMER_INT_CLR_TARGET0_INT_CLR_M;
     FENCE();
 
-    /* 6. Route Target 0 interrupt (INT_SRC_SYSTIMER_TARGET0 = 57) to CPU channel 7 */
+    /* 6. Route Target 0 interrupt (INT_SRC_SYSTIMER_TARGET0 = 57) to CPU channel 8 */
     interrupt_route(INT_SRC_SYSTIMER_TARGET0, SYSTIMER_CPU_INTR_CHANNEL);
     interrupt_set_priority(SYSTIMER_CPU_INTR_CHANNEL, SYSTIMER_INTR_PRIORITY);
     interrupt_set_type(SYSTIMER_CPU_INTR_CHANNEL, INTR_TYPE_LEVEL);
@@ -158,14 +158,14 @@ int systimer_alarm_init(uint32_t period_us, systimer_alarm_cb_t callback)
     FENCE();
 
     s_alarm_active = 1U;
-    return 0;
+    return SYSTIMER_OK;
 }
 
 int systimer_alarm_set_oneshot(uint64_t target_ticks, systimer_alarm_cb_t callback)
 {
     if (target_ticks > SYSTIMER_MAX_COUNTER_TICKS)
     {
-        return -1;
+        return SYSTIMER_ERR_OVERFLOW;
     }
 
     s_alarm_callback   = callback;
@@ -193,7 +193,7 @@ int systimer_alarm_set_oneshot(uint64_t target_ticks, systimer_alarm_cb_t callba
     *SYSTIMER_INT_CLR_REG = SYSTIMER_INT_CLR_TARGET0_INT_CLR_M;
     FENCE();
 
-    /* 6. Route Target 0 interrupt to CPU channel 7 */
+    /* 6. Route Target 0 interrupt to CPU channel 8 */
     interrupt_route(INT_SRC_SYSTIMER_TARGET0, SYSTIMER_CPU_INTR_CHANNEL);
     interrupt_set_priority(SYSTIMER_CPU_INTR_CHANNEL, SYSTIMER_INTR_PRIORITY);
     interrupt_set_type(SYSTIMER_CPU_INTR_CHANNEL, INTR_TYPE_LEVEL);
@@ -211,7 +211,7 @@ int systimer_alarm_set_oneshot(uint64_t target_ticks, systimer_alarm_cb_t callba
     FENCE();
 
     s_alarm_active = 1U;
-    return 0;
+    return SYSTIMER_OK;
 }
 
 void systimer_alarm_cancel(void)

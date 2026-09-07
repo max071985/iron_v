@@ -37,6 +37,10 @@
 #define PMP_NAPOT_MASK_SHIFT         3U
 #define PMP_NAPOT_MIN_LEN            8U
 #define PMP_NA4_LEN                  4U
+#define PMP_WORD_ALIGN_MASK          0x03U
+#define PMP_ALL_BITS_MASK            0xFFFFFFFFU
+#define PMP_NAPOT_MAX_TRAILING_ONES  29U
+#define PMP_NAPOT_MAX_BITS           32U
 
 /* Address Matching Modes */
 typedef enum {
@@ -54,6 +58,7 @@ typedef enum {
 #define PMP_ERR_LOCKED               (-3)
 #define PMP_ERR_NULL_PTR             (-4)
 #define PMP_ERR_INVALID_LEN          (-5)
+#define PMP_ERR_INVALID_ADDR         (-6)
 
 /* Concrete PMP Region Configuration (per Roadmap §3.4) */
 typedef struct {
@@ -80,12 +85,15 @@ typedef struct {
 #define APM_PMS_ATTR_MASK(m)         (0x07U << APM_PMS_MODE_SHIFT(m))
 
 #define APM_CLOCK_GATE_CLK_EN_BIT    (1U << 0)
+#define APM_REGION0_FILTER_EN_BIT    (1U << 0)
+#define APM_M_STATUS_CLR_BIT         (1U << 0)
 
 #define APM_OK                       0
 #define APM_ERR_INVALID_REGION       (-1)
 #define APM_ERR_INVALID_MASTER       (-2)
 #define APM_ERR_NULL_PTR             (-3)
 #define APM_ERR_INVALID_ADDR         (-4)
+#define APM_ERR_RESERVED_REGION      (-5)
 
 /* Parameterized Register Accessor Macros for HP_APM (AGENTS.md Compliance) */
 #define HP_APM_REGION_FILTER_ENABLE_REG   ((volatile uint32_t *)(uintptr_t)(HP_APM_BASE_ADDR + 0x00U))

@@ -777,6 +777,22 @@ static void test_pmp_apm_isolation(void)
     TEST_ASSERT(pmp_set_region(&rcfg) == PMP_ERR_INVALID_REGION, "pmp_set_region rejects region_idx >= 4");
     TEST_ASSERT(pmp_set_region(NULL) == PMP_ERR_NULL_PTR, "pmp_set_region rejects NULL cfg");
 
+    /* Test TOR boundary validation */
+    pmp_region_cfg_t tor_cfg = {
+        .region_idx = 0U,
+        .start_addr = 0x40820000U,
+        .length = 0x1000U,
+        .read_allow = 1U,
+        .write_allow = 0U,
+        .execute_allow = 0U,
+        .lock = 0U,
+        .addr_mode = (uint8_t)PMP_ADDR_MODE_TOR
+    };
+    TEST_ASSERT(pmp_set_region(&tor_cfg) == PMP_ERR_INVALID_ADDR, "TOR on Region 0 rejects non-zero start_addr");
+    tor_cfg.start_addr = 0U;
+    TEST_ASSERT(pmp_set_region(&tor_cfg) == PMP_OK, "TOR on Region 0 accepts start_addr = 0");
+    pmp_disable_region(0U);
+
     /* 4. HP_APM Register Macros & Functions */
     TEST_ASSERT((uintptr_t)HP_APM_REGION_START_REG(0) == (HP_APM_BASE_ADDR + 0x04U), "APM Region 0 START is 0x60099004");
     TEST_ASSERT((uintptr_t)HP_APM_REGION_END_REG(0) == (HP_APM_BASE_ADDR + 0x08U), "APM Region 0 END is 0x60099008");
@@ -791,8 +807,20 @@ static void test_pmp_apm_isolation(void)
     TEST_ASSERT((uintptr_t)HP_APM_CLK_GATE_REG == (HP_APM_BASE_ADDR + 0x10CU), "APM CLK_GATE is 0x6009910C");
 
     apm_init();
-    apm_region_cfg_t apm_cfg = {
+
+    /* Region 0 is reserved: disabling or clearing filter must be rejected */
+    TEST_ASSERT(apm_disable_region(0U) == APM_ERR_RESERVED_REGION, "apm_disable_region rejects Region 0");
+    apm_region_cfg_t apm_r0_cfg = {
         .region_idx = 0U,
+        .start_addr = 0x40820000U,
+        .end_addr = 0x40880000U,
+        .filter_enable = 0U
+    };
+    TEST_ASSERT(apm_set_region(&apm_r0_cfg) == APM_ERR_RESERVED_REGION, "apm_set_region rejects disabling Region 0");
+
+    /* Dynamic configurations on Region 1 */
+    apm_region_cfg_t apm_cfg = {
+        .region_idx = 1U,
         .start_addr = 0x40820000U,
         .end_addr = 0x40880000U,
         .read_allow = 1U,
@@ -800,22 +828,22 @@ static void test_pmp_apm_isolation(void)
         .execute_allow = 0U,
         .filter_enable = 1U
     };
-    TEST_ASSERT(apm_set_region(&apm_cfg) == APM_OK, "apm_set_region succeeds");
+    TEST_ASSERT(apm_set_region(&apm_cfg) == APM_OK, "apm_set_region succeeds for Region 1");
     apm_region_cfg_t apm_rb;
-    TEST_ASSERT(apm_get_region(0U, &apm_rb) == APM_OK, "apm_get_region succeeds");
+    TEST_ASSERT(apm_get_region(1U, &apm_rb) == APM_OK, "apm_get_region succeeds for Region 1");
     TEST_ASSERT(apm_rb.start_addr == 0x40820000U && apm_rb.end_addr == 0x40880000U, "APM readback addresses match");
     TEST_ASSERT(apm_rb.read_allow == 1U && apm_rb.write_allow == 1U && apm_rb.execute_allow == 0U, "APM permissions match");
     TEST_ASSERT(apm_rb.filter_enable == 1U, "APM filter enable matches");
 
     TEST_ASSERT(apm_enable_master(0U, 1) == APM_OK, "apm_enable_master(0, 1) succeeds");
     TEST_ASSERT(apm_enable_master(0U, 0) == APM_OK, "apm_enable_master(0, 0) succeeds");
-    TEST_ASSERT(apm_disable_region(0U) == APM_OK, "apm_disable_region succeeds");
+    TEST_ASSERT(apm_disable_region(1U) == APM_OK, "apm_disable_region(1) succeeds");
 
     /* 5. Telemetry Query */
     pmp_telemetry_t tel;
     pmp_get_telemetry(&tel);
     TEST_ASSERT(tel.pmp_active_count == 0U, "telemetry reports 0 active PMP regions after disable");
-    TEST_ASSERT(tel.apm_active_count == 0U, "telemetry reports 0 active APM regions after disable");
+    TEST_ASSERT(tel.apm_active_count == 1U, "telemetry reports 1 active APM region (Region 0 pass-through)");
 }
 
 int main(void)

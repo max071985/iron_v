@@ -24,6 +24,13 @@
 #define TASK_PRIORITY_MIN           1U
 #define TASK_PRIORITY_MAX           15U
 
+/* Status & Error Codes */
+#define TASK_OK                     0
+#define TASK_ERR_INVALID_PARAM      (-1)
+#define TASK_ERR_FULL               (-2)
+#define TASK_ERR_NOT_FOUND          (-3)
+#define TASK_ERR_NOT_INIT           (-4)
+
 /* Task States */
 typedef enum {
     TASK_STATE_UNUSED = 0,

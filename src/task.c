@@ -73,7 +73,7 @@ int task_create(const char *name, task_entry_t entry, void *arg, uint32_t priori
 
     if (!entry)
     {
-        return -1;
+        return TASK_ERR_INVALID_PARAM;
     }
 
     if (priority < TASK_PRIORITY_MIN || priority > TASK_PRIORITY_MAX)
@@ -95,7 +95,7 @@ int task_create(const char *name, task_entry_t entry, void *arg, uint32_t priori
 
     if (slot < 0)
     {
-        return -1; /* Task table full */
+        return TASK_ERR_FULL; /* Task table full */
     }
 
     /* Assign stack: use caller's static stack or pre-allocated internal stack */
@@ -151,11 +151,6 @@ void task_yield(void)
         return;
     }
 
-    uint64_t now = systimer_get_ticks();
-    uint64_t elapsed = now - s_task_table[s_current_task_idx].last_switch_tick;
-    s_task_table[s_current_task_idx].runtime_ticks += (uint32_t)elapsed;
-    s_task_table[s_current_task_idx].yield_count++;
-
     /* Find next ready task in round-robin sequence */
     uint32_t next_idx = s_current_task_idx;
     for (uint32_t i = 1; i <= TASK_MAX_COUNT; i++)
@@ -185,10 +180,14 @@ void task_yield(void)
         }
         else
         {
-            s_task_table[s_current_task_idx].last_switch_tick = now;
             return;
         }
     }
+
+    uint64_t now = systimer_get_ticks();
+    uint64_t elapsed = now - s_task_table[s_current_task_idx].last_switch_tick;
+    s_task_table[s_current_task_idx].runtime_ticks += (uint32_t)elapsed;
+    s_task_table[s_current_task_idx].yield_count++;
 
     uint32_t prev_idx = s_current_task_idx;
     if (s_task_table[prev_idx].state == TASK_STATE_RUNNING)
@@ -224,7 +223,7 @@ int task_terminate(uint32_t task_id)
 {
     if (task_id >= TASK_MAX_COUNT || s_task_table[task_id].state == TASK_STATE_UNUSED)
     {
-        return -1;
+        return TASK_ERR_INVALID_PARAM;
     }
 
     s_task_table[task_id].state = TASK_STATE_TERMINATED;
@@ -232,7 +231,7 @@ int task_terminate(uint32_t task_id)
     {
         task_yield();
     }
-    return 0;
+    return TASK_OK;
 }
 
 task_control_block_t *task_get_current(void)

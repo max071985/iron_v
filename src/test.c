@@ -1265,8 +1265,8 @@ void run_validation_suite(void)
     int apm_init_ok = (apm_init() == APM_OK);
 
     /* 2. Configure PMP Region 0 over kernel data with read-only permission in User Mode */
-    /* DRAM data partition starts at 0x40820000; naturally aligned to 64KB (0x10000) */
-    uint32_t kernel_data_base = 0x40820000U;
+    /* DRAM data partition starts at HP_DRAM_START_ADDR; naturally aligned to 64KB (0x10000) */
+    uint32_t kernel_data_base = HP_DRAM_START_ADDR;
     uint32_t kernel_data_len  = 65536U; /* 64 KB */
 
     pmp_region_cfg_t pmp_r0 = {
@@ -1316,8 +1316,8 @@ void run_validation_suite(void)
     /* 6. Configure HP_APM Region 1 authority attributes over DRAM bounds (Region 0 preserves 4GB pass-through) */
     apm_region_cfg_t apm_r1 = {
         .region_idx    = 1U,
-        .start_addr    = 0x40820000U,
-        .end_addr      = 0x40880000U,
+        .start_addr    = HP_DRAM_START_ADDR,
+        .end_addr      = HP_DRAM_END_ADDR,
         .read_allow    = 1U,
         .write_allow   = 1U,
         .execute_allow = 0U,
@@ -1331,8 +1331,8 @@ void run_validation_suite(void)
     uint32_t apm_pms   = *HP_APM_REGION_PMS_ATTR_REG(1U);
     uint32_t apm_flt   = *HP_APM_REGION_FILTER_ENABLE_REG;
 
-    int apm_reg_ok = (apm_start == 0x40820000U) &&
-                     (apm_end == 0x40880000U) &&
+    int apm_reg_ok = (apm_start == HP_DRAM_START_ADDR) &&
+                     (apm_end == HP_DRAM_END_ADDR) &&
                      ((apm_pms & APM_PMS_R_BIT) != 0U) &&
                      ((apm_pms & APM_PMS_W_BIT) != 0U) &&
                      ((apm_pms & APM_PMS_X_BIT) == 0U) &&

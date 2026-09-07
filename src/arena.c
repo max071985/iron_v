@@ -85,19 +85,48 @@ void *arena_alloc_pool(arena_pool_id_t pool_id)
         return NULL;
     }
 
-    if (pool->free_head == NULL)
+    if (pool->memory == NULL || pool->free_head == NULL || pool->block_size == 0U)
     {
         return NULL;
     }
 
     /* Pop head from intrusive free list in O(1) time */
     arena_free_node_t *node = pool->free_head;
+
+    /* Validate free-list node bounds and alignment to guard against heap corruption */
+    uint8_t *node_bytes = (uint8_t *)node;
+    if ((node_bytes < pool->memory) ||
+        (node_bytes >= (pool->memory + (pool->block_size * pool->block_count))))
+    {
+        pool->free_head = NULL;
+        return NULL;
+    }
+
+    uint32_t offset = (uint32_t)(node_bytes - pool->memory);
+    if ((offset % pool->block_size) != 0U)
+    {
+        pool->free_head = NULL;
+        return NULL;
+    }
+
+    uint32_t idx = offset / pool->block_size;
+    if (idx >= pool->block_count)
+    {
+        pool->free_head = NULL;
+        return NULL;
+    }
+
+    uint32_t bit = (1U << idx);
+    if ((pool->allocated_mask & bit) != 0U)
+    {
+        /* Corrupted free list contains already allocated node */
+        pool->free_head = NULL;
+        return NULL;
+    }
+
     pool->free_head = node->next;
 
-    uint32_t offset = (uint32_t)((uint8_t *)node - pool->memory);
-    uint32_t idx = offset / pool->block_size;
-
-    pool->allocated_mask |= (1U << idx);
+    pool->allocated_mask |= bit;
     pool->active_count++;
     if (pool->active_count > pool->high_watermark)
     {
@@ -131,7 +160,7 @@ void *arena_alloc(size_t size)
 
 int arena_free(void *ptr)
 {
-    if (ptr == NULL)
+    if (ptr == NULL || s_small_pool.memory == NULL || s_medium_pool.memory == NULL)
     {
         return ARENA_FREE_FAIL;
     }
@@ -152,6 +181,11 @@ int arena_free(void *ptr)
     else
     {
         /* Pointer does not originate from any managed static pool */
+        return ARENA_FREE_FAIL;
+    }
+
+    if (pool->block_size == 0U || pool->block_count == 0U)
+    {
         return ARENA_FREE_FAIL;
     }
 
@@ -194,7 +228,13 @@ int arena_free(void *ptr)
 
 void *arena_scratch_alloc(size_t size)
 {
-    if (size == 0U)
+    if (s_scratch.buffer == NULL || size == 0U)
+    {
+        return NULL;
+    }
+
+    /* Guard against integer overflow and capacity overflow before alignment */
+    if (size > (s_scratch.capacity - s_scratch.offset))
     {
         return NULL;
     }
@@ -202,7 +242,7 @@ void *arena_scratch_alloc(size_t size)
     /* Align requested size to word boundary */
     size_t aligned_size = (size + ARENA_ALIGN_MASK) & ~((size_t)ARENA_ALIGN_MASK);
 
-    if ((s_scratch.offset + aligned_size) > s_scratch.capacity)
+    if (aligned_size > (s_scratch.capacity - s_scratch.offset))
     {
         /* Scratch arena exhaustion guard */
         return NULL;
@@ -223,12 +263,22 @@ void *arena_scratch_alloc(size_t size)
 
 arena_scratch_mark_t arena_scratch_mark(void)
 {
+    if (s_scratch.buffer == NULL)
+    {
+        return 0U;
+    }
     return (arena_scratch_mark_t)s_scratch.offset;
 }
 
 void arena_scratch_reset(arena_scratch_mark_t mark)
 {
-    if ((size_t)mark <= s_scratch.capacity)
+    if (s_scratch.buffer == NULL)
+    {
+        return;
+    }
+
+    /* In a stack arena, a valid reset must rewind (mark <= offset) and be word-aligned */
+    if (((size_t)mark <= s_scratch.offset) && (((size_t)mark & (size_t)ARENA_ALIGN_MASK) == 0U))
     {
         s_scratch.offset = (size_t)mark;
         s_scratch.total_reset_count++;
@@ -242,6 +292,7 @@ void arena_get_stats(arena_telemetry_t *out_stats)
         return;
     }
 
+    memset(out_stats, 0, sizeof(*out_stats));
     arena_get_pool_stats(ARENA_POOL_SMALL, &out_stats->small_pool);
     arena_get_pool_stats(ARENA_POOL_MEDIUM, &out_stats->medium_pool);
     arena_get_scratch_stats(&out_stats->scratch);
@@ -253,6 +304,8 @@ void arena_get_pool_stats(arena_pool_id_t pool_id, arena_pool_stats_t *out_stats
     {
         return;
     }
+
+    memset(out_stats, 0, sizeof(*out_stats));
 
     arena_pool_t *pool = NULL;
     if (pool_id == ARENA_POOL_SMALL)
@@ -283,6 +336,8 @@ void arena_get_scratch_stats(arena_scratch_stats_t *out_stats)
     {
         return;
     }
+
+    memset(out_stats, 0, sizeof(*out_stats));
 
     out_stats->capacity          = s_scratch.capacity;
     out_stats->current_offset    = s_scratch.offset;

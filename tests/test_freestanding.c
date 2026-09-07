@@ -594,11 +594,48 @@ static void test_arena_allocator(void)
     void *sc5 = arena_scratch_alloc(100U);
     TEST_ASSERT(sc5 == sc1, "resetting to mark0 restores original pointer sc1");
 
-    /* Test scratch exhaustion guard */
+    /* Test scratch exhaustion guard & integer overflow attacks */
     arena_scratch_reset(0U);
     void *sc_huge = arena_scratch_alloc(ARENA_SCRATCH_TOTAL_SIZE + 1U);
     TEST_ASSERT(sc_huge == NULL, "scratch alloc exceeding capacity returns NULL");
+
+    void *sc_overflow1 = arena_scratch_alloc((size_t)-1);
+    TEST_ASSERT(sc_overflow1 == NULL, "scratch alloc (size_t)-1 rejected via overflow guard");
+
+    void *sc_overflow2 = arena_scratch_alloc((size_t)-3);
+    TEST_ASSERT(sc_overflow2 == NULL, "scratch alloc (size_t)-3 rejected via overflow guard");
+
+    void *sc_overflow3 = arena_scratch_alloc(0xFFFFFFFFU);
+    TEST_ASSERT(sc_overflow3 == NULL, "scratch alloc 0xFFFFFFFF rejected via overflow guard");
+
+    /* Test mark/reset validation (unaligned mark and forward reset rejection) */
+    void *sc_base = arena_scratch_alloc(64U);
+    TEST_ASSERT(sc_base != NULL, "scratch alloc 64 succeeds");
+    arena_scratch_mark_t current_mark = arena_scratch_mark();
+    TEST_ASSERT(current_mark == 64U, "current scratch mark is 64");
+
+    /* Attempt unaligned reset: must be ignored */
+    arena_scratch_reset(3U);
+    TEST_ASSERT(arena_scratch_mark() == 64U, "unaligned reset(3) rejected; mark unchanged");
+
+    /* Attempt forward reset beyond current offset: must be ignored */
+    arena_scratch_reset(128U);
+    TEST_ASSERT(arena_scratch_mark() == 64U, "forward reset(128) rejected; mark unchanged");
+
+    /* Valid rewind reset */
     arena_scratch_reset(0U);
+    TEST_ASSERT(arena_scratch_mark() == 0U, "reset to 0 restores mark to 0");
+
+    /* 7. Robustness and Telemetry Edge Cases */
+    TEST_ASSERT(arena_alloc_pool((arena_pool_id_t)99) == NULL, "invalid pool_id alloc returns NULL");
+    TEST_ASSERT(arena_free((void *)0x10) == ARENA_FREE_FAIL, "freeing low unmapped pointer rejected");
+    TEST_ASSERT(arena_free((void *)64) == ARENA_FREE_FAIL, "freeing arbitrary low pointer rejected");
+
+    arena_get_stats(NULL); /* Safe no-op */
+    arena_get_scratch_stats(NULL); /* Safe no-op */
+    arena_pool_stats_t invalid_pool_stats;
+    arena_get_pool_stats((arena_pool_id_t)99, &invalid_pool_stats);
+    TEST_ASSERT(invalid_pool_stats.block_size == 0U, "invalid pool stats returns zeroed struct");
 }
 
 int main(void)

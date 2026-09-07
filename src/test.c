@@ -990,7 +990,7 @@ void run_validation_suite(void)
         {
             alloc_32_ok = 0;
         }
-        else if (((uint32_t)small_ptrs[i] & WORD_ALIGN_MASK) != 0U)
+        else if (((uintptr_t)small_ptrs[i] & WORD_ALIGN_MASK) != 0U)
         {
             align_ok = 0;
         }
@@ -1033,9 +1033,9 @@ void run_validation_suite(void)
     /* Scratch arena test: mark, alloc, reset restores original pointer */
     arena_scratch_mark_t mark_before = arena_scratch_mark();
     void *sc_p1 = arena_scratch_alloc(128U);
-    int sc_p1_ok = (sc_p1 != NULL) && (((uint32_t)sc_p1 & WORD_ALIGN_MASK) == 0U);
+    int sc_p1_ok = (sc_p1 != NULL) && (((uintptr_t)sc_p1 & WORD_ALIGN_MASK) == 0U);
     void *sc_p2 = arena_scratch_alloc(256U);
-    int sc_p2_ok = (sc_p2 != NULL) && (sc_p2 > sc_p1);
+    int sc_p2_ok = (sc_p2 != NULL) && ((uintptr_t)sc_p2 > (uintptr_t)sc_p1);
 
     arena_scratch_reset(mark_before);
     void *sc_p3 = arena_scratch_alloc(128U);

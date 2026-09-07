@@ -281,10 +281,18 @@ static void shell_execute(char *input_buffer)
         arena_telemetry_t atel;
         arena_get_stats(&atel);
         console_puts("Static Memory Arena Telemetry:\r\n");
-        console_puts("  Small Pool:   32 blocks x 64 B (2048 B total)\r\n");
+        console_puts("  Small Pool:   ");
+        put_dec(atel.small_pool.block_count);
+        console_puts(" blocks x ");
+        put_dec(atel.small_pool.block_size);
+        console_puts(" B (");
+        put_dec(atel.small_pool.block_count * atel.small_pool.block_size);
+        console_puts(" B total)\r\n");
         console_puts("    Active:     ");
         put_dec(atel.small_pool.active_count);
-        console_puts("/32 (Peak: ");
+        console_puts("/");
+        put_dec(atel.small_pool.block_count);
+        console_puts(" (Peak: ");
         put_dec(atel.small_pool.high_watermark);
         console_puts(")\r\n");
         console_puts("    Bitmask:    ");
@@ -296,10 +304,18 @@ static void shell_execute(char *input_buffer)
         put_dec(atel.small_pool.total_free_count);
         console_puts("\r\n");
 
-        console_puts("  Medium Pool:  16 blocks x 256 B (4096 B total)\r\n");
+        console_puts("  Medium Pool:  ");
+        put_dec(atel.medium_pool.block_count);
+        console_puts(" blocks x ");
+        put_dec(atel.medium_pool.block_size);
+        console_puts(" B (");
+        put_dec(atel.medium_pool.block_count * atel.medium_pool.block_size);
+        console_puts(" B total)\r\n");
         console_puts("    Active:     ");
         put_dec(atel.medium_pool.active_count);
-        console_puts("/16 (Peak: ");
+        console_puts("/");
+        put_dec(atel.medium_pool.block_count);
+        console_puts(" (Peak: ");
         put_dec(atel.medium_pool.high_watermark);
         console_puts(")\r\n");
         console_puts("    Bitmask:    ");
@@ -311,10 +327,14 @@ static void shell_execute(char *input_buffer)
         put_dec(atel.medium_pool.total_free_count);
         console_puts("\r\n");
 
-        console_puts("  Scratch:      Linear Arena (8192 B capacity)\r\n");
+        console_puts("  Scratch:      Linear Arena (");
+        put_dec((uint32_t)atel.scratch.capacity);
+        console_puts(" B capacity)\r\n");
         console_puts("    Offset:     ");
         put_dec((uint32_t)atel.scratch.current_offset);
-        console_puts("/8192 B (Peak: ");
+        console_puts("/");
+        put_dec((uint32_t)atel.scratch.capacity);
+        console_puts(" B (Peak: ");
         put_dec((uint32_t)atel.scratch.high_watermark);
         console_puts(" B)\r\n");
         console_puts("    Allocs:     ");

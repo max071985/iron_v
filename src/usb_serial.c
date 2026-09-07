@@ -32,6 +32,10 @@ void usb_serial_init(void)
     *PCR_USB_DEVICE_CONF_REG &= ~PCR_USB_DEVICE_CONF_USB_DEVICE_RST_EN_M;
     FENCE();
 
+    /* Disable chip reset triggered by RTS/DTR to suppress spurious terminal connection resets (TRM §32.3) */
+    *USB_DEVICE_CHIP_RST_REG |= USB_DEVICE_CHIP_RST_USB_UART_CHIP_RST_DIS_M;
+    FENCE();
+
     /* 2. Configure default descriptor pointers and telemetry */
     g_usb_serial_dev.ep1_reg = USB_DEVICE_EP1_REG;
     g_usb_serial_dev.ep1_conf_reg = USB_DEVICE_EP1_CONF_REG;

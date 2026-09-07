@@ -38,7 +38,10 @@
 
 /* RISC-V Machine Status CSR (mstatus) bitfield constants */
 #define MSTATUS_MIE_BIT           (1U << 3)   /* Bit 3: Machine Interrupt Enable */
-#define MSTATUS_MPP_MACHINE_MODE  (3U << 11)  /* Bits 12:11: MPP = 2'b11 (Machine Mode) */
+#define MSTATUS_MPP_SHIFT         11U
+#define MSTATUS_MPP_MASK          (3U << MSTATUS_MPP_SHIFT)
+#define MSTATUS_MPP_USER_MODE     (0U << MSTATUS_MPP_SHIFT)
+#define MSTATUS_MPP_MACHINE_MODE  (3U << MSTATUS_MPP_SHIFT)  /* Bits 12:11: MPP = 2'b11 (Machine Mode) */
 
 #ifndef __ASSEMBLER__
 /* Register array address calculation macros */

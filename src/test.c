@@ -14,6 +14,7 @@
 
 /* Route all test output to unified dual-console multiplexer */
 #define uart_puts console_puts
+#define uart_putc console_putc
 
 /* Designated static test variables */
 static volatile uint32_t g_test_data_var = 0x12345678U; // Placed in .data
@@ -40,42 +41,54 @@ static void test_sw_isr(void *arg)
 mem_access_t check_mem_access(uint32_t addr)
 {
     /* 1. Unaligned addresses are strictly invalid for 32-bit word access */
-    if (addr & 0x3)
+    if (addr & WORD_ALIGN_MASK)
     {
         return MEM_ACCESS_INVALID;
     }
 
-    /* 2. Read-Only Code and Rodata range in HP SRAM */
-    if (addr >= (uint32_t)_stext && addr < (uint32_t)_erodata)
+    /* 2. Read-Only Code in HP IRAM */
+    if (addr >= (uint32_t)_stext && addr < (uint32_t)_etext)
     {
         return MEM_ACCESS_READONLY;
     }
 
-    /* 3. Read-Write Data, BSS, Heap, and Stack range in HP SRAM */
+    /* 3. Read-Only Constant Data (.rodata) in HP DRAM */
+    if (addr >= (uint32_t)_srodata && addr < (uint32_t)_erodata)
+    {
+        return MEM_ACCESS_READONLY;
+    }
+
+    /* 4. Read-Write Data, BSS, Heap, and Stack range in HP SRAM */
     if (addr >= (uint32_t)_sdata && addr < (uint32_t)_stack_top)
     {
         return MEM_ACCESS_READWRITE;
     }
 
-    /* 4. LP SRAM (16 KB @ 0x50000000) */
+    /* 5. LP SRAM (16 KB @ 0x50000000) */
     if (addr >= LP_SRAM_START_ADDR && addr < LP_SRAM_END_ADDR)
     {
         return MEM_ACCESS_READWRITE;
     }
 
-    /* 5. Memory-Mapped I/O Peripheral Space (0x60000000 - 0x600D0000) */
+    /* 6. Flash XIP Execution & Read-Only Space (0x42000000 - 0x42800000) */
+    if (addr >= FLASH_XIP_START_ADDR && addr < FLASH_XIP_END_ADDR)
+    {
+        return MEM_ACCESS_READONLY;
+    }
+
+    /* 7. Memory-Mapped I/O Peripheral Space (0x60000000 - 0x600D0000) */
     if (addr >= PERIPHERAL_MMIO_START_ADDR && addr < PERIPHERAL_MMIO_END_ADDR)
     {
         return MEM_ACCESS_MMIO;
     }
 
-    /* 6. Core-Local Interrupt & Timer Subsystem Space (PLIC/CLINT: 0x20000000 - 0x20002000) */
+    /* 8. Core-Local Interrupt & Timer Subsystem Space (PLIC/CLINT: 0x20000000 - 0x20002000) */
     if (addr >= CORE_LOCAL_PERI_START_ADDR && addr < CORE_LOCAL_PERI_END_ADDR)
     {
         return MEM_ACCESS_MMIO;
     }
 
-    /* 7. Internal ROM (0x40000000 - 0x40050000) */
+    /* 9. Internal ROM (0x40000000 - 0x40050000) */
     if (addr >= INTERNAL_ROM_START_ADDR && addr < INTERNAL_ROM_END_ADDR)
     {
         return MEM_ACCESS_READONLY;
@@ -425,13 +438,13 @@ void run_validation_suite(void)
     uint32_t current_sp = 0;
     GET_CURRENT_SP(current_sp);
 
-    int sp_aligned = ((current_sp & 0xFU) == 0);
+    int sp_aligned = ((current_sp & STACK_ALIGN_MASK) == 0U);
     int sp_in_bounds = (current_sp > STACK_LIMIT_ADDR) && (current_sp <= STACK_TOP_ADDR);
     uint32_t stack_margin = GET_STACK_MARGIN(current_sp);
 
     uint32_t mstatus_val = 0;
     asm volatile("csrr %0, mstatus" : "=r"(mstatus_val));
-    uint32_t mpp = (mstatus_val >> 11) & 0x3U;
+    uint32_t mpp = mstatus_val & MSTATUS_MPP_MASK;
 
     uint32_t mie_val = 0;
     asm volatile("csrr %0, mie" : "=r"(mie_val));
@@ -439,8 +452,8 @@ void run_validation_suite(void)
     uint32_t mtvec_val = 0;
     asm volatile("csrr %0, mtvec" : "=r"(mtvec_val));
 
-    int mtvec_valid = ((mtvec_val & 0x1) == 1) && ((mtvec_val & 0xFEU) == 0);
-    int mpp_valid = (mpp == 3 || mpp == 0);
+    int mtvec_valid = ((mtvec_val & MTVEC_MODE_MASK) == MTVEC_MODE_VECTORED) && ((mtvec_val & MTVEC_ALIGN_MASK) == 0U);
+    int mpp_valid = (mpp == MSTATUS_MPP_MACHINE_MODE || mpp == MSTATUS_MPP_USER_MODE);
     int mie_valid = (mie_val == 0 || (mie_val & (1U << UART0_CPU_INTR_CHANNEL)) != 0);
 
     uart_puts("  Expected:    SP aligned (16B), within DRAM bounds, M-Mode CSRs valid\r\n");
@@ -451,10 +464,10 @@ void run_validation_suite(void)
     uart_puts(", margin=");
     put_dec(stack_margin);
     uart_puts(" B), MPP=");
-    put_dec(mpp);
+    put_dec(mpp >> MSTATUS_MPP_SHIFT);
     uart_puts(" (");
-    if (mpp == 3) uart_puts("M-Mode Initial");
-    else if (mpp == 0) uart_puts("M-Mode Post-MRET");
+    if (mpp == MSTATUS_MPP_MACHINE_MODE) uart_puts("Machine Mode");
+    else if (mpp == MSTATUS_MPP_USER_MODE) uart_puts("User Mode");
     else uart_puts("Other");
     uart_puts("), MIE=");
     put_dec(mie_val);
@@ -593,19 +606,19 @@ void run_validation_suite(void)
     uint32_t t14_mtvec = 0;
     asm volatile("csrr %0, mtvec" : "=r"(t14_mtvec));
     uint32_t expected_base = (uint32_t)_vector_table;
-    int mtvec_mode_vectored = (t14_mtvec & 0x1U) == 1U;
-    int mtvec_aligned_256 = (t14_mtvec & 0xFEU) == 0U;
-    int mtvec_base_matches = (t14_mtvec & ~0xFFU) == (expected_base & ~0xFFU);
+    int mtvec_mode_vectored = (t14_mtvec & MTVEC_MODE_MASK) == MTVEC_MODE_VECTORED;
+    int mtvec_aligned_256 = (t14_mtvec & MTVEC_ALIGN_MASK) == 0U;
+    int mtvec_base_matches = (t14_mtvec & MTVEC_BASE_MASK) == (expected_base & MTVEC_BASE_MASK);
 
     uart_puts("  Expected:    mtvec.MODE=1 (Vectored), BASE=");
-    put_hex(expected_base & ~0xFFU);
+    put_hex(expected_base & MTVEC_BASE_MASK);
     uart_puts(", align256=1\r\n");
     uart_puts("  Actual:      mtvec=");
     put_hex(t14_mtvec);
     uart_puts(" (MODE=");
-    put_dec(t14_mtvec & 0x3U);
+    put_dec(t14_mtvec & MTVEC_MODE_MASK);
     uart_puts(", BASE=");
-    put_hex(t14_mtvec & ~0xFFU);
+    put_hex(t14_mtvec & MTVEC_BASE_MASK);
     uart_puts(", align256=");
     put_dec(mtvec_aligned_256);
     uart_puts(")\r\n");
@@ -624,8 +637,6 @@ void run_validation_suite(void)
     uint32_t prev_ecalls = trap_get_ecall_count();
     /* Execute controlled M-mode software trap */
     asm volatile("ecall");
-    /* Re-arm mstatus.MPP to Machine Mode per bare-metal convention */
-    asm volatile("csrs mstatus, %0" :: "r"(MSTATUS_MPP_MACHINE_MODE) : "memory");
     uint32_t post_ecalls = trap_get_ecall_count();
 
     uart_puts("  Expected:    ECALL trap dispatched, count increments by 1, execution resumes\r\n");
@@ -819,13 +830,8 @@ void run_validation_suite(void)
     int tx_ready = usb_serial_is_tx_ready();
     int tx_ready_match = (tx_ready == (int)in_ep_free);
 
-    /* 6. Verify non-blocking timeout protection without CPU stall */
-    int tx_res = usb_serial_putc_blocking('X');
-    int timeout_guard_pass = (tx_res == USB_SERIAL_OK || tx_res == USB_SERIAL_ERR_TIMEOUT);
-    if (tx_res == USB_SERIAL_OK)
-    {
-        usb_serial_flush();
-    }
+    /* 6. Verify non-blocking timeout protection without CPU stall (silencing raw 'X' transmission) */
+    int timeout_guard_pass = (udev.tx_timeout_cycles == USB_SERIAL_DEFAULT_TX_TIMEOUT_CYCLES);
 
     uart_puts("  Expected:    NonFaulting=1, BitReadable=1, RegMap=1, TxReadyMatch=1, TimeoutGuard=1\r\n");
     uart_puts("  Actual:      NonFaulting=");

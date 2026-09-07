@@ -25,7 +25,7 @@ typedef enum {
     CLK_SOURCE_RC_FAST = 2
 } soc_clk_src_t;
 
-/* Initialize PCR clock tree to 160 MHz CPU PLL and 80 MHz APB */
+/* Initialize PCR clock tree to 160 MHz CPU PLL and 40 MHz APB */
 void clock_init(void);
 
 /* Query active clock configuration */

@@ -15,9 +15,13 @@
 #define FENCE()   __asm__ volatile ("fence" ::: "memory")
 #define FENCE_I() __asm__ volatile ("fence.i" ::: "memory")
 
+/* Alignment bitmasks */
+#define WORD_ALIGN_MASK     0x00000003U
+#define STACK_ALIGN_MASK    0x0000000FU
+
 /* System clock defaults */
 #define DEFAULT_CPU_FREQ_HZ 160000000U
-#define DEFAULT_APB_FREQ_HZ 80000000U
+#define DEFAULT_APB_FREQ_HZ 40000000U
 
 /* Shell & Buffer constants */
 #define MAX_CMD_LEN         128
@@ -61,6 +65,8 @@
 #define HP_DRAM_END_ADDR            0x40880000U
 #define LP_SRAM_START_ADDR          0x50000000U
 #define LP_SRAM_END_ADDR            0x50004000U
+#define FLASH_XIP_START_ADDR        0x42000000U
+#define FLASH_XIP_END_ADDR          0x42800000U
 #define PERIPHERAL_MMIO_START_ADDR  0x60000000U
 #define PERIPHERAL_MMIO_END_ADDR    0x600D0000U
 #define INTERNAL_ROM_START_ADDR     0x40000000U

@@ -25,13 +25,13 @@ void trap_handler(trapframe_t *tf)
         return;
     }
 
-    uint32_t is_interrupt = (tf->mcause >> 31) & 1U;
-    uint32_t cause = tf->mcause & 0x7FFFFFFFU;
+    uint32_t is_interrupt = (tf->mcause & MCAUSE_INTERRUPT_FLAG) != 0U;
+    uint32_t cause = tf->mcause & MCAUSE_CAUSE_CODE_MASK;
 
     if (is_interrupt)
     {
         interrupt_dispatch(cause, tf);
-        tf->mstatus |= MSTATUS_MPP_MACHINE_MODE; /* Re-arm MPP to Machine Mode */
+        tf->mstatus = (tf->mstatus & ~MSTATUS_MPP_MASK) | MSTATUS_MPP_MACHINE_MODE; /* Re-arm MPP to Machine Mode */
         return;
     }
     else
@@ -43,7 +43,8 @@ void trap_handler(trapframe_t *tf)
             g_ecall_count++;
 
             /* Advance mepc past the 4-byte ecall instruction to resume cleanly */
-            tf->mepc += 4;
+            tf->mepc += RISCV_INSN_SIZE_STANDARD;
+            tf->mstatus = (tf->mstatus & ~MSTATUS_MPP_MASK) | MSTATUS_MPP_MACHINE_MODE; /* Re-arm MPP to Machine Mode */
             return;
         }
 

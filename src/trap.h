@@ -46,6 +46,16 @@ void panic_dump(const trapframe_t *tf);
 #define MCAUSE_INTERRUPT_FLAG    (1U << 31)
 #define MCAUSE_CAUSE_CODE_MASK   0x7FFFFFFFU
 
+/* mtvec CSR bitfield definitions (TRM §1.3.4 & RISC-V Privileged Specification) */
+#define MTVEC_MODE_MASK          0x00000003U
+#define MTVEC_MODE_DIRECT        0x00000000U
+#define MTVEC_MODE_VECTORED      0x00000001U
+#define MTVEC_BASE_MASK          0xFFFFFF00U
+#define MTVEC_ALIGN_MASK         (~MTVEC_BASE_MASK & ~MTVEC_MODE_VECTORED)
+
+/* Standard 32-bit RISC-V instruction size (in bytes) */
+#define RISCV_INSN_SIZE_STANDARD 4U
+
 /* Query controlled exception (ECALL) execution count */
 uint32_t trap_get_ecall_count(void);
 

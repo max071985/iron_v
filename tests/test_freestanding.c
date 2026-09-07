@@ -2,7 +2,7 @@
  * tests/test_freestanding.c
  *
  * Authentic host-native unit test harness for Iron V freestanding runtime library.
- * Compiles natively with host GCC: gcc -O2 -Wall -Wextra -Isrc tests/test_freestanding.c src/string.c -o tests/test_freestanding
+ * Compiles natively with host GCC: gcc -O2 -Wall -Wextra -Isrc tests/test_freestanding.c src/string.c src/dpc.c -o tests/test_freestanding
  */
 
 #include <stdio.h>

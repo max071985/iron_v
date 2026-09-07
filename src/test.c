@@ -14,6 +14,7 @@
 #include "arena.h"
 #include "systimer.h"
 #include "task.h"
+#include "pmp.h"
 
 /* Route all test output to unified dual-console multiplexer */
 #define uart_puts console_puts
@@ -1251,6 +1252,121 @@ void run_validation_suite(void)
                    term_a_ok && term_b_ok && switches_ok;
     if (t23_pass) passed_tests++;
     print_result(t23_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 24: RISC-V PMP & APM Hardware Fault Isolation (3.4)      */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(24, "RISC-V PMP & APM Fault Isolation",
+                      "Configure PMP Region 0 over kernel data read-only in User Mode; assert pmpcfg0 and APM bitfields match");
+
+    /* 1. Initialize PMP and APM subsystems */
+    int pmp_init_ok = (pmp_init() == PMP_OK);
+    int apm_init_ok = (apm_init() == APM_OK);
+
+    /* 2. Configure PMP Region 0 over kernel data with read-only permission in User Mode */
+    /* DRAM data partition starts at 0x40820000; naturally aligned to 64KB (0x10000) */
+    uint32_t kernel_data_base = 0x40820000U;
+    uint32_t kernel_data_len  = 65536U; /* 64 KB */
+
+    pmp_region_cfg_t pmp_r0 = {
+        .region_idx    = 0U,
+        .start_addr    = kernel_data_base,
+        .length        = kernel_data_len,
+        .read_allow    = 1U,
+        .write_allow   = 0U,
+        .execute_allow = 0U,
+        .lock          = 0U,
+        .addr_mode     = (uint8_t)PMP_ADDR_MODE_NAPOT
+    };
+
+    int pmp_set_ok = (pmp_set_region(&pmp_r0) == PMP_OK);
+
+    /* 3. Read back pmpcfg0 CSR directly; assert bitfields match requested configuration */
+    uint32_t raw_pmpcfg0 = pmp_read_cfg(0U);
+    uint8_t pmp0cfg = (uint8_t)(raw_pmpcfg0 & PMP_CFG_ENTRY_MASK);
+
+    int pmp_r_ok = ((pmp0cfg & PMP_CFG_R_BIT) != 0U);
+    int pmp_w_ok = ((pmp0cfg & PMP_CFG_W_BIT) == 0U);
+    int pmp_x_ok = ((pmp0cfg & PMP_CFG_X_BIT) == 0U);
+    int pmp_a_ok = ((pmp0cfg & PMP_CFG_A_MASK) == PMP_CFG_A_NAPOT);
+    int pmp_l_ok = ((pmp0cfg & PMP_CFG_L_BIT) == 0U);
+
+    /* Expected entry byte = PMP_CFG_R_BIT | PMP_CFG_A_NAPOT = 0x01 | 0x18 = 0x19 */
+    uint8_t expected_pmp0cfg = PMP_CFG_R_BIT | PMP_CFG_A_NAPOT;
+    int pmp_cfg_match = (pmp0cfg == expected_pmp0cfg);
+
+    /* 4. Read back pmpaddr0 CSR; assert NAPOT address encoding matches */
+    uint32_t raw_pmpaddr0 = pmp_read_addr(0U);
+    uint32_t expected_pmpaddr0 = (kernel_data_base >> PMP_ADDR_SHIFT) |
+                                 ((kernel_data_len - 1U) >> PMP_NAPOT_MASK_SHIFT);
+    int pmp_addr_match = (raw_pmpaddr0 == expected_pmpaddr0);
+
+    /* 5. Read back through pmp_get_region() abstraction */
+    pmp_region_cfg_t pmp_readback;
+    int pmp_get_ok = (pmp_get_region(0U, &pmp_readback) == PMP_OK);
+    int pmp_decode_ok = (pmp_readback.start_addr == kernel_data_base) &&
+                        (pmp_readback.length == kernel_data_len) &&
+                        (pmp_readback.read_allow == 1U) &&
+                        (pmp_readback.write_allow == 0U) &&
+                        (pmp_readback.execute_allow == 0U) &&
+                        (pmp_readback.lock == 0U) &&
+                        (pmp_readback.addr_mode == (uint8_t)PMP_ADDR_MODE_NAPOT);
+
+    /* 6. Configure HP_APM Region 1 authority attributes over DRAM bounds (Region 0 preserves 4GB pass-through) */
+    apm_region_cfg_t apm_r1 = {
+        .region_idx    = 1U,
+        .start_addr    = 0x40820000U,
+        .end_addr      = 0x40880000U,
+        .read_allow    = 1U,
+        .write_allow   = 1U,
+        .execute_allow = 0U,
+        .filter_enable = 1U
+    };
+    int apm_set_ok = (apm_set_region(&apm_r1) == APM_OK);
+
+    /* 7. Verify APM register configuration directly */
+    uint32_t apm_start = *HP_APM_REGION_START_REG(1U);
+    uint32_t apm_end   = *HP_APM_REGION_END_REG(1U);
+    uint32_t apm_pms   = *HP_APM_REGION_PMS_ATTR_REG(1U);
+    uint32_t apm_flt   = *HP_APM_REGION_FILTER_ENABLE_REG;
+
+    int apm_reg_ok = (apm_start == 0x40820000U) &&
+                     (apm_end == 0x40880000U) &&
+                     ((apm_pms & APM_PMS_R_BIT) != 0U) &&
+                     ((apm_pms & APM_PMS_W_BIT) != 0U) &&
+                     ((apm_pms & APM_PMS_X_BIT) == 0U) &&
+                     ((apm_flt & (1U << 1U)) != 0U) &&
+                     ((apm_flt & (1U << 0U)) != 0U); /* Region 0 remains enabled */
+
+    /* 8. Clean up test regions so system stays unconstrained */
+    pmp_disable_region(0U);
+    apm_disable_region(1U);
+    int pmp_cleanup_ok = ((pmp_read_cfg(0U) & PMP_CFG_ENTRY_MASK) == 0U);
+    int apm_cleanup_ok = ((*HP_APM_REGION_FILTER_ENABLE_REG & (1U << 1U)) == 0U);
+
+    uart_puts("  Expected:    PmpInit=1, Set=1, CfgMatch=1, AddrMatch=1, Decode=1, ApmReg=1, Cleanup=1\r\n");
+    uart_puts("  Actual:      PmpInit=");
+    put_dec(pmp_init_ok && apm_init_ok);
+    uart_puts(", Set=");
+    put_dec(pmp_set_ok);
+    uart_puts(", CfgMatch=");
+    put_dec(pmp_cfg_match && pmp_r_ok && pmp_w_ok && pmp_x_ok && pmp_a_ok && pmp_l_ok);
+    uart_puts(", AddrMatch=");
+    put_dec(pmp_addr_match);
+    uart_puts(", Decode=");
+    put_dec(pmp_get_ok && pmp_decode_ok);
+    uart_puts(", ApmReg=");
+    put_dec(apm_set_ok && apm_reg_ok);
+    uart_puts(", Cleanup=");
+    put_dec(pmp_cleanup_ok && apm_cleanup_ok);
+    uart_puts("\r\n");
+
+    int t24_pass = pmp_init_ok && apm_init_ok && pmp_set_ok && pmp_cfg_match &&
+                   pmp_addr_match && pmp_get_ok && pmp_decode_ok && apm_set_ok &&
+                   apm_reg_ok && pmp_cleanup_ok && apm_cleanup_ok;
+    if (t24_pass) passed_tests++;
+    print_result(t24_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

@@ -703,6 +703,45 @@ def run_suite():
         t22_pass
     )
 
+    # TEST 23: RISC-V PMP & APM Fault Isolation Linkage (Task 3.4)
+    total += 1
+    pmp_syms = [
+        "pmp_init",
+        "pmp_calc_napot",
+        "pmp_decode_napot",
+        "pmp_set_region",
+        "pmp_get_region",
+        "pmp_disable_region",
+        "pmp_read_cfg",
+        "pmp_write_cfg",
+        "pmp_read_addr",
+        "pmp_write_addr",
+        "apm_init",
+        "apm_set_region",
+        "apm_get_region",
+        "apm_disable_region",
+        "apm_enable_master",
+        "apm_get_exception_info",
+        "apm_clear_exception",
+        "pmp_get_telemetry"
+    ]
+    found_pmp_syms = [s for s in pmp_syms if s in symbols]
+    all_pmp_found = len(found_pmp_syms) == len(pmp_syms)
+    all_pmp_in_text = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40820000)
+        for s in found_pmp_syms
+    )
+    t23_pass = all_pmp_found and all_pmp_in_text
+    t23_actual = f"Found {len(found_pmp_syms)}/{len(pmp_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    passed += print_result_line(
+        total,
+        "RISC-V PMP & APM Fault Isolation Linkage",
+        "Verify pmp_init, napot calc/decode, set/get/disable, and apm driver symbols exist in IRAM",
+        f"All {len(pmp_syms)} PMP and APM symbols present in IRAM text section [0x40800000, 0x40820000)",
+        t23_actual,
+        t23_pass
+    )
+
     print("\n" + "=" * 70)
     print("                       TEST SUITE SUMMARY                             ")
     print("=" * 70)

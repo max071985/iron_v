@@ -15,6 +15,7 @@
 #include "arena.h"
 #include "systimer.h"
 #include "task.h"
+#include "pmp.h"
 
 static void print_help(void)
 {
@@ -23,6 +24,7 @@ static void print_help(void)
     console_puts("  info                - Show system information\r\n");
     console_puts("  uptime              - Show high-resolution system uptime & timer telemetry\r\n");
     console_puts("  tasks               - Show cooperative coroutine scheduler tasks & status\r\n");
+    console_puts("  pmp                 - Show RISC-V PMP & HP_APM memory protection status\r\n");
     console_puts("  peek <hex_addr>     - Read 32-bit word from hex address\r\n");
     console_puts("  poke <addr> <val>   - Write 32-bit hex value to address\r\n");
     console_puts("  ecall               - Trigger controlled M-mode software trap (ECALL)\r\n");
@@ -147,6 +149,16 @@ static void print_info(void)
     console_puts("/");
     put_dec((uint32_t)atel.scratch.capacity);
     console_puts(" B\r\n");
+
+    pmp_telemetry_t ptel;
+    pmp_get_telemetry(&ptel);
+    console_puts(" PMP/APM: PMP Active: ");
+    put_dec(ptel.pmp_active_count);
+    console_puts("/4 (pmpcfg0: ");
+    put_hex(ptel.pmpcfg0_val);
+    console_puts("), APM Active: ");
+    put_dec(ptel.apm_active_count);
+    console_puts("/16\r\n");
     console_puts("========================================\r\n");
 }
 
@@ -477,6 +489,71 @@ static void shell_execute(char *input_buffer)
             console_puts("\r\n");
         }
     }
+    else if (strcmp(input_buffer, "pmp") == 0)
+    {
+        pmp_telemetry_t tel;
+        pmp_get_telemetry(&tel);
+
+        console_puts("RISC-V Physical Memory Protection (PMP) Status:\r\n");
+        console_puts("  pmpcfg0: ");
+        put_hex(tel.pmpcfg0_val);
+        console_puts(" (Active Regions: ");
+        put_dec(tel.pmp_active_count);
+        console_puts("/4)\r\n\r\n");
+
+        console_puts(" Region | Mode  | R | W | X | L | Base Addr  | Length   | Raw pmpaddr\r\n");
+        console_puts("--------+-------+---+---+---+---+------------+----------+------------\r\n");
+        for (uint32_t i = 0; i < PMP_MAX_REGIONS; i++)
+        {
+            pmp_region_cfg_t rcfg;
+            pmp_get_region(i, &rcfg);
+
+            console_puts("   ");
+            put_dec(i);
+            console_puts("    | ");
+            switch (rcfg.addr_mode)
+            {
+            case PMP_ADDR_MODE_OFF:   console_puts("OFF  "); break;
+            case PMP_ADDR_MODE_TOR:   console_puts("TOR  "); break;
+            case PMP_ADDR_MODE_NA4:   console_puts("NA4  "); break;
+            case PMP_ADDR_MODE_NAPOT: console_puts("NAPOT"); break;
+            default:                  console_puts("UNK  "); break;
+            }
+            console_puts(" | ");
+            put_dec(rcfg.read_allow);
+            console_puts(" | ");
+            put_dec(rcfg.write_allow);
+            console_puts(" | ");
+            put_dec(rcfg.execute_allow);
+            console_puts(" | ");
+            put_dec(rcfg.lock);
+            console_puts(" | ");
+            put_hex(rcfg.start_addr);
+            console_puts(" | ");
+            put_hex(rcfg.length);
+            console_puts(" | ");
+            put_hex(tel.pmpaddr_vals[i]);
+            console_puts("\r\n");
+        }
+
+        console_puts("\r\nHP Access Permission Management (APM) Status:\r\n");
+        console_puts("  Filter Enable Mask: ");
+        put_hex(tel.apm_filter_en_val);
+        console_puts(" (Active Regions: ");
+        put_dec(tel.apm_active_count);
+        console_puts("/16)\r\n");
+        console_puts("  Func Control Mask:  ");
+        put_hex(tel.apm_func_ctrl_val);
+        console_puts(" (M0: ");
+        put_dec((tel.apm_func_ctrl_val & 1U) != 0U);
+        console_puts(", M1: ");
+        put_dec((tel.apm_func_ctrl_val & 2U) != 0U);
+        console_puts(", M2: ");
+        put_dec((tel.apm_func_ctrl_val & 4U) != 0U);
+        console_puts(", M3: ");
+        put_dec((tel.apm_func_ctrl_val & 8U) != 0U);
+        console_puts(")\r\n");
+    }
     else
     {
         console_puts("Unknown command. Type 'help' for available commands.\r\n");
@@ -533,6 +610,10 @@ void main(void)
 
     /* Initialize Cooperative Coroutine Scheduler */
     task_init();
+
+    /* Initialize RISC-V Physical Memory Protection (PMP) & APM Fault Isolation */
+    pmp_init();
+    apm_init();
 
     console_puts("\r\n");
     print_info();

@@ -16,6 +16,7 @@
 #include "arena.h"
 #include "systimer.h"
 #include "task.h"
+#include "pmp.h"
 
 /* Freestanding function aliases matching runtime naming conventions */
 static inline size_t s_strlen(const char *s)
@@ -708,6 +709,115 @@ static void test_task_structures(void)
     TEST_ASSERT(TASK_DEFAULT_STACK_SIZE == 2048U, "Default stack size is 2048");
 }
 
+static void test_pmp_apm_isolation(void)
+{
+    /* 1. NAPOT Encoding & Decoding Correctness */
+    uint32_t pmpaddr = 0;
+    uint32_t base = 0;
+    uint32_t len = 0;
+
+    /* 8-byte region */
+    TEST_ASSERT(pmp_calc_napot(0x40800000U, 8U, &pmpaddr) == PMP_OK, "8B NAPOT encode succeeds");
+    TEST_ASSERT(pmpaddr == (0x40800000U >> 2U), "8B NAPOT pmpaddr has 0 in trailing bit");
+    TEST_ASSERT(pmp_decode_napot(pmpaddr, &base, &len) == PMP_OK, "8B NAPOT decode succeeds");
+    TEST_ASSERT(base == 0x40800000U && len == 8U, "8B NAPOT decode matches 0x40800000 / 8B");
+
+    /* 16-byte region */
+    TEST_ASSERT(pmp_calc_napot(0x40800000U, 16U, &pmpaddr) == PMP_OK, "16B NAPOT encode succeeds");
+    TEST_ASSERT(pmpaddr == ((0x40800000U >> 2U) | 1U), "16B NAPOT pmpaddr has 1 trailing one");
+    TEST_ASSERT(pmp_decode_napot(pmpaddr, &base, &len) == PMP_OK, "16B NAPOT decode succeeds");
+    TEST_ASSERT(base == 0x40800000U && len == 16U, "16B NAPOT decode matches 0x40800000 / 16B");
+
+    /* 64KB region (Kernel Data DRAM: 0x40820000) */
+    TEST_ASSERT(pmp_calc_napot(0x40820000U, 65536U, &pmpaddr) == PMP_OK, "64KB NAPOT encode succeeds");
+    TEST_ASSERT(pmpaddr == 0x10209FFFU, "64KB NAPOT pmpaddr is exactly 0x10209FFF");
+    TEST_ASSERT(pmp_decode_napot(pmpaddr, &base, &len) == PMP_OK, "64KB NAPOT decode succeeds");
+    TEST_ASSERT(base == 0x40820000U && len == 65536U, "64KB NAPOT decode recovers base 0x40820000 and len 65536");
+
+    /* 1MB region (Flash XIP: 0x42000000) */
+    TEST_ASSERT(pmp_calc_napot(0x42000000U, 1048576U, &pmpaddr) == PMP_OK, "1MB NAPOT encode succeeds");
+    TEST_ASSERT(pmp_decode_napot(pmpaddr, &base, &len) == PMP_OK, "1MB NAPOT decode succeeds");
+    TEST_ASSERT(base == 0x42000000U && len == 1048576U, "1MB NAPOT decode recovers base 0x42000000 and len 1MB");
+
+    /* 2. Error Rejection & Boundary Conditions */
+    TEST_ASSERT(pmp_calc_napot(0x40800000U, 4U, &pmpaddr) == PMP_ERR_INVALID_LEN, "NAPOT rejects < 8B");
+    TEST_ASSERT(pmp_calc_napot(0x40800000U, 100U, &pmpaddr) == PMP_ERR_INVALID_LEN, "NAPOT rejects non-power-of-2");
+    TEST_ASSERT(pmp_calc_napot(0x40800004U, 64U, &pmpaddr) == PMP_ERR_INVALID_ALIGN, "NAPOT rejects misaligned base");
+    TEST_ASSERT(pmp_calc_napot(0x40800000U, 64U, NULL) == PMP_ERR_NULL_PTR, "NAPOT rejects NULL output pointer");
+    TEST_ASSERT(pmp_decode_napot(0x10209FFFU, NULL, &len) == PMP_ERR_NULL_PTR, "Decode rejects NULL base");
+
+    /* 3. PMP Set / Get / Disable with Mock CSRs */
+    pmp_init();
+    pmp_region_cfg_t rcfg = {
+        .region_idx = 0U,
+        .start_addr = 0x40820000U,
+        .length = 65536U,
+        .read_allow = 1U,
+        .write_allow = 0U,
+        .execute_allow = 0U,
+        .lock = 0U,
+        .addr_mode = (uint8_t)PMP_ADDR_MODE_NAPOT
+    };
+    TEST_ASSERT(pmp_set_region(&rcfg) == PMP_OK, "pmp_set_region succeeds for Region 0");
+    uint32_t cfg0 = pmp_read_cfg(0U);
+    TEST_ASSERT((cfg0 & 0xFFU) == 0x19U, "pmpcfg0 byte 0 is 0x19 (R=1, NAPOT)");
+    TEST_ASSERT(pmp_read_addr(0U) == 0x10209FFFU, "pmpaddr0 is 0x10209FFF");
+
+    pmp_region_cfg_t rb_cfg;
+    TEST_ASSERT(pmp_get_region(0U, &rb_cfg) == PMP_OK, "pmp_get_region succeeds");
+    TEST_ASSERT(rb_cfg.start_addr == 0x40820000U, "readback start_addr is 0x40820000");
+    TEST_ASSERT(rb_cfg.length == 65536U, "readback length is 65536");
+    TEST_ASSERT(rb_cfg.read_allow == 1U && rb_cfg.write_allow == 0U && rb_cfg.execute_allow == 0U, "readback permissions match");
+    TEST_ASSERT(rb_cfg.addr_mode == (uint8_t)PMP_ADDR_MODE_NAPOT, "readback addr_mode is NAPOT");
+
+    TEST_ASSERT(pmp_disable_region(0U) == PMP_OK, "pmp_disable_region succeeds");
+    TEST_ASSERT((pmp_read_cfg(0U) & 0xFFU) == 0U, "pmpcfg0 byte 0 cleared after disable");
+
+    rcfg.region_idx = 4U;
+    TEST_ASSERT(pmp_set_region(&rcfg) == PMP_ERR_INVALID_REGION, "pmp_set_region rejects region_idx >= 4");
+    TEST_ASSERT(pmp_set_region(NULL) == PMP_ERR_NULL_PTR, "pmp_set_region rejects NULL cfg");
+
+    /* 4. HP_APM Register Macros & Functions */
+    TEST_ASSERT((uintptr_t)HP_APM_REGION_START_REG(0) == (HP_APM_BASE_ADDR + 0x04U), "APM Region 0 START is 0x60099004");
+    TEST_ASSERT((uintptr_t)HP_APM_REGION_END_REG(0) == (HP_APM_BASE_ADDR + 0x08U), "APM Region 0 END is 0x60099008");
+    TEST_ASSERT((uintptr_t)HP_APM_REGION_PMS_ATTR_REG(0) == (HP_APM_BASE_ADDR + 0x0CU), "APM Region 0 PMS is 0x6009900C");
+    TEST_ASSERT((uintptr_t)HP_APM_REGION_START_REG(1) == (HP_APM_BASE_ADDR + 0x10U), "APM Region 1 START is 0x60099010");
+    TEST_ASSERT((uintptr_t)HP_APM_REGION_START_REG(15) == (HP_APM_BASE_ADDR + 0xB8U), "APM Region 15 START is 0x600990B8");
+    TEST_ASSERT((uintptr_t)HP_APM_FUNC_CONTROL_REG == (HP_APM_BASE_ADDR + 0xC4U), "APM FUNC_CONTROL is 0x600990C4");
+    TEST_ASSERT((uintptr_t)HP_APM_M_STATUS_REG(0) == (HP_APM_BASE_ADDR + 0xC8U), "APM M0 STATUS is 0x600990C8");
+    TEST_ASSERT((uintptr_t)HP_APM_M_STATUS_REG(1) == (HP_APM_BASE_ADDR + 0xD8U), "APM M1 STATUS is 0x600990D8");
+    TEST_ASSERT((uintptr_t)HP_APM_M_STATUS_REG(2) == (HP_APM_BASE_ADDR + 0xE8U), "APM M2 STATUS is 0x600990E8");
+    TEST_ASSERT((uintptr_t)HP_APM_M_STATUS_REG(3) == (HP_APM_BASE_ADDR + 0xF8U), "APM M3 STATUS is 0x600990F8");
+    TEST_ASSERT((uintptr_t)HP_APM_CLK_GATE_REG == (HP_APM_BASE_ADDR + 0x10CU), "APM CLK_GATE is 0x6009910C");
+
+    apm_init();
+    apm_region_cfg_t apm_cfg = {
+        .region_idx = 0U,
+        .start_addr = 0x40820000U,
+        .end_addr = 0x40880000U,
+        .read_allow = 1U,
+        .write_allow = 1U,
+        .execute_allow = 0U,
+        .filter_enable = 1U
+    };
+    TEST_ASSERT(apm_set_region(&apm_cfg) == APM_OK, "apm_set_region succeeds");
+    apm_region_cfg_t apm_rb;
+    TEST_ASSERT(apm_get_region(0U, &apm_rb) == APM_OK, "apm_get_region succeeds");
+    TEST_ASSERT(apm_rb.start_addr == 0x40820000U && apm_rb.end_addr == 0x40880000U, "APM readback addresses match");
+    TEST_ASSERT(apm_rb.read_allow == 1U && apm_rb.write_allow == 1U && apm_rb.execute_allow == 0U, "APM permissions match");
+    TEST_ASSERT(apm_rb.filter_enable == 1U, "APM filter enable matches");
+
+    TEST_ASSERT(apm_enable_master(0U, 1) == APM_OK, "apm_enable_master(0, 1) succeeds");
+    TEST_ASSERT(apm_enable_master(0U, 0) == APM_OK, "apm_enable_master(0, 0) succeeds");
+    TEST_ASSERT(apm_disable_region(0U) == APM_OK, "apm_disable_region succeeds");
+
+    /* 5. Telemetry Query */
+    pmp_telemetry_t tel;
+    pmp_get_telemetry(&tel);
+    TEST_ASSERT(tel.pmp_active_count == 0U, "telemetry reports 0 active PMP regions after disable");
+    TEST_ASSERT(tel.apm_active_count == 0U, "telemetry reports 0 active APM regions after disable");
+}
+
 int main(void)
 {
     printf("======================================================================\n");
@@ -727,6 +837,7 @@ int main(void)
     test_arena_allocator();
     test_systimer_timebase();
     test_task_structures();
+    test_pmp_apm_isolation();
 
     printf("======================================================================\n");
     if (g_assert_failures == 0)

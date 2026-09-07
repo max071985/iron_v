@@ -18,7 +18,7 @@ CFLAGS = -march=rv32imac_zicsr_zifencei -mabi=ilp32 -ffreestanding -nostdlib -O2
 LDFLAGS = -T ld/link.ld -nostdlib
 
 # Baseline source files
-SRCS = src/crt0.S src/trap_entry.S src/task_switch.S src/main.c src/string.c src/utils.c src/test.c src/clock.c src/wdt.c src/trap.c src/panic.c src/interrupt.c src/dpc.c src/usb_serial.c src/uart.c src/console.c src/timer.c src/arena.c src/systimer.c src/task.c
+SRCS = src/crt0.S src/trap_entry.S src/task_switch.S src/main.c src/string.c src/utils.c src/test.c src/clock.c src/wdt.c src/trap.c src/panic.c src/interrupt.c src/dpc.c src/usb_serial.c src/uart.c src/console.c src/timer.c src/arena.c src/systimer.c src/task.c src/pmp.c
 
 # Interface selection: 'usb' (default) or 'uart'
 INTERFACE ?= usb
@@ -53,8 +53,8 @@ erase_flash:
 monitor:
 	picocom $(MONITOR_FLAGS) $(PORT)
 
-tests/test_freestanding: tests/test_freestanding.c src/string.c src/string.h src/dpc.c src/dpc.h src/arena.c src/arena.h
-	gcc -O2 -fno-tree-loop-distribute-patterns -Wall -Wextra -Werror -Isrc tests/test_freestanding.c src/string.c src/dpc.c src/arena.c -o $@
+tests/test_freestanding: tests/test_freestanding.c src/string.c src/string.h src/dpc.c src/dpc.h src/arena.c src/arena.h src/pmp.c src/pmp.h
+	gcc -O2 -fno-tree-loop-distribute-patterns -Wall -Wextra -Werror -Isrc tests/test_freestanding.c src/string.c src/dpc.c src/arena.c src/pmp.c -o $@
 
 do-test: firmware.elf firmware.bin tests/test_freestanding
 	@./tests/test_freestanding

@@ -18,11 +18,7 @@ static uint64_t g_wdt_last_feed_ticks = 0;
 
 static inline uint64_t wdt_get_systimer_ticks(void)
 {
-    *SYSTIMER_UNIT0_OP_REG = SYSTIMER_UNIT0_OP_TIMER_UNIT0_UPDATE_M;
-    FENCE();
-    uint32_t lo = *SYSTIMER_UNIT0_VALUE_LO_REG;
-    uint32_t hi = *SYSTIMER_UNIT0_VALUE_HI_REG & SYSTIMER_UNIT0_VALUE_HI_TIMER_UNIT0_VALUE_HI_M;
-    return ((uint64_t)hi << 32) | (uint64_t)lo;
+    return systimer_get_ticks();
 }
 
 void wdt_init(uint32_t timeout_ms)

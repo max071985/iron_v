@@ -13,10 +13,7 @@
 #define WDT_TICKS_PER_MS                1000U   /* 1000 ticks per ms at 1 MHz */
 #define WDT_RESET_LENGTH_CYCLES         3U      /* Reset pulse duration: 32 clock cycles */
 
-/* Hardware SYSTIMER clock baseline (16 MHz RC oscillator / XTAL) */
-#define SYSTIMER_FREQ_HZ                16000000ULL
-#define SYSTIMER_TICKS_PER_MS           16000ULL
-#define SYSTIMER_TICKS_PER_SEC          16000000ULL
+#include "systimer.h"
 
 /* Watchdog supervision epoch and window boundaries */
 #define WDT_EPOCH_PERIOD_MS             1000U   /* 1-second supervisory epoch */

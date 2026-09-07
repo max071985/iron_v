@@ -13,12 +13,14 @@
 #include "console.h"
 #include "timer.h"
 #include "arena.h"
+#include "systimer.h"
 
 static void print_help(void)
 {
     console_puts("Iron V Shell Commands:\r\n");
     console_puts("  help                - Show available commands\r\n");
     console_puts("  info                - Show system information\r\n");
+    console_puts("  uptime              - Show high-resolution system uptime & timer telemetry\r\n");
     console_puts("  peek <hex_addr>     - Read 32-bit word from hex address\r\n");
     console_puts("  poke <addr> <val>   - Write 32-bit hex value to address\r\n");
     console_puts("  ecall               - Trigger controlled M-mode software trap (ECALL)\r\n");
@@ -84,6 +86,14 @@ static void print_info(void)
     {
         console_puts("Disabled\r\n");
     }
+
+    systimer_telemetry_t stel;
+    systimer_get_telemetry(&stel);
+    console_puts(" SYSTIMER: Active (16 MHz, ");
+    put_dec(stel.uptime_sec);
+    console_puts("s uptime, ");
+    put_dec((uint32_t)stel.total_ticks);
+    console_puts(" ticks)\r\n");
 
     soc_reset_cause_t rst_cause = wdt_get_reset_cause();
     console_puts(" Reset:   ");
@@ -343,6 +353,71 @@ static void shell_execute(char *input_buffer)
         put_dec(atel.scratch.total_reset_count);
         console_puts("\r\n");
     }
+    else if (strcmp(input_buffer, "uptime") == 0)
+    {
+        systimer_telemetry_t tel;
+        systimer_get_telemetry(&tel);
+
+        uint32_t days = tel.uptime_sec / SEC_PER_DAY;
+        uint32_t rem_sec = tel.uptime_sec % SEC_PER_DAY;
+        uint32_t hours = rem_sec / SEC_PER_HOUR;
+        rem_sec %= SEC_PER_HOUR;
+        uint32_t minutes = rem_sec / SEC_PER_MINUTE;
+        uint32_t seconds = rem_sec % SEC_PER_MINUTE;
+
+        console_puts("System Uptime: ");
+        put_dec(days);
+        console_puts("d ");
+        if (hours < 10U) console_puts("0");
+        put_dec(hours);
+        console_puts(":");
+        if (minutes < 10U) console_puts("0");
+        put_dec(minutes);
+        console_puts(":");
+        if (seconds < 10U) console_puts("0");
+        put_dec(seconds);
+        console_puts(".");
+        if (tel.uptime_ms_remainder < 100U) console_puts("0");
+        if (tel.uptime_ms_remainder < 10U) console_puts("0");
+        put_dec(tel.uptime_ms_remainder);
+        if (tel.uptime_us_remainder < 100U) console_puts("0");
+        if (tel.uptime_us_remainder < 10U) console_puts("0");
+        put_dec(tel.uptime_us_remainder);
+        console_puts(" (");
+        put_dec(tel.uptime_sec);
+        console_puts("s)\r\n");
+
+        console_puts("  Total Ticks: ");
+        put_hex((uint32_t)(tel.total_ticks >> 32));
+        console_puts("_");
+        put_hex((uint32_t)tel.total_ticks);
+        console_puts(" (16 MHz tick base)\r\n");
+
+        console_puts("  SYSTIMER Unit 0: Active (16.0 MHz XTAL/PLL)\r\n");
+        console_puts("  Target 0 Alarm:  ");
+        if (tel.alarm_active)
+        {
+            console_puts("Active (");
+            if (tel.alarm_mode == (uint8_t)SYSTIMER_ALARM_MODE_PERIOD)
+            {
+                console_puts("Periodic ");
+                put_dec(tel.alarm_period_us);
+                console_puts(" us, ");
+            }
+            else
+            {
+                console_puts("One-Shot, ");
+            }
+            put_dec(tel.alarm_count);
+            console_puts(" firings)\r\n");
+        }
+        else
+        {
+            console_puts("Inactive (firings: ");
+            put_dec(tel.alarm_count);
+            console_puts(")\r\n");
+        }
+    }
     else
     {
         console_puts("Unknown command. Type 'help' for available commands.\r\n");
@@ -372,6 +447,9 @@ void main(void)
 {
     /* Initialize PCR clock tree to 160 MHz CPU PLL and 40 MHz APB */
     clock_init();
+
+    /* Initialize high-resolution 64-bit hardware system timer (SYSTIMER 16 MHz) */
+    systimer_init();
 
     /* Initialize active multi-tier watchdog supervisor */
     wdt_init(WDT_DEFAULT_TIMEOUT_MS);

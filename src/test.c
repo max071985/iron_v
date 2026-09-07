@@ -12,6 +12,7 @@
 #include "console.h"
 #include "timer.h"
 #include "arena.h"
+#include "systimer.h"
 
 /* Route all test output to unified dual-console multiplexer */
 #define uart_puts console_puts
@@ -1063,6 +1064,84 @@ void run_validation_suite(void)
                    sc_p1_ok && sc_p2_ok && scratch_restore_ok;
     if (t21_pass) passed_tests++;
     print_result(t21_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 22: High-Resolution SYSTIMER & Event Engine (Task 3.2)   */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(22, "High-Resolution SYSTIMER & Event Engine",
+                      "Verify 16 MHz Unit 0 counter monotonic increase (T2 > T1), microsecond conversion, and alarm routing");
+
+    /* 1. Latch Unit 0 counter T1 */
+    uint64_t t1 = systimer_get_ticks();
+
+    /* 2. Precision hardware delay: burn CPU cycles */
+    for (volatile int i = 0; i < 2000; i++)
+    {
+        asm volatile("nop");
+    }
+
+    /* 3. Latch Unit 0 counter T2 */
+    uint64_t t2 = systimer_get_ticks();
+    int monotonic_ok = (t2 > t1);
+
+    /* 4. Verify microsecond conversion */
+    uint64_t us1 = systimer_get_us();
+    systimer_delay_us(100U);
+    uint64_t us2 = systimer_get_us();
+    int us_conversion_ok = (us2 >= (us1 + 90U));
+
+    /* 5. Verify millisecond conversion consistency */
+    uint64_t ms1 = systimer_get_ms();
+    int ms_ok = (ms1 == (us1 / US_PER_MS));
+
+    /* 6. Verify SYSTIMER configuration registers (CLK gating, Unit 0 work enable) */
+    uint32_t pcr_conf = *PCR_SYSTIMER_CONF_REG;
+    int pcr_clk_ok = ((pcr_conf & PCR_SYSTIMER_CONF_SYSTIMER_CLK_EN_M) != 0U) &&
+                     ((pcr_conf & PCR_SYSTIMER_CONF_SYSTIMER_RST_EN_M) == 0U);
+
+    uint32_t pcr_func = *PCR_SYSTIMER_FUNC_CLK_CONF_REG;
+    int pcr_func_ok = (pcr_func & PCR_SYSTIMER_FUNC_CLK_CONF_SYSTIMER_FUNC_CLK_EN_M) != 0U;
+
+    uint32_t sys_conf = *SYSTIMER_CONF_REG;
+    int unit0_work_ok = (sys_conf & SYSTIMER_CONF_TIMER_UNIT0_WORK_EN_M) != 0U;
+
+    /* 7. Verify Target 0 alarm configuration and INTMTX routing */
+    int alarm_init_ok = (systimer_alarm_init(50000U, NULL) == 0);
+    uint32_t route_target0 = interrupt_get_map(INT_SRC_SYSTIMER_TARGET0);
+    uint32_t pri_target0 = interrupt_get_priority(SYSTIMER_CPU_INTR_CHANNEL);
+    int intr_en_target0 = interrupt_is_enabled(SYSTIMER_CPU_INTR_CHANNEL);
+    int alarm_route_ok = (route_target0 == SYSTIMER_CPU_INTR_CHANNEL) &&
+                         (pri_target0 == SYSTIMER_INTR_PRIORITY) &&
+                         intr_en_target0;
+
+    systimer_alarm_cancel();
+    int alarm_cancel_ok = !interrupt_is_enabled(SYSTIMER_CPU_INTR_CHANNEL);
+
+    uart_puts("  Expected:    Monotonic=1, UsConvert=1, MsValid=1, PcrClk=1, FuncClk=1, Unit0Work=1, AlarmRoute=1, Cancel=1\r\n");
+    uart_puts("  Actual:      Monotonic=");
+    put_dec(monotonic_ok);
+    uart_puts(", UsConvert=");
+    put_dec(us_conversion_ok);
+    uart_puts(", MsValid=");
+    put_dec(ms_ok);
+    uart_puts(", PcrClk=");
+    put_dec(pcr_clk_ok);
+    uart_puts(", FuncClk=");
+    put_dec(pcr_func_ok);
+    uart_puts(", Unit0Work=");
+    put_dec(unit0_work_ok);
+    uart_puts(", AlarmRoute=");
+    put_dec(alarm_init_ok && alarm_route_ok);
+    uart_puts(", Cancel=");
+    put_dec(alarm_cancel_ok);
+    uart_puts("\r\n");
+
+    int t22_pass = monotonic_ok && us_conversion_ok && ms_ok && pcr_clk_ok &&
+                   pcr_func_ok && unit0_work_ok && alarm_init_ok && alarm_route_ok &&
+                   alarm_cancel_ok;
+    if (t22_pass) passed_tests++;
+    print_result(t22_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

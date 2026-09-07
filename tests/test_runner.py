@@ -671,6 +671,38 @@ def run_suite():
         t21_pass
     )
 
+    # TEST 22: Cooperative Coroutine Scheduler Linkage (Task 3.3)
+    total += 1
+    task_syms = [
+        "task_init",
+        "task_create",
+        "task_yield",
+        "task_exit",
+        "task_terminate",
+        "task_get_current",
+        "task_get_by_id",
+        "task_get_count",
+        "task_get_status",
+        "task_state_name",
+        "task_switch_asm"
+    ]
+    found_task_syms = [s for s in task_syms if s in symbols]
+    all_task_found = len(found_task_syms) == len(task_syms)
+    all_task_in_text = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40820000)
+        for s in found_task_syms
+    )
+    t22_pass = all_task_found and all_task_in_text
+    t22_actual = f"Found {len(found_task_syms)}/{len(task_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    passed += print_result_line(
+        total,
+        "Cooperative Coroutine Task Engine Linkage",
+        "Verify task_init, create, yield, exit, status, and task_switch_asm symbols exist in IRAM",
+        "All 11 coroutine scheduler symbols present in IRAM text section [0x40800000, 0x40820000)",
+        t22_actual,
+        t22_pass
+    )
+
     print("\n" + "=" * 70)
     print("                       TEST SUITE SUMMARY                             ")
     print("=" * 70)

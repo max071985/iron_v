@@ -14,6 +14,7 @@
 #include "timer.h"
 #include "arena.h"
 #include "systimer.h"
+#include "task.h"
 
 static void print_help(void)
 {
@@ -21,6 +22,7 @@ static void print_help(void)
     console_puts("  help                - Show available commands\r\n");
     console_puts("  info                - Show system information\r\n");
     console_puts("  uptime              - Show high-resolution system uptime & timer telemetry\r\n");
+    console_puts("  tasks               - Show cooperative coroutine scheduler tasks & status\r\n");
     console_puts("  peek <hex_addr>     - Read 32-bit word from hex address\r\n");
     console_puts("  poke <addr> <val>   - Write 32-bit hex value to address\r\n");
     console_puts("  ecall               - Trigger controlled M-mode software trap (ECALL)\r\n");
@@ -418,6 +420,63 @@ static void shell_execute(char *input_buffer)
             console_puts(")\r\n");
         }
     }
+    else if (strcmp(input_buffer, "tasks") == 0)
+    {
+        task_scheduler_status_t status;
+        task_get_status(&status);
+
+        console_puts("Cooperative Coroutine Scheduler Status:\r\n");
+        console_puts("  Active Tasks:     ");
+        put_dec(status.active_task_count);
+        console_puts("/");
+        put_dec(TASK_MAX_COUNT);
+        console_puts("\r\n");
+        console_puts("  Context Switches: ");
+        put_dec(status.total_switches);
+        console_puts("\r\n");
+        console_puts("  Current Task ID:  ");
+        put_dec(status.current_task_id);
+        console_puts("\r\n\r\n");
+
+        console_puts(" ID | Name         | State      | Pri | Stack Base | Size   | Yields | Runtime(us)\r\n");
+        console_puts("----+--------------+------------+-----+------------+--------+--------+------------\r\n");
+        for (uint32_t i = 0; i < TASK_MAX_COUNT; i++)
+        {
+            task_control_block_t *t = &status.tasks[i];
+            if (t->state == TASK_STATE_UNUSED) continue;
+
+            console_puts("  ");
+            put_dec(t->id);
+            console_puts(" | ");
+            if (t->name)
+            {
+                console_puts(t->name);
+                size_t len = strlen(t->name);
+                for (size_t k = len; k < 12U; k++) console_putc(' ');
+            }
+            else
+            {
+                console_puts("unnamed     ");
+            }
+            console_puts(" | ");
+            const char *st_name = task_state_name(t->state);
+            console_puts(st_name);
+            size_t slen = strlen(st_name);
+            for (size_t k = slen; k < 10U; k++) console_putc(' ');
+            console_puts(" | ");
+            if (t->priority < 10U) console_putc(' ');
+            put_dec(t->priority);
+            console_puts("  | ");
+            put_hex(t->stack_base);
+            console_puts(" | ");
+            put_dec(t->stack_size);
+            console_puts(" B | ");
+            put_dec(t->yield_count);
+            console_puts(" | ");
+            put_dec(t->runtime_ticks >> SYSTIMER_TICKS_TO_US_SHIFT);
+            console_puts("\r\n");
+        }
+    }
     else
     {
         console_puts("Unknown command. Type 'help' for available commands.\r\n");
@@ -472,6 +531,9 @@ void main(void)
     /* Initialize Hardware Periodic Timer (TIMG0 Timer 0 @ 10s period) */
     timer_init(TIMER_DEFAULT_INTERVAL_SEC);
 
+    /* Initialize Cooperative Coroutine Scheduler */
+    task_init();
+
     console_puts("\r\n");
     print_info();
 
@@ -484,5 +546,6 @@ void main(void)
         wdt_supervisor_tick();
         dpc_process_all();
         shell_tick();
+        task_yield();
     }
 }

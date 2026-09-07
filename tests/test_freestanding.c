@@ -13,6 +13,7 @@
 #include "string.h"
 #include "dpc.h"
 #include "console.h"
+#include "arena.h"
 
 /* Freestanding function aliases matching runtime naming conventions */
 static inline size_t s_strlen(const char *s)
@@ -462,6 +463,181 @@ static void test_console_multiplexer(void)
     TEST_ASSERT(c == 'J', "mock usb getc received 'J'");
 }
 
+static void test_arena_allocator(void)
+{
+    printf("  [TEST] static arena memory allocator & linear scratch...\n");
+
+    arena_init();
+
+    /* 1. Initial State Verification */
+    arena_telemetry_t init_telem;
+    arena_get_stats(&init_telem);
+    TEST_ASSERT(init_telem.small_pool.active_count == 0U, "small pool initial active count 0");
+    TEST_ASSERT(init_telem.small_pool.allocated_mask == ARENA_BITMASK_EMPTY, "small pool initial mask empty");
+    TEST_ASSERT(init_telem.medium_pool.active_count == 0U, "medium pool initial active count 0");
+    TEST_ASSERT(init_telem.medium_pool.allocated_mask == ARENA_BITMASK_EMPTY, "medium pool initial mask empty");
+    TEST_ASSERT(init_telem.scratch.current_offset == 0U, "scratch initial offset 0");
+
+    /* 2. Small Pool Exhaustion & Alignment (32 blocks of 64 bytes) */
+    void *small_ptrs[ARENA_POOL_BLOCK_COUNT_SMALL];
+    for (uint32_t i = 0; i < ARENA_POOL_BLOCK_COUNT_SMALL; i++)
+    {
+        small_ptrs[i] = arena_alloc(ARENA_POOL_BLOCK_SIZE_SMALL);
+        TEST_ASSERT(small_ptrs[i] != NULL, "small allocation must succeed");
+        TEST_ASSERT(((uintptr_t)small_ptrs[i] & ARENA_ALIGN_MASK) == 0, "small allocation 4-byte aligned");
+
+        for (uint32_t j = 0; j < i; j++)
+        {
+            TEST_ASSERT(small_ptrs[j] != small_ptrs[i], "small allocation address must be unique");
+        }
+    }
+
+    /* 33rd small allocation must fail (exhaustion guard) */
+    void *small_overflow = arena_alloc(ARENA_POOL_BLOCK_SIZE_SMALL);
+    TEST_ASSERT(small_overflow == NULL, "33rd small allocation must return NULL");
+
+    arena_pool_stats_t small_stats;
+    arena_get_pool_stats(ARENA_POOL_SMALL, &small_stats);
+    TEST_ASSERT(small_stats.active_count == ARENA_POOL_BLOCK_COUNT_SMALL, "small pool active count equals capacity");
+    TEST_ASSERT(small_stats.allocated_mask == ARENA_BITMASK_FULL_SMALL, "small pool allocated mask full");
+
+    /* 3. Free Guards (double free, unaligned, out-of-bounds) */
+    void *block15 = small_ptrs[15];
+    TEST_ASSERT(arena_free(block15) == ARENA_FREE_SUCCESS, "freeing block 15 succeeds");
+    TEST_ASSERT(arena_free(block15) == ARENA_FREE_FAIL, "double free of block 15 rejected");
+    TEST_ASSERT(arena_free((uint8_t *)block15 + 1) == ARENA_FREE_FAIL, "unaligned pointer free rejected");
+    TEST_ASSERT(arena_free(NULL) == ARENA_FREE_FAIL, "freeing NULL rejected");
+    uint32_t stack_dummy = 0;
+    TEST_ASSERT(arena_free(&stack_dummy) == ARENA_FREE_FAIL, "freeing stack pointer rejected");
+
+    /* Re-allocation after free must reuse block 15 in O(1) */
+    void *realloc_block15 = arena_alloc(ARENA_POOL_BLOCK_SIZE_SMALL);
+    TEST_ASSERT(realloc_block15 == block15, "block 15 must be reused upon re-allocation");
+    small_ptrs[15] = realloc_block15;
+
+    /* Free all small blocks */
+    for (uint32_t i = 0; i < ARENA_POOL_BLOCK_COUNT_SMALL; i++)
+    {
+        TEST_ASSERT(arena_free(small_ptrs[i]) == ARENA_FREE_SUCCESS, "freeing all small blocks");
+    }
+    arena_get_pool_stats(ARENA_POOL_SMALL, &small_stats);
+    TEST_ASSERT(small_stats.active_count == 0U, "small pool active count 0 after freeing all");
+    TEST_ASSERT(small_stats.allocated_mask == ARENA_BITMASK_EMPTY, "small pool mask empty after freeing all");
+
+    /* 4. Medium Pool Exhaustion & Reuse (16 blocks of 256 bytes) */
+    void *med_ptrs[ARENA_POOL_BLOCK_COUNT_MEDIUM];
+    for (uint32_t i = 0; i < ARENA_POOL_BLOCK_COUNT_MEDIUM; i++)
+    {
+        med_ptrs[i] = arena_alloc(ARENA_POOL_BLOCK_SIZE_MEDIUM);
+        TEST_ASSERT(med_ptrs[i] != NULL, "medium allocation must succeed");
+        TEST_ASSERT(((uintptr_t)med_ptrs[i] & ARENA_ALIGN_MASK) == 0, "medium allocation 4-byte aligned");
+        for (uint32_t j = 0; j < i; j++)
+        {
+            TEST_ASSERT(med_ptrs[j] != med_ptrs[i], "medium allocation address must be unique");
+        }
+    }
+
+    void *med_overflow = arena_alloc(ARENA_POOL_BLOCK_SIZE_MEDIUM);
+    TEST_ASSERT(med_overflow == NULL, "17th medium allocation must return NULL");
+
+    void *block7 = med_ptrs[7];
+    TEST_ASSERT(arena_free(block7) == ARENA_FREE_SUCCESS, "freeing medium block 7 succeeds");
+    void *realloc_block7 = arena_alloc(ARENA_POOL_BLOCK_SIZE_MEDIUM);
+    TEST_ASSERT(realloc_block7 == block7, "medium block 7 must be reused upon re-allocation");
+    med_ptrs[7] = realloc_block7;
+
+    for (uint32_t i = 0; i < ARENA_POOL_BLOCK_COUNT_MEDIUM; i++)
+    {
+        TEST_ASSERT(arena_free(med_ptrs[i]) == ARENA_FREE_SUCCESS, "freeing all medium blocks");
+    }
+
+    /* 5. Size-Based Dispatch Logic */
+    TEST_ASSERT(arena_alloc(0U) == NULL, "alloc(0) returns NULL");
+    void *alloc_1 = arena_alloc(1U);
+    TEST_ASSERT(alloc_1 != NULL, "alloc(1) succeeds from small pool");
+    void *alloc_64 = arena_alloc(64U);
+    TEST_ASSERT(alloc_64 != NULL, "alloc(64) succeeds from small pool");
+    void *alloc_65 = arena_alloc(65U);
+    TEST_ASSERT(alloc_65 != NULL, "alloc(65) succeeds from medium pool");
+    void *alloc_256 = arena_alloc(256U);
+    TEST_ASSERT(alloc_256 != NULL, "alloc(256) succeeds from medium pool");
+    void *alloc_257 = arena_alloc(257U);
+    TEST_ASSERT(alloc_257 == NULL, "alloc(257) exceeds medium pool and returns NULL");
+
+    TEST_ASSERT(arena_free(alloc_1) == ARENA_FREE_SUCCESS, "free alloc_1");
+    TEST_ASSERT(arena_free(alloc_64) == ARENA_FREE_SUCCESS, "free alloc_64");
+    TEST_ASSERT(arena_free(alloc_65) == ARENA_FREE_SUCCESS, "free alloc_65");
+    TEST_ASSERT(arena_free(alloc_256) == ARENA_FREE_SUCCESS, "free alloc_256");
+
+    /* 6. Linear Scratch Arena Mark & Reset */
+    arena_scratch_reset(0U);
+    arena_scratch_mark_t mark0 = arena_scratch_mark();
+    TEST_ASSERT(mark0 == 0U, "initial scratch mark is 0");
+
+    void *sc1 = arena_scratch_alloc(100U);
+    TEST_ASSERT(sc1 != NULL, "scratch alloc 100 succeeds");
+    TEST_ASSERT(((uintptr_t)sc1 & ARENA_ALIGN_MASK) == 0, "scratch alloc 4-byte aligned");
+
+    void *sc2 = arena_scratch_alloc(200U);
+    TEST_ASSERT(sc2 != NULL, "scratch alloc 200 succeeds");
+    TEST_ASSERT(sc2 > sc1, "scratch alloc advances linearly");
+
+    arena_scratch_mark_t mark1 = arena_scratch_mark();
+    void *sc3 = arena_scratch_alloc(300U);
+    TEST_ASSERT(sc3 != NULL, "scratch alloc 300 succeeds");
+
+    arena_scratch_reset(mark1);
+    void *sc4 = arena_scratch_alloc(300U);
+    TEST_ASSERT(sc4 == sc3, "resetting to mark1 restores pointer for subsequent alloc");
+
+    arena_scratch_reset(mark0);
+    void *sc5 = arena_scratch_alloc(100U);
+    TEST_ASSERT(sc5 == sc1, "resetting to mark0 restores original pointer sc1");
+
+    /* Test scratch exhaustion guard & integer overflow attacks */
+    arena_scratch_reset(0U);
+    void *sc_huge = arena_scratch_alloc(ARENA_SCRATCH_TOTAL_SIZE + 1U);
+    TEST_ASSERT(sc_huge == NULL, "scratch alloc exceeding capacity returns NULL");
+
+    void *sc_overflow1 = arena_scratch_alloc((size_t)-1);
+    TEST_ASSERT(sc_overflow1 == NULL, "scratch alloc (size_t)-1 rejected via overflow guard");
+
+    void *sc_overflow2 = arena_scratch_alloc((size_t)-3);
+    TEST_ASSERT(sc_overflow2 == NULL, "scratch alloc (size_t)-3 rejected via overflow guard");
+
+    void *sc_overflow3 = arena_scratch_alloc(0xFFFFFFFFU);
+    TEST_ASSERT(sc_overflow3 == NULL, "scratch alloc 0xFFFFFFFF rejected via overflow guard");
+
+    /* Test mark/reset validation (unaligned mark and forward reset rejection) */
+    void *sc_base = arena_scratch_alloc(64U);
+    TEST_ASSERT(sc_base != NULL, "scratch alloc 64 succeeds");
+    arena_scratch_mark_t current_mark = arena_scratch_mark();
+    TEST_ASSERT(current_mark == 64U, "current scratch mark is 64");
+
+    /* Attempt unaligned reset: must be ignored */
+    arena_scratch_reset(3U);
+    TEST_ASSERT(arena_scratch_mark() == 64U, "unaligned reset(3) rejected; mark unchanged");
+
+    /* Attempt forward reset beyond current offset: must be ignored */
+    arena_scratch_reset(128U);
+    TEST_ASSERT(arena_scratch_mark() == 64U, "forward reset(128) rejected; mark unchanged");
+
+    /* Valid rewind reset */
+    arena_scratch_reset(0U);
+    TEST_ASSERT(arena_scratch_mark() == 0U, "reset to 0 restores mark to 0");
+
+    /* 7. Robustness and Telemetry Edge Cases */
+    TEST_ASSERT(arena_alloc_pool((arena_pool_id_t)99) == NULL, "invalid pool_id alloc returns NULL");
+    TEST_ASSERT(arena_free((void *)0x10) == ARENA_FREE_FAIL, "freeing low unmapped pointer rejected");
+    TEST_ASSERT(arena_free((void *)64) == ARENA_FREE_FAIL, "freeing arbitrary low pointer rejected");
+
+    arena_get_stats(NULL); /* Safe no-op */
+    arena_get_scratch_stats(NULL); /* Safe no-op */
+    arena_pool_stats_t invalid_pool_stats;
+    arena_get_pool_stats((arena_pool_id_t)99, &invalid_pool_stats);
+    TEST_ASSERT(invalid_pool_stats.block_size == 0U, "invalid pool stats returns zeroed struct");
+}
+
 int main(void)
 {
     printf("======================================================================\n");
@@ -478,6 +654,7 @@ int main(void)
     test_char_helpers();
     test_dpc_queue();
     test_console_multiplexer();
+    test_arena_allocator();
 
     printf("======================================================================\n");
     if (g_assert_failures == 0)

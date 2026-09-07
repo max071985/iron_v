@@ -12,6 +12,7 @@
 #include "uart.h"
 #include "console.h"
 #include "timer.h"
+#include "arena.h"
 
 static void print_help(void)
 {
@@ -23,6 +24,7 @@ static void print_help(void)
     console_puts("  ecall               - Trigger controlled M-mode software trap (ECALL)\r\n");
     console_puts("  panic               - Trigger illegal instruction exception to test panic dump\r\n");
     console_puts("  timer [start|stop]  - Show or control periodic timer telemetry\r\n");
+    console_puts("  arena               - Show static memory arena allocation telemetry\r\n");
     console_puts("  do-test             - Run full baseline validation test suite\r\n");
 }
 
@@ -117,6 +119,22 @@ static void print_info(void)
     console_puts(", Echo: ");
     console_puts(cmgr.echo_enabled ? "ON" : "OFF");
     console_puts(")\r\n");
+
+    arena_telemetry_t atel;
+    arena_get_stats(&atel);
+    console_puts(" Arena:   Small ");
+    put_dec(atel.small_pool.active_count);
+    console_puts("/");
+    put_dec(atel.small_pool.block_count);
+    console_puts(" (64B), Med ");
+    put_dec(atel.medium_pool.active_count);
+    console_puts("/");
+    put_dec(atel.medium_pool.block_count);
+    console_puts(" (256B), Scratch ");
+    put_dec((uint32_t)atel.scratch.current_offset);
+    console_puts("/");
+    put_dec((uint32_t)atel.scratch.capacity);
+    console_puts(" B\r\n");
     console_puts("========================================\r\n");
 }
 
@@ -258,6 +276,73 @@ static void shell_execute(char *input_buffer)
         timer_start();
         console_puts("[TIMER] TIMG0 Timer 0 started.\r\n");
     }
+    else if (strcmp(input_buffer, "arena") == 0)
+    {
+        arena_telemetry_t atel;
+        arena_get_stats(&atel);
+        console_puts("Static Memory Arena Telemetry:\r\n");
+        console_puts("  Small Pool:   ");
+        put_dec(atel.small_pool.block_count);
+        console_puts(" blocks x ");
+        put_dec(atel.small_pool.block_size);
+        console_puts(" B (");
+        put_dec(atel.small_pool.block_count * atel.small_pool.block_size);
+        console_puts(" B total)\r\n");
+        console_puts("    Active:     ");
+        put_dec(atel.small_pool.active_count);
+        console_puts("/");
+        put_dec(atel.small_pool.block_count);
+        console_puts(" (Peak: ");
+        put_dec(atel.small_pool.high_watermark);
+        console_puts(")\r\n");
+        console_puts("    Bitmask:    ");
+        put_hex(atel.small_pool.allocated_mask);
+        console_puts("\r\n");
+        console_puts("    Allocs:     ");
+        put_dec(atel.small_pool.total_alloc_count);
+        console_puts(", Frees: ");
+        put_dec(atel.small_pool.total_free_count);
+        console_puts("\r\n");
+
+        console_puts("  Medium Pool:  ");
+        put_dec(atel.medium_pool.block_count);
+        console_puts(" blocks x ");
+        put_dec(atel.medium_pool.block_size);
+        console_puts(" B (");
+        put_dec(atel.medium_pool.block_count * atel.medium_pool.block_size);
+        console_puts(" B total)\r\n");
+        console_puts("    Active:     ");
+        put_dec(atel.medium_pool.active_count);
+        console_puts("/");
+        put_dec(atel.medium_pool.block_count);
+        console_puts(" (Peak: ");
+        put_dec(atel.medium_pool.high_watermark);
+        console_puts(")\r\n");
+        console_puts("    Bitmask:    ");
+        put_hex(atel.medium_pool.allocated_mask);
+        console_puts("\r\n");
+        console_puts("    Allocs:     ");
+        put_dec(atel.medium_pool.total_alloc_count);
+        console_puts(", Frees: ");
+        put_dec(atel.medium_pool.total_free_count);
+        console_puts("\r\n");
+
+        console_puts("  Scratch:      Linear Arena (");
+        put_dec((uint32_t)atel.scratch.capacity);
+        console_puts(" B capacity)\r\n");
+        console_puts("    Offset:     ");
+        put_dec((uint32_t)atel.scratch.current_offset);
+        console_puts("/");
+        put_dec((uint32_t)atel.scratch.capacity);
+        console_puts(" B (Peak: ");
+        put_dec((uint32_t)atel.scratch.high_watermark);
+        console_puts(" B)\r\n");
+        console_puts("    Allocs:     ");
+        put_dec(atel.scratch.total_alloc_count);
+        console_puts(", Resets: ");
+        put_dec(atel.scratch.total_reset_count);
+        console_puts("\r\n");
+    }
     else
     {
         console_puts("Unknown command. Type 'help' for available commands.\r\n");
@@ -302,6 +387,9 @@ void main(void)
 
     /* Initialize Unified Dual-Console Layer (UART0 interrupt-driven & USB CDC-ACM) */
     console_init();
+
+    /* Initialize Deterministic Static Arena Memory Allocator */
+    arena_init();
 
     /* Initialize Hardware Periodic Timer (TIMG0 Timer 0 @ 10s period) */
     timer_init(TIMER_DEFAULT_INTERVAL_SEC);

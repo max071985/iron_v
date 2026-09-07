@@ -579,6 +579,66 @@ def run_suite():
         t18_pass
     )
 
+    # TEST 19: Hardware Periodic Timer (TIMG0 T0) Driver Linkage (Task 2.6)
+    total += 1
+    timer_syms = [
+        "timer_init",
+        "timer_start",
+        "timer_stop",
+        "timer_isr",
+        "timer_dpc_handler",
+        "timer_get_tick_count",
+        "timer_get_status",
+        "timer_get_current_ticks"
+    ]
+    found_timer_syms = [s for s in timer_syms if s in symbols]
+    all_timer_found = len(found_timer_syms) == len(timer_syms)
+    all_timer_in_text = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40820000)
+        for s in found_timer_syms
+    )
+    t19_pass = all_timer_found and all_timer_in_text
+    t19_actual = f"Found {len(found_timer_syms)}/{len(timer_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    passed += print_result_line(
+        total,
+        "Hardware Periodic Timer (TIMG0 T0) Driver Linkage",
+        "Verify timer_init, start/stop, ISR, DPC handler, and query symbols exist in IRAM",
+        "All 8 timer driver symbols present in IRAM text section [0x40800000, 0x40820000)",
+        t19_actual,
+        t19_pass
+    )
+
+    # TEST 20: Deterministic Static Arena Memory Allocator Linkage (Task 3.1)
+    total += 1
+    arena_syms = [
+        "arena_init",
+        "arena_alloc",
+        "arena_alloc_pool",
+        "arena_free",
+        "arena_scratch_alloc",
+        "arena_scratch_mark",
+        "arena_scratch_reset",
+        "arena_get_stats",
+        "arena_get_pool_stats",
+        "arena_get_scratch_stats"
+    ]
+    found_arena_syms = [s for s in arena_syms if s in symbols]
+    all_arena_found = len(found_arena_syms) == len(arena_syms)
+    all_arena_in_text = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40820000)
+        for s in found_arena_syms
+    )
+    t20_pass = all_arena_found and all_arena_in_text
+    t20_actual = f"Found {len(found_arena_syms)}/{len(arena_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    passed += print_result_line(
+        total,
+        "Deterministic Static Arena Memory Allocator Linkage",
+        "Verify arena_init, alloc/free, scratch mark/reset, and telemetry symbols exist in IRAM",
+        "All 10 arena allocator symbols present in IRAM text section [0x40800000, 0x40820000)",
+        t20_actual,
+        t20_pass
+    )
+
     print("\n" + "=" * 70)
     print("                       TEST SUITE SUMMARY                             ")
     print("=" * 70)

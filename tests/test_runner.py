@@ -322,7 +322,7 @@ def run_suite():
     native_desc = ""
     if not os.path.exists(native_test_bin):
         comp = subprocess.run(
-            ["gcc", "-O2", "-Wall", "-Wextra", "-Isrc", "tests/test_freestanding.c", "src/string.c", "src/dpc.c", "-o", native_test_bin],
+            ["gcc", "-O2", "-fno-tree-loop-distribute-patterns", "-Wall", "-Wextra", "-Werror", "-Isrc", "tests/test_freestanding.c", "src/string.c", "src/dpc.c", "src/arena.c", "src/pmp.c", "-o", native_test_bin],
             capture_output=True, text=True
         )
         if comp.returncode != 0:
@@ -335,7 +335,7 @@ def run_suite():
     passed += print_result_line(
         total,
         "Host-Native Freestanding C Unit Test Suite Execution",
-        "Execute compiled host test binary tests/test_freestanding linking src/string.c and src/dpc.c",
+        "Execute compiled host test binary tests/test_freestanding linking src/string.c, src/dpc.c, src/arena.c, and src/pmp.c",
         "tests/test_freestanding exits with code 0; all freestanding C assertions pass",
         native_desc,
         t9_pass

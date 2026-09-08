@@ -846,6 +846,980 @@ static void test_pmp_apm_isolation(void)
     TEST_ASSERT(tel.apm_active_count == 1U, "telemetry reports 1 active APM region (Region 0 pass-through)");
 }
 
+/* ========================================================================= */
+/* Phase 0-3 Host Test Hardening: Cross-Module Integration & Edge Case Tests */
+/* ========================================================================= */
+
+#define TEST_COROUTINE_ROUNDS               5U
+#define TEST_COROUTINE_TIMER_INTERVAL_US    1000U
+#define TEST_COROUTINE_TICKS_PER_US         16U
+#define TEST_COROUTINE_TOTAL_EVENTS         10U
+#define TEST_DPC_ARG_MAGIC_A                0xAAAA0000U
+#define TEST_DPC_ARG_MAGIC_B                0xBBBB0000U
+#define TEST_DPC_RECORD_CAPACITY            64U
+
+typedef struct {
+    uint32_t arg0;
+    uint32_t arg1;
+    uint32_t seq;
+} test_dpc_event_record_t;
+
+static test_dpc_event_record_t s_test_dpc_records[TEST_DPC_RECORD_CAPACITY];
+static uint32_t s_test_dpc_event_count = 0U;
+
+static void test_dpc_integration_handler(uint32_t arg0, uint32_t arg1)
+{
+    if (s_test_dpc_event_count < TEST_DPC_RECORD_CAPACITY)
+    {
+        s_test_dpc_records[s_test_dpc_event_count].arg0 = arg0;
+        s_test_dpc_records[s_test_dpc_event_count].arg1 = arg1;
+        s_test_dpc_records[s_test_dpc_event_count].seq  = s_test_dpc_event_count;
+        s_test_dpc_event_count++;
+    }
+}
+
+/*
+ * Test 15: Cross-module Coroutine + SYSTIMER + DPC Integration
+ * Tests Task A and Task B cooperatively yielding while simulated SYSTIMER tick alarms
+ * enqueue DPC items, and a Worker task drains the DPC queue via dpc_process_all().
+ */
+static void test_coroutine_systimer_dpc_integration(void)
+{
+    printf("  [TEST] cross-module coroutine + systimer + dpc integration...\n");
+
+    dpc_init();
+    s_test_dpc_event_count = 0U;
+
+    task_control_block_t task_a;
+    task_control_block_t task_b;
+    task_control_block_t task_worker;
+
+    task_a.id = 1U;
+    task_a.name = "Task_A";
+    task_a.state = TASK_STATE_READY;
+    task_a.priority = 10U;
+    task_a.yield_count = 0U;
+    task_a.runtime_ticks = 0U;
+
+    task_b.id = 2U;
+    task_b.name = "Task_B";
+    task_b.state = TASK_STATE_READY;
+    task_b.priority = 10U;
+    task_b.yield_count = 0U;
+    task_b.runtime_ticks = 0U;
+
+    task_worker.id = 3U;
+    task_worker.name = "Task_Worker";
+    task_worker.state = TASK_STATE_READY;
+    task_worker.priority = 12U;
+    task_worker.yield_count = 0U;
+    task_worker.runtime_ticks = 0U;
+
+    for (uint32_t r = 0U; r < TEST_COROUTINE_ROUNDS; r++)
+    {
+        /* 1. Dispatch Task A */
+        TEST_ASSERT(task_a.state == TASK_STATE_READY, "Task A ready before dispatch");
+        task_a.state = TASK_STATE_RUNNING;
+        TEST_ASSERT(task_a.state == TASK_STATE_RUNNING, "Task A in running state");
+
+        /* Simulate SYSTIMER tick alarm firing during Task A execution */
+        uint32_t tick_a_lo = (r * 2U + 0U) * TEST_COROUTINE_TIMER_INTERVAL_US * TEST_COROUTINE_TICKS_PER_US;
+        uint32_t magic_a = TEST_DPC_ARG_MAGIC_A | r;
+        int enq_a = dpc_enqueue(DPC_TYPE_TIMER_TICK, magic_a, tick_a_lo, test_dpc_integration_handler);
+        TEST_ASSERT(enq_a == DPC_STATUS_OK, "Task A timer tick DPC enqueue succeeds");
+
+        /* Task A yields */
+        task_a.state = TASK_STATE_READY;
+        task_a.yield_count++;
+        task_a.runtime_ticks += 100U;
+        TEST_ASSERT(task_a.state == TASK_STATE_READY, "Task A yielded to ready state");
+
+        /* 2. Dispatch Task B */
+        TEST_ASSERT(task_b.state == TASK_STATE_READY, "Task B ready before dispatch");
+        task_b.state = TASK_STATE_RUNNING;
+        TEST_ASSERT(task_b.state == TASK_STATE_RUNNING, "Task B in running state");
+
+        /* Simulate SYSTIMER tick alarm firing during Task B execution */
+        uint32_t tick_b_lo = (r * 2U + 1U) * TEST_COROUTINE_TIMER_INTERVAL_US * TEST_COROUTINE_TICKS_PER_US;
+        uint32_t magic_b = TEST_DPC_ARG_MAGIC_B | r;
+        int enq_b = dpc_enqueue(DPC_TYPE_TIMER_TICK, magic_b, tick_b_lo, test_dpc_integration_handler);
+        TEST_ASSERT(enq_b == DPC_STATUS_OK, "Task B timer tick DPC enqueue succeeds");
+
+        /* Task B yields */
+        task_b.state = TASK_STATE_READY;
+        task_b.yield_count++;
+        task_b.runtime_ticks += 150U;
+        TEST_ASSERT(task_b.state == TASK_STATE_READY, "Task B yielded to ready state");
+
+        /* 3. Dispatch Worker Task */
+        TEST_ASSERT(task_worker.state == TASK_STATE_READY, "Worker ready before dispatch");
+        task_worker.state = TASK_STATE_RUNNING;
+        TEST_ASSERT(task_worker.state == TASK_STATE_RUNNING, "Worker in running state");
+
+        TEST_ASSERT(dpc_get_size() == 2U, "Worker observes exactly 2 pending DPC events");
+        uint32_t drained = dpc_process_all();
+        TEST_ASSERT(drained == 2U, "Worker drains exactly 2 DPC events");
+        TEST_ASSERT(dpc_get_size() == 0U, "DPC queue empty after worker drain");
+
+        /* Worker yields */
+        task_worker.state = TASK_STATE_READY;
+        task_worker.yield_count++;
+        task_worker.runtime_ticks += 50U;
+        TEST_ASSERT(task_worker.state == TASK_STATE_READY, "Worker yielded to ready state");
+    }
+
+    /* Terminate tasks after cooperative loop completion */
+    task_a.state = TASK_STATE_TERMINATED;
+    task_b.state = TASK_STATE_TERMINATED;
+    task_worker.state = TASK_STATE_TERMINATED;
+
+    TEST_ASSERT(task_a.state == TASK_STATE_TERMINATED, "Task A cleanly transitioned to TERMINATED");
+    TEST_ASSERT(task_b.state == TASK_STATE_TERMINATED, "Task B cleanly transitioned to TERMINATED");
+    TEST_ASSERT(task_worker.state == TASK_STATE_TERMINATED, "Worker cleanly transitioned to TERMINATED");
+    TEST_ASSERT(task_a.yield_count == TEST_COROUTINE_ROUNDS, "Task A yield count matches expected rounds");
+    TEST_ASSERT(task_b.yield_count == TEST_COROUTINE_ROUNDS, "Task B yield count matches expected rounds");
+    TEST_ASSERT(task_worker.yield_count == TEST_COROUTINE_ROUNDS, "Worker yield count matches expected rounds");
+
+    /* Verify global DPC statistics */
+    TEST_ASSERT(dpc_get_drop_count() == 0U, "DPC queue zero drop count confirmed");
+    TEST_ASSERT(dpc_get_processed_count() == TEST_COROUTINE_TOTAL_EVENTS, "Total DPC processed count equals 10");
+    TEST_ASSERT(s_test_dpc_event_count == TEST_COROUTINE_TOTAL_EVENTS, "Recorded callback count equals 10");
+
+    /* Assert strict FIFO ordering and exact event arguments */
+    for (uint32_t i = 0U; i < TEST_COROUTINE_TOTAL_EVENTS; i++)
+    {
+        uint32_t round_idx = i / 2U;
+        if ((i % 2U) == 0U)
+        {
+            uint32_t expected_magic_a = TEST_DPC_ARG_MAGIC_A | round_idx;
+            uint32_t expected_tick_a = i * TEST_COROUTINE_TIMER_INTERVAL_US * TEST_COROUTINE_TICKS_PER_US;
+            TEST_ASSERT(s_test_dpc_records[i].arg0 == expected_magic_a, "FIFO ordering: Task A magic matches");
+            TEST_ASSERT(s_test_dpc_records[i].arg1 == expected_tick_a, "Exact event argument: Task A tick matches");
+        }
+        else
+        {
+            uint32_t expected_magic_b = TEST_DPC_ARG_MAGIC_B | round_idx;
+            uint32_t expected_tick_b = i * TEST_COROUTINE_TIMER_INTERVAL_US * TEST_COROUTINE_TICKS_PER_US;
+            TEST_ASSERT(s_test_dpc_records[i].arg0 == expected_magic_b, "FIFO ordering: Task B magic matches");
+            TEST_ASSERT(s_test_dpc_records[i].arg1 == expected_tick_b, "Exact event argument: Task B tick matches");
+        }
+    }
+}
+
+#define TEST_ARENA_TASK1_SMALL_BLOCKS       20U
+#define TEST_ARENA_TASK2_SMALL_BLOCKS       12U
+#define TEST_ARENA_FREED_SMALL_SUBSET       4U
+#define TEST_ARENA_TASK_A_MED_BLOCKS        10U
+#define TEST_ARENA_TASK_B_MED_BLOCKS        6U
+#define TEST_ARENA_FREED_MED_SUBSET         3U
+
+/*
+ * Test 16: Static Arena Pool Exhaustion & Concurrency
+ * Tests multi-task contention on small/medium pools, full pool exhaustion,
+ * subset freeing, bitmask updates, immediate reusability, and scratch arena mark/reset.
+ */
+static void test_arena_concurrency_exhaustion(void)
+{
+    printf("  [TEST] static arena pool exhaustion & multi-task concurrency...\n");
+
+    arena_init();
+
+    /* --- Part 1: Small Pool Multi-Task Contention (32 blocks x 64B) --- */
+    void *task1_small_ptrs[TEST_ARENA_TASK1_SMALL_BLOCKS];
+    void *task2_small_ptrs[TEST_ARENA_TASK2_SMALL_BLOCKS];
+
+    /* Task 1 allocates 20 small blocks */
+    for (uint32_t i = 0U; i < TEST_ARENA_TASK1_SMALL_BLOCKS; i++)
+    {
+        task1_small_ptrs[i] = arena_alloc(ARENA_POOL_BLOCK_SIZE_SMALL);
+        TEST_ASSERT(task1_small_ptrs[i] != NULL, "Task 1 small block alloc succeeds");
+        TEST_ASSERT(((uintptr_t)task1_small_ptrs[i] & ARENA_ALIGN_MASK) == 0U, "Task 1 small block 4-byte aligned");
+        for (uint32_t j = 0U; j < i; j++)
+        {
+            TEST_ASSERT(task1_small_ptrs[j] != task1_small_ptrs[i], "Task 1 block address unique");
+        }
+    }
+
+    arena_pool_stats_t small_stats;
+    arena_get_pool_stats(ARENA_POOL_SMALL, &small_stats);
+    TEST_ASSERT(small_stats.active_count == TEST_ARENA_TASK1_SMALL_BLOCKS, "Small pool active count is 20 after Task 1");
+    TEST_ASSERT(small_stats.allocated_mask == 0x000FFFFFU, "Small pool mask has lowest 20 bits set");
+
+    /* Task 2 allocates 12 small blocks (exhausting the pool) */
+    for (uint32_t i = 0U; i < TEST_ARENA_TASK2_SMALL_BLOCKS; i++)
+    {
+        task2_small_ptrs[i] = arena_alloc(ARENA_POOL_BLOCK_SIZE_SMALL);
+        TEST_ASSERT(task2_small_ptrs[i] != NULL, "Task 2 small block alloc succeeds");
+        TEST_ASSERT(((uintptr_t)task2_small_ptrs[i] & ARENA_ALIGN_MASK) == 0U, "Task 2 small block 4-byte aligned");
+        for (uint32_t j = 0U; j < TEST_ARENA_TASK1_SMALL_BLOCKS; j++)
+        {
+            TEST_ASSERT(task1_small_ptrs[j] != task2_small_ptrs[i], "Task 2 block does not collide with Task 1");
+        }
+    }
+
+    arena_get_pool_stats(ARENA_POOL_SMALL, &small_stats);
+    TEST_ASSERT(small_stats.active_count == ARENA_POOL_BLOCK_COUNT_SMALL, "Small pool active count at max capacity (32)");
+    TEST_ASSERT(small_stats.allocated_mask == ARENA_BITMASK_FULL_SMALL, "Small pool mask fully populated (0xFFFFFFFF)");
+
+    /* Full pool exhaustion: both tasks attempt additional allocations */
+    void *exhaustion_1 = arena_alloc(ARENA_POOL_BLOCK_SIZE_SMALL);
+    TEST_ASSERT(exhaustion_1 == NULL, "Small pool exhaustion returns NULL to Task 1");
+    void *exhaustion_2 = arena_alloc(ARENA_POOL_BLOCK_SIZE_SMALL);
+    TEST_ASSERT(exhaustion_2 == NULL, "Small pool exhaustion returns NULL to Task 2");
+
+    arena_get_pool_stats(ARENA_POOL_SMALL, &small_stats);
+    TEST_ASSERT(small_stats.active_count == ARENA_POOL_BLOCK_COUNT_SMALL, "Active count remains 32 after failed allocs");
+    TEST_ASSERT(small_stats.allocated_mask == ARENA_BITMASK_FULL_SMALL, "Mask remains full after failed allocs");
+
+    /* Task 2 frees a subset of 4 blocks (indices 0, 3, 6, 9 within task 2 array) */
+    uint32_t freed_indices[TEST_ARENA_FREED_SMALL_SUBSET] = {0U, 3U, 6U, 9U};
+    void *freed_ptrs[TEST_ARENA_FREED_SMALL_SUBSET];
+    for (uint32_t k = 0U; k < TEST_ARENA_FREED_SMALL_SUBSET; k++)
+    {
+        uint32_t idx = freed_indices[k];
+        freed_ptrs[k] = task2_small_ptrs[idx];
+        TEST_ASSERT(arena_free(task2_small_ptrs[idx]) == ARENA_FREE_SUCCESS, "Task 2 block free succeeds");
+    }
+
+    arena_get_pool_stats(ARENA_POOL_SMALL, &small_stats);
+    TEST_ASSERT(small_stats.active_count == (ARENA_POOL_BLOCK_COUNT_SMALL - TEST_ARENA_FREED_SMALL_SUBSET), "Active count decreased by 4");
+
+    /* Immediate reusability: Task 1 re-allocates 4 blocks */
+    void *realloc_ptrs[TEST_ARENA_FREED_SMALL_SUBSET];
+    for (uint32_t k = 0U; k < TEST_ARENA_FREED_SMALL_SUBSET; k++)
+    {
+        realloc_ptrs[k] = arena_alloc(ARENA_POOL_BLOCK_SIZE_SMALL);
+        TEST_ASSERT(realloc_ptrs[k] != NULL, "Re-allocation of freed small block succeeds");
+        /* Verify re-allocated pointer was one of the freed blocks */
+        int found = 0;
+        for (uint32_t m = 0U; m < TEST_ARENA_FREED_SMALL_SUBSET; m++)
+        {
+            if (realloc_ptrs[k] == freed_ptrs[m])
+            {
+                found = 1;
+                break;
+            }
+        }
+        TEST_ASSERT(found == 1, "Re-allocated block reuses an immediately freed block");
+    }
+
+    arena_get_pool_stats(ARENA_POOL_SMALL, &small_stats);
+    TEST_ASSERT(small_stats.active_count == ARENA_POOL_BLOCK_COUNT_SMALL, "Active count returned to 32");
+    TEST_ASSERT(small_stats.allocated_mask == ARENA_BITMASK_FULL_SMALL, "Mask returned to full");
+
+    /* Free all Task 1 blocks, reallocated blocks, and remaining Task 2 blocks */
+    for (uint32_t i = 0U; i < TEST_ARENA_TASK1_SMALL_BLOCKS; i++)
+    {
+        TEST_ASSERT(arena_free(task1_small_ptrs[i]) == ARENA_FREE_SUCCESS, "Clean free Task 1 small block");
+    }
+    for (uint32_t k = 0U; k < TEST_ARENA_FREED_SMALL_SUBSET; k++)
+    {
+        TEST_ASSERT(arena_free(realloc_ptrs[k]) == ARENA_FREE_SUCCESS, "Clean free reallocated block");
+    }
+    for (uint32_t i = 0U; i < TEST_ARENA_TASK2_SMALL_BLOCKS; i++)
+    {
+        if (i != 0U && i != 3U && i != 6U && i != 9U)
+        {
+            TEST_ASSERT(arena_free(task2_small_ptrs[i]) == ARENA_FREE_SUCCESS, "Clean free remaining Task 2 small block");
+        }
+    }
+
+    arena_get_pool_stats(ARENA_POOL_SMALL, &small_stats);
+    TEST_ASSERT(small_stats.active_count == 0U, "Small pool active count is 0 after full cleanup");
+    TEST_ASSERT(small_stats.allocated_mask == ARENA_BITMASK_EMPTY, "Small pool mask is empty after full cleanup");
+
+    /* --- Part 2: Medium Pool Multi-Task Contention (16 blocks x 256B) --- */
+    void *task_a_med_ptrs[TEST_ARENA_TASK_A_MED_BLOCKS];
+    void *task_b_med_ptrs[TEST_ARENA_TASK_B_MED_BLOCKS];
+
+    for (uint32_t i = 0U; i < TEST_ARENA_TASK_A_MED_BLOCKS; i++)
+    {
+        task_a_med_ptrs[i] = arena_alloc(ARENA_POOL_BLOCK_SIZE_MEDIUM);
+        TEST_ASSERT(task_a_med_ptrs[i] != NULL, "Task A medium block alloc succeeds");
+        TEST_ASSERT(((uintptr_t)task_a_med_ptrs[i] & ARENA_ALIGN_MASK) == 0U, "Task A medium block 4-byte aligned");
+    }
+
+    for (uint32_t i = 0U; i < TEST_ARENA_TASK_B_MED_BLOCKS; i++)
+    {
+        task_b_med_ptrs[i] = arena_alloc(ARENA_POOL_BLOCK_SIZE_MEDIUM);
+        TEST_ASSERT(task_b_med_ptrs[i] != NULL, "Task B medium block alloc succeeds");
+        TEST_ASSERT(((uintptr_t)task_b_med_ptrs[i] & ARENA_ALIGN_MASK) == 0U, "Task B medium block 4-byte aligned");
+    }
+
+    arena_pool_stats_t med_stats;
+    arena_get_pool_stats(ARENA_POOL_MEDIUM, &med_stats);
+    TEST_ASSERT(med_stats.active_count == ARENA_POOL_BLOCK_COUNT_MEDIUM, "Medium pool active count at max capacity (16)");
+    TEST_ASSERT(med_stats.allocated_mask == ARENA_BITMASK_FULL_MEDIUM, "Medium pool mask fully populated (0xFFFF)");
+
+    /* Medium pool exhaustion check */
+    TEST_ASSERT(arena_alloc(ARENA_POOL_BLOCK_SIZE_MEDIUM) == NULL, "Medium pool exhaustion returns NULL to Task A");
+    TEST_ASSERT(arena_alloc(ARENA_POOL_BLOCK_SIZE_MEDIUM) == NULL, "Medium pool exhaustion returns NULL to Task B");
+
+    /* Task A frees 3 blocks (indices 1, 4, 7) */
+    void *freed_med_ptrs[TEST_ARENA_FREED_MED_SUBSET] = {task_a_med_ptrs[1], task_a_med_ptrs[4], task_a_med_ptrs[7]};
+    for (uint32_t k = 0U; k < TEST_ARENA_FREED_MED_SUBSET; k++)
+    {
+        TEST_ASSERT(arena_free(freed_med_ptrs[k]) == ARENA_FREE_SUCCESS, "Task A medium block free succeeds");
+    }
+
+    arena_get_pool_stats(ARENA_POOL_MEDIUM, &med_stats);
+    TEST_ASSERT(med_stats.active_count == (ARENA_POOL_BLOCK_COUNT_MEDIUM - TEST_ARENA_FREED_MED_SUBSET), "Medium active count decreased by 3");
+
+    /* Task B immediately reuses the freed blocks */
+    void *realloc_med_ptrs[TEST_ARENA_FREED_MED_SUBSET];
+    for (uint32_t k = 0U; k < TEST_ARENA_FREED_MED_SUBSET; k++)
+    {
+        realloc_med_ptrs[k] = arena_alloc(ARENA_POOL_BLOCK_SIZE_MEDIUM);
+        TEST_ASSERT(realloc_med_ptrs[k] != NULL, "Task B medium re-allocation succeeds");
+    }
+
+    /* Cleanup all medium blocks */
+    for (uint32_t i = 0U; i < TEST_ARENA_TASK_A_MED_BLOCKS; i++)
+    {
+        if (i != 1U && i != 4U && i != 7U)
+        {
+            TEST_ASSERT(arena_free(task_a_med_ptrs[i]) == ARENA_FREE_SUCCESS, "Clean free Task A medium block");
+        }
+    }
+    for (uint32_t k = 0U; k < TEST_ARENA_FREED_MED_SUBSET; k++)
+    {
+        TEST_ASSERT(arena_free(realloc_med_ptrs[k]) == ARENA_FREE_SUCCESS, "Clean free reallocated medium block");
+    }
+    for (uint32_t i = 0U; i < TEST_ARENA_TASK_B_MED_BLOCKS; i++)
+    {
+        TEST_ASSERT(arena_free(task_b_med_ptrs[i]) == ARENA_FREE_SUCCESS, "Clean free Task B medium block");
+    }
+
+    arena_get_pool_stats(ARENA_POOL_MEDIUM, &med_stats);
+    TEST_ASSERT(med_stats.active_count == 0U, "Medium pool active count is 0 after full cleanup");
+    TEST_ASSERT(med_stats.allocated_mask == ARENA_BITMASK_EMPTY, "Medium pool mask is empty after cleanup");
+
+    /* --- Part 3: Scratch Arena Alignment Boundaries, Forward Reset Rejection & Overflow Guards --- */
+    arena_scratch_reset(0U);
+    TEST_ASSERT(arena_scratch_mark() == 0U, "Scratch arena starts at mark 0");
+
+    void *sc_t1 = arena_scratch_alloc(128U);
+    TEST_ASSERT(sc_t1 != NULL, "Task 1 scratch alloc 128 succeeds");
+    TEST_ASSERT(((uintptr_t)sc_t1 & ARENA_ALIGN_MASK) == 0U, "Task 1 scratch alloc 4-byte aligned");
+
+    arena_scratch_mark_t mark_t1 = arena_scratch_mark();
+    TEST_ASSERT(mark_t1 == 128U, "Mark after Task 1 alloc is 128");
+
+    void *sc_t2 = arena_scratch_alloc(256U);
+    TEST_ASSERT(sc_t2 != NULL, "Task 2 scratch alloc 256 succeeds");
+    TEST_ASSERT(((uintptr_t)sc_t2 & ARENA_ALIGN_MASK) == 0U, "Task 2 scratch alloc 4-byte aligned");
+    TEST_ASSERT((uintptr_t)sc_t2 > (uintptr_t)sc_t1, "Task 2 scratch pointer advances beyond Task 1");
+
+    arena_scratch_mark_t mark_t2 = arena_scratch_mark();
+    TEST_ASSERT(mark_t2 == (128U + 256U), "Mark after Task 2 alloc is 384");
+
+    void *sc_t3 = arena_scratch_alloc(64U);
+    TEST_ASSERT(sc_t3 != NULL, "Task 1 additional scratch alloc 64 succeeds");
+    arena_scratch_mark_t mark_t3 = arena_scratch_mark();
+    TEST_ASSERT(mark_t3 == 448U, "Mark after third alloc is 448");
+
+    /* Forward reset rejection: resetting beyond 448 must be rejected */
+    arena_scratch_reset(512U);
+    TEST_ASSERT(arena_scratch_mark() == 448U, "Forward reset to 512 rejected; mark unchanged");
+    arena_scratch_reset(1024U);
+    TEST_ASSERT(arena_scratch_mark() == 448U, "Forward reset to 1024 rejected; mark unchanged");
+
+    /* Unaligned reset rejection */
+    arena_scratch_reset(mark_t2 + 1U);
+    TEST_ASSERT(arena_scratch_mark() == 448U, "Unaligned reset (+1) rejected; mark unchanged");
+    arena_scratch_reset(mark_t2 + 2U);
+    TEST_ASSERT(arena_scratch_mark() == 448U, "Unaligned reset (+2) rejected; mark unchanged");
+    arena_scratch_reset(mark_t2 + 3U);
+    TEST_ASSERT(arena_scratch_mark() == 448U, "Unaligned reset (+3) rejected; mark unchanged");
+
+    /* Valid backward resets */
+    arena_scratch_reset(mark_t2);
+    TEST_ASSERT(arena_scratch_mark() == mark_t2, "Backward reset to mark_t2 (384) succeeds");
+
+    arena_scratch_reset(mark_t1);
+    TEST_ASSERT(arena_scratch_mark() == mark_t1, "Backward reset to mark_t1 (128) succeeds");
+
+    /* Scratch overflow guards */
+    TEST_ASSERT(arena_scratch_alloc(ARENA_SCRATCH_TOTAL_SIZE + 1U) == NULL, "Capacity overflow returns NULL");
+    TEST_ASSERT(arena_scratch_alloc((size_t)-1) == NULL, "Integer overflow (size_t)-1 returns NULL");
+    TEST_ASSERT(arena_scratch_alloc((size_t)-64) == NULL, "Integer overflow (size_t)-64 returns NULL");
+    TEST_ASSERT(arena_scratch_alloc(0xFFFFFFFFU) == NULL, "Integer overflow 0xFFFFFFFF returns NULL");
+
+    arena_scratch_reset(0U);
+    TEST_ASSERT(arena_scratch_mark() == 0U, "Reset to 0 restores clean scratch arena");
+}
+
+#define TEST_PMP_TOR_REGION_0_LEN           0x1000U
+#define TEST_PMP_TOR_REGION_1_START         0x1000U
+#define TEST_PMP_TOR_REGION_1_LEN           0x4000U
+#define TEST_PMP_TOR_REGION_2_START         0x5000U
+#define TEST_PMP_TOR_REGION_2_LEN           0xB000U
+#define TEST_PMP_TOR_REGION_3_START         0x10000U
+#define TEST_PMP_TOR_INVALID_START_1        0x2000U
+#define TEST_PMP_TOR_INVALID_START_2        0x6000U
+
+/*
+ * Test 17: PMP Chained Top-of-Range (TOR) Boundary Edge Cases & Locked Regions
+ * Tests chained multi-region TOR (0, 1, 2), invalid non-contiguous chained TOR rejection,
+ * zero-length TOR handling, locked region enforcement (PMP_CFG_L_BIT), and readback decode.
+ */
+static void test_pmp_chained_tor_and_locked_regions(void)
+{
+    printf("  [TEST] pmp chained top-of-range (TOR) & locked region enforcement...\n");
+
+    pmp_init();
+
+    /* --- Part 1: Chained Multi-Region TOR Configuration ---
+     * Region 0: [0, 0x1000)
+     * Region 1: [0x1000, 0x5000)
+     * Region 2: [0x5000, 0x10000)
+     */
+    pmp_region_cfg_t r0 = {
+        .region_idx = 0U,
+        .start_addr = 0U,
+        .length = TEST_PMP_TOR_REGION_0_LEN,
+        .read_allow = 1U,
+        .write_allow = 0U,
+        .execute_allow = 0U,
+        .lock = 0U,
+        .addr_mode = (uint8_t)PMP_ADDR_MODE_TOR
+    };
+    TEST_ASSERT(pmp_set_region(&r0) == PMP_OK, "TOR Region 0 [0, 0x1000) set succeeds");
+    TEST_ASSERT(pmp_read_addr(0U) == (TEST_PMP_TOR_REGION_0_LEN >> PMP_ADDR_SHIFT), "pmpaddr0 holds top address (0x1000 >> 2)");
+
+    pmp_region_cfg_t r1 = {
+        .region_idx = 1U,
+        .start_addr = TEST_PMP_TOR_REGION_1_START,
+        .length = TEST_PMP_TOR_REGION_1_LEN,
+        .read_allow = 1U,
+        .write_allow = 1U,
+        .execute_allow = 0U,
+        .lock = 0U,
+        .addr_mode = (uint8_t)PMP_ADDR_MODE_TOR
+    };
+    TEST_ASSERT(pmp_set_region(&r1) == PMP_OK, "TOR Region 1 [0x1000, 0x5000) chained set succeeds");
+    TEST_ASSERT(pmp_read_addr(1U) == ((TEST_PMP_TOR_REGION_1_START + TEST_PMP_TOR_REGION_1_LEN) >> PMP_ADDR_SHIFT),
+                "pmpaddr1 holds top address (0x5000 >> 2)");
+
+    pmp_region_cfg_t r2 = {
+        .region_idx = 2U,
+        .start_addr = TEST_PMP_TOR_REGION_2_START,
+        .length = TEST_PMP_TOR_REGION_2_LEN,
+        .read_allow = 1U,
+        .write_allow = 1U,
+        .execute_allow = 1U,
+        .lock = 0U,
+        .addr_mode = (uint8_t)PMP_ADDR_MODE_TOR
+    };
+    TEST_ASSERT(pmp_set_region(&r2) == PMP_OK, "TOR Region 2 [0x5000, 0x10000) chained set succeeds");
+    TEST_ASSERT(pmp_read_addr(2U) == ((TEST_PMP_TOR_REGION_2_START + TEST_PMP_TOR_REGION_2_LEN) >> PMP_ADDR_SHIFT),
+                "pmpaddr2 holds top address (0x10000 >> 2)");
+
+    /* --- Part 2: Readback & Decode via pmp_get_region --- */
+    pmp_region_cfg_t rb0;
+    TEST_ASSERT(pmp_get_region(0U, &rb0) == PMP_OK, "pmp_get_region succeeds for Region 0");
+    TEST_ASSERT(rb0.start_addr == 0U, "Region 0 readback start_addr is 0");
+    TEST_ASSERT(rb0.length == TEST_PMP_TOR_REGION_0_LEN, "Region 0 readback length is 0x1000");
+    TEST_ASSERT(rb0.read_allow == 1U && rb0.write_allow == 0U && rb0.execute_allow == 0U, "Region 0 permissions match");
+    TEST_ASSERT(rb0.addr_mode == (uint8_t)PMP_ADDR_MODE_TOR, "Region 0 addr_mode is TOR");
+
+    pmp_region_cfg_t rb1;
+    TEST_ASSERT(pmp_get_region(1U, &rb1) == PMP_OK, "pmp_get_region succeeds for Region 1");
+    TEST_ASSERT(rb1.start_addr == TEST_PMP_TOR_REGION_1_START, "Region 1 readback start_addr is 0x1000");
+    TEST_ASSERT(rb1.length == TEST_PMP_TOR_REGION_1_LEN, "Region 1 readback length is 0x4000");
+    TEST_ASSERT(rb1.read_allow == 1U && rb1.write_allow == 1U && rb1.execute_allow == 0U, "Region 1 permissions match");
+    TEST_ASSERT(rb1.addr_mode == (uint8_t)PMP_ADDR_MODE_TOR, "Region 1 addr_mode is TOR");
+
+    pmp_region_cfg_t rb2;
+    TEST_ASSERT(pmp_get_region(2U, &rb2) == PMP_OK, "pmp_get_region succeeds for Region 2");
+    TEST_ASSERT(rb2.start_addr == TEST_PMP_TOR_REGION_2_START, "Region 2 readback start_addr is 0x5000");
+    TEST_ASSERT(rb2.length == TEST_PMP_TOR_REGION_2_LEN, "Region 2 readback length is 0xB000");
+    TEST_ASSERT(rb2.read_allow == 1U && rb2.write_allow == 1U && rb2.execute_allow == 1U, "Region 2 permissions match");
+    TEST_ASSERT(rb2.addr_mode == (uint8_t)PMP_ADDR_MODE_TOR, "Region 2 addr_mode is TOR");
+
+    /* --- Part 3: Invalid Non-Contiguous Chained TOR Rejection --- */
+    pmp_region_cfg_t r3_invalid = {
+        .region_idx = 3U,
+        .start_addr = TEST_PMP_TOR_INVALID_START_2, /* 0x6000 != Region 2 top 0x10000 */
+        .length = 0x2000U,
+        .read_allow = 1U,
+        .write_allow = 0U,
+        .execute_allow = 0U,
+        .lock = 0U,
+        .addr_mode = (uint8_t)PMP_ADDR_MODE_TOR
+    };
+    TEST_ASSERT(pmp_set_region(&r3_invalid) == PMP_ERR_INVALID_ADDR, "Non-contiguous chained TOR Region 3 rejected");
+
+    r3_invalid.start_addr = 0x12000U; /* Non-contiguous gap */
+    TEST_ASSERT(pmp_set_region(&r3_invalid) == PMP_ERR_INVALID_ADDR, "Non-contiguous gap TOR Region 3 rejected");
+
+    /* --- Part 4: Zero-Length TOR Region Handling --- */
+    pmp_region_cfg_t r3_zero = {
+        .region_idx = 3U,
+        .start_addr = TEST_PMP_TOR_REGION_3_START, /* exactly matches Region 2 top */
+        .length = 0U,                               /* zero length */
+        .read_allow = 0U,
+        .write_allow = 0U,
+        .execute_allow = 0U,
+        .lock = 0U,
+        .addr_mode = (uint8_t)PMP_ADDR_MODE_TOR
+    };
+    TEST_ASSERT(pmp_set_region(&r3_zero) == PMP_OK, "Zero-length TOR Region 3 set succeeds");
+    TEST_ASSERT(pmp_read_addr(3U) == (TEST_PMP_TOR_REGION_3_START >> PMP_ADDR_SHIFT), "Zero-length pmpaddr3 matches top of region 2");
+
+    pmp_region_cfg_t rb3;
+    TEST_ASSERT(pmp_get_region(3U, &rb3) == PMP_OK, "pmp_get_region succeeds for zero-length Region 3");
+    TEST_ASSERT(rb3.start_addr == TEST_PMP_TOR_REGION_3_START, "Zero-length readback start_addr matches");
+    TEST_ASSERT(rb3.length == 0U, "Zero-length readback length is 0");
+
+    /* Clean up regions 1, 2, 3 */
+    TEST_ASSERT(pmp_disable_region(3U) == PMP_OK, "Disable Region 3 succeeds");
+    TEST_ASSERT(pmp_disable_region(2U) == PMP_OK, "Disable Region 2 succeeds");
+    TEST_ASSERT(pmp_disable_region(1U) == PMP_OK, "Disable Region 1 succeeds");
+    TEST_ASSERT(pmp_disable_region(0U) == PMP_OK, "Disable Region 0 succeeds");
+
+    /* --- Part 5: Locked Region Enforcement (PMP_CFG_L_BIT) --- */
+    pmp_region_cfg_t lock_cfg = {
+        .region_idx = 0U,
+        .start_addr = 0x40820000U,
+        .length = 65536U,
+        .read_allow = 1U,
+        .write_allow = 0U,
+        .execute_allow = 0U,
+        .lock = 1U, /* Lock bit set */
+        .addr_mode = (uint8_t)PMP_ADDR_MODE_NAPOT
+    };
+    TEST_ASSERT(pmp_set_region(&lock_cfg) == PMP_OK, "Locked Region 0 set succeeds");
+    uint32_t cfg0 = pmp_read_cfg(0U);
+    TEST_ASSERT((cfg0 & PMP_CFG_L_BIT) != 0U, "pmpcfg0 bit 7 (L) is set");
+
+    /* Subsequent pmp_set_region on locked region MUST return PMP_ERR_LOCKED */
+    pmp_region_cfg_t modify_cfg = lock_cfg;
+    modify_cfg.write_allow = 1U;
+    TEST_ASSERT(pmp_set_region(&modify_cfg) == PMP_ERR_LOCKED, "Modifying locked region returns PMP_ERR_LOCKED");
+
+    /* Subsequent pmp_disable_region on locked region MUST return PMP_ERR_LOCKED */
+    TEST_ASSERT(pmp_disable_region(0U) == PMP_ERR_LOCKED, "Disabling locked region returns PMP_ERR_LOCKED");
+
+    /* Calling pmp_init() preserves locked regions */
+    TEST_ASSERT(pmp_init() == PMP_OK, "pmp_init() executes cleanly");
+    cfg0 = pmp_read_cfg(0U);
+    TEST_ASSERT((cfg0 & PMP_CFG_L_BIT) != 0U, "pmp_init preserves locked Region 0");
+
+    /* Verify Region 0 readback is still locked and active */
+    pmp_region_cfg_t locked_rb;
+    TEST_ASSERT(pmp_get_region(0U, &locked_rb) == PMP_OK, "pmp_get_region succeeds on locked region");
+    TEST_ASSERT(locked_rb.lock == 1U, "Readback confirms lock is active");
+    TEST_ASSERT(locked_rb.start_addr == 0x40820000U, "Locked region start_addr preserved");
+    TEST_ASSERT(locked_rb.length == 65536U, "Locked region length preserved");
+
+    /* Clear mock hardware state for subsequent test runs */
+    pmp_write_cfg(0U, 0U);
+    pmp_write_addr(0U, 0U);
+    pmp_init();
+    TEST_ASSERT((pmp_read_cfg(0U) & 0xFFU) == 0U, "Mock reset cleared locked state for following tests");
+}
+
+#define TEST_APM_REGION_DYNAMIC_1           1U
+#define TEST_APM_REGION_DYNAMIC_5           5U
+#define TEST_APM_REGION_DYNAMIC_10          10U
+#define TEST_APM_REGION_DYNAMIC_15          15U
+#define TEST_APM_INVALID_REGION_16          16U
+#define TEST_APM_INVALID_MASTER_4           4U
+
+#define TEST_APM_DYNAMIC_START_1            0x40820000U
+#define TEST_APM_DYNAMIC_END_1              0x40840000U
+#define TEST_APM_UPDATED_START_1            0x40828000U
+#define TEST_APM_UPDATED_END_1              0x40838000U
+#define TEST_APM_INVERTED_START             0x40850000U
+#define TEST_APM_INVERTED_END               0x40820000U
+
+/*
+ * Test 18: HP_APM Dynamic Filter Reconfigurations & Exception Management
+ * Tests dynamic APM updates across regions 1..15, reserved Region 0 handling,
+ * inverted boundary rejection, master enable/disable, and query of exception registers.
+ */
+static void test_apm_dynamic_reconfiguration(void)
+{
+    printf("  [TEST] hp_apm dynamic filter reconfigurations & exception status...\n");
+
+    TEST_ASSERT(apm_init() == APM_OK, "apm_init succeeds");
+
+    /* --- Part 1: Reserved Region 0 Enforcement --- */
+    TEST_ASSERT(apm_disable_region(0U) == APM_ERR_RESERVED_REGION, "apm_disable_region rejects Region 0");
+    apm_region_cfg_t r0_dis = {
+        .region_idx = 0U,
+        .start_addr = 0U,
+        .end_addr = 0xFFFFFFFFU,
+        .filter_enable = 0U
+    };
+    TEST_ASSERT(apm_set_region(&r0_dis) == APM_ERR_RESERVED_REGION, "apm_set_region rejects disabling Region 0");
+
+    /* --- Part 2: Inverted Boundary Rejection --- */
+    apm_region_cfg_t inv_cfg = {
+        .region_idx = TEST_APM_REGION_DYNAMIC_1,
+        .start_addr = TEST_APM_INVERTED_START,
+        .end_addr = TEST_APM_INVERTED_END,
+        .read_allow = 1U,
+        .write_allow = 1U,
+        .execute_allow = 0U,
+        .filter_enable = 1U
+    };
+    TEST_ASSERT(apm_set_region(&inv_cfg) == APM_ERR_INVALID_ADDR, "Inverted boundaries on Region 1 rejected");
+
+    inv_cfg.region_idx = TEST_APM_REGION_DYNAMIC_15;
+    inv_cfg.start_addr = 0x50001000U;
+    inv_cfg.end_addr = 0x50000000U;
+    TEST_ASSERT(apm_set_region(&inv_cfg) == APM_ERR_INVALID_ADDR, "Inverted boundaries on Region 15 rejected");
+
+    /* --- Part 3: Dynamic Region Updates Across Regions 1..15 --- */
+    /* Initial configuration of Region 1: Read/Write */
+    apm_region_cfg_t apm_cfg1 = {
+        .region_idx = TEST_APM_REGION_DYNAMIC_1,
+        .start_addr = TEST_APM_DYNAMIC_START_1,
+        .end_addr = TEST_APM_DYNAMIC_END_1,
+        .read_allow = 1U,
+        .write_allow = 1U,
+        .execute_allow = 0U,
+        .filter_enable = 1U
+    };
+    TEST_ASSERT(apm_set_region(&apm_cfg1) == APM_OK, "Set Region 1 [0x40820000, 0x40840000] RW succeeds");
+
+    apm_region_cfg_t rb1;
+    TEST_ASSERT(apm_get_region(TEST_APM_REGION_DYNAMIC_1, &rb1) == APM_OK, "Get Region 1 succeeds");
+    TEST_ASSERT(rb1.start_addr == TEST_APM_DYNAMIC_START_1, "Region 1 start address matches");
+    TEST_ASSERT(rb1.end_addr == TEST_APM_DYNAMIC_END_1, "Region 1 end address matches");
+    TEST_ASSERT(rb1.read_allow == 1U && rb1.write_allow == 1U && rb1.execute_allow == 0U, "Region 1 permissions are RW");
+    TEST_ASSERT(rb1.filter_enable == 1U, "Region 1 filter is enabled");
+
+    /* Dynamic reconfiguration of Region 1: update boundaries and restrict to Read-Only */
+    apm_cfg1.start_addr = TEST_APM_UPDATED_START_1;
+    apm_cfg1.end_addr = TEST_APM_UPDATED_END_1;
+    apm_cfg1.write_allow = 0U; /* Read-Only */
+    TEST_ASSERT(apm_set_region(&apm_cfg1) == APM_OK, "Dynamic reconfiguration of Region 1 to Read-Only succeeds");
+
+    TEST_ASSERT(apm_get_region(TEST_APM_REGION_DYNAMIC_1, &rb1) == APM_OK, "Get reconfigured Region 1 succeeds");
+    TEST_ASSERT(rb1.start_addr == TEST_APM_UPDATED_START_1, "Updated Region 1 start address matches");
+    TEST_ASSERT(rb1.end_addr == TEST_APM_UPDATED_END_1, "Updated Region 1 end address matches");
+    TEST_ASSERT(rb1.read_allow == 1U && rb1.write_allow == 0U && rb1.execute_allow == 0U, "Updated permissions are RO");
+    TEST_ASSERT(rb1.filter_enable == 1U, "Updated Region 1 filter is enabled");
+
+    /* Configure Region 5 (LP SRAM: 0x50000000 - 0x50003FFF) */
+    apm_region_cfg_t apm_cfg5 = {
+        .region_idx = TEST_APM_REGION_DYNAMIC_5,
+        .start_addr = 0x50000000U,
+        .end_addr = 0x50003FFFU,
+        .read_allow = 1U,
+        .write_allow = 1U,
+        .execute_allow = 0U,
+        .filter_enable = 1U
+    };
+    TEST_ASSERT(apm_set_region(&apm_cfg5) == APM_OK, "Set Region 5 LP SRAM succeeds");
+    apm_region_cfg_t rb5;
+    TEST_ASSERT(apm_get_region(TEST_APM_REGION_DYNAMIC_5, &rb5) == APM_OK, "Get Region 5 succeeds");
+    TEST_ASSERT(rb5.start_addr == 0x50000000U && rb5.end_addr == 0x50003FFFU, "Region 5 boundaries match");
+    TEST_ASSERT(rb5.filter_enable == 1U, "Region 5 filter is enabled");
+
+    /* Configure Region 10 (UART0 MMIO: 0x60000000 - 0x60000FFF) */
+    apm_region_cfg_t apm_cfg10 = {
+        .region_idx = TEST_APM_REGION_DYNAMIC_10,
+        .start_addr = 0x60000000U,
+        .end_addr = 0x60000FFFU,
+        .read_allow = 1U,
+        .write_allow = 1U,
+        .execute_allow = 0U,
+        .filter_enable = 1U
+    };
+    TEST_ASSERT(apm_set_region(&apm_cfg10) == APM_OK, "Set Region 10 UART0 succeeds");
+    apm_region_cfg_t rb10;
+    TEST_ASSERT(apm_get_region(TEST_APM_REGION_DYNAMIC_10, &rb10) == APM_OK, "Get Region 10 succeeds");
+    TEST_ASSERT(rb10.start_addr == 0x60000000U && rb10.end_addr == 0x60000FFFU, "Region 10 boundaries match");
+    TEST_ASSERT(rb10.filter_enable == 1U, "Region 10 filter is enabled");
+
+    /* Configure Region 15 (Flash XIP: 0x42000000 - 0x427FFFFF) */
+    apm_region_cfg_t apm_cfg15 = {
+        .region_idx = TEST_APM_REGION_DYNAMIC_15,
+        .start_addr = 0x42000000U,
+        .end_addr = 0x427FFFFFU,
+        .read_allow = 1U,
+        .write_allow = 0U,
+        .execute_allow = 1U,
+        .filter_enable = 1U
+    };
+    TEST_ASSERT(apm_set_region(&apm_cfg15) == APM_OK, "Set Region 15 Flash XIP succeeds");
+    apm_region_cfg_t rb15;
+    TEST_ASSERT(apm_get_region(TEST_APM_REGION_DYNAMIC_15, &rb15) == APM_OK, "Get Region 15 succeeds");
+    TEST_ASSERT(rb15.start_addr == 0x42000000U && rb15.end_addr == 0x427FFFFFU, "Region 15 boundaries match");
+    TEST_ASSERT(rb15.filter_enable == 1U, "Region 15 filter is enabled");
+
+    /* Invalid region bounds and NULL pointer rejection */
+    apm_cfg15.region_idx = TEST_APM_INVALID_REGION_16;
+    TEST_ASSERT(apm_set_region(&apm_cfg15) == APM_ERR_INVALID_REGION, "apm_set_region rejects region_idx >= 16");
+    TEST_ASSERT(apm_get_region(TEST_APM_INVALID_REGION_16, &rb15) == APM_ERR_INVALID_REGION, "apm_get_region rejects region_idx >= 16");
+    TEST_ASSERT(apm_disable_region(TEST_APM_INVALID_REGION_16) == APM_ERR_INVALID_REGION, "apm_disable_region rejects region_idx >= 16");
+    TEST_ASSERT(apm_set_region(NULL) == APM_ERR_NULL_PTR, "apm_set_region rejects NULL config");
+    TEST_ASSERT(apm_get_region(TEST_APM_REGION_DYNAMIC_1, NULL) == APM_ERR_NULL_PTR, "apm_get_region rejects NULL config");
+
+    /* Disable dynamic regions */
+    TEST_ASSERT(apm_disable_region(TEST_APM_REGION_DYNAMIC_1) == APM_OK, "Disable Region 1 succeeds");
+    TEST_ASSERT(apm_disable_region(TEST_APM_REGION_DYNAMIC_5) == APM_OK, "Disable Region 5 succeeds");
+    TEST_ASSERT(apm_disable_region(TEST_APM_REGION_DYNAMIC_10) == APM_OK, "Disable Region 10 succeeds");
+    TEST_ASSERT(apm_disable_region(TEST_APM_REGION_DYNAMIC_15) == APM_OK, "Disable Region 15 succeeds");
+
+    /* --- Part 4: Master Filter Enable / Disable & Exception Query / Clear --- */
+    for (uint32_t m = 0U; m < APM_MAX_MASTERS; m++)
+    {
+        TEST_ASSERT(apm_enable_master(m, 1) == APM_OK, "apm_enable_master enable succeeds");
+        TEST_ASSERT(apm_enable_master(m, 0) == APM_OK, "apm_enable_master disable succeeds");
+    }
+
+    /* Invalid master rejection */
+    TEST_ASSERT(apm_enable_master(TEST_APM_INVALID_MASTER_4, 1) == APM_ERR_INVALID_MASTER, "Enable master >= 4 rejected");
+    TEST_ASSERT(apm_enable_master(99U, 0) == APM_ERR_INVALID_MASTER, "Disable master 99 rejected");
+    apm_exception_info_t exc_info;
+    TEST_ASSERT(apm_get_exception_info(TEST_APM_INVALID_MASTER_4, &exc_info) == APM_ERR_INVALID_MASTER, "Query master >= 4 rejected");
+    TEST_ASSERT(apm_get_exception_info(0U, NULL) == APM_ERR_NULL_PTR, "Query exception info with NULL pointer rejected");
+    TEST_ASSERT(apm_clear_exception(TEST_APM_INVALID_MASTER_4) == APM_ERR_INVALID_MASTER, "Clear master >= 4 rejected");
+
+    /* Query baseline exception status for Master 0 and clear it */
+    TEST_ASSERT(apm_get_exception_info(0U, &exc_info) == APM_OK, "apm_get_exception_info for Master 0 succeeds");
+    TEST_ASSERT(exc_info.exception_status == 0U, "Initial exception status is 0");
+    TEST_ASSERT(apm_clear_exception(0U) == APM_OK, "apm_clear_exception for Master 0 succeeds");
+    TEST_ASSERT(apm_clear_exception(1U) == APM_OK, "apm_clear_exception for Master 1 succeeds");
+    TEST_ASSERT(apm_clear_exception(2U) == APM_OK, "apm_clear_exception for Master 2 succeeds");
+    TEST_ASSERT(apm_clear_exception(3U) == APM_OK, "apm_clear_exception for Master 3 succeeds");
+}
+
+#ifndef ASCII_BS
+#define ASCII_BS               0x08
+#endif
+#ifndef ASCII_DEL
+#define ASCII_DEL              0x7F
+#endif
+#ifndef ASCII_PRINTABLE_MIN
+#define ASCII_PRINTABLE_MIN    ' '
+#endif
+#ifndef ASCII_PRINTABLE_MAX
+#define ASCII_PRINTABLE_MAX    '~'
+#endif
+
+#define TEST_CONSOLE_MAX_LINE_LEN           128U
+#define TEST_CONSOLE_SMALL_BUF_SIZE         8U
+#define TEST_CONSOLE_OVERFLOW_FEED_COUNT    150U
+
+typedef struct {
+    const char *data;
+    size_t len;
+    size_t pos;
+} test_console_stream_t;
+
+static int mock_console_stream_getc(test_console_stream_t *stream, char *out_c)
+{
+    if (!stream || !out_c || stream->pos >= stream->len)
+    {
+        return 0;
+    }
+    *out_c = stream->data[stream->pos++];
+    return 1;
+}
+
+typedef struct {
+    char line_buf[TEST_CONSOLE_MAX_LINE_LEN];
+    size_t line_idx;
+    uint8_t prev_was_cr;
+} test_console_reader_t;
+
+static void test_console_reader_init(test_console_reader_t *r)
+{
+    if (!r) return;
+    r->line_idx = 0U;
+    r->prev_was_cr = 0U;
+    r->line_buf[0] = '\0';
+}
+
+/*
+ * Line reader state machine matching src/console.c:225-290
+ */
+static int test_console_read_line(test_console_reader_t *r,
+                                  test_console_stream_t *stream,
+                                  char *out_buffer,
+                                  size_t max_len)
+{
+    if (!r || !stream || !out_buffer || max_len == 0U) return 0;
+
+    char c = '\0';
+    while (mock_console_stream_getc(stream, &c))
+    {
+        /* Drop isolated '\n' immediately following '\r' to prevent duplicate blank prompts on CRLF */
+        if (r->prev_was_cr && c == '\n')
+        {
+            r->prev_was_cr = 0U;
+            continue;
+        }
+        r->prev_was_cr = 0U;
+
+        if (c == '\r' || c == '\n')
+        {
+            if (c == '\r')
+            {
+                r->prev_was_cr = 1U;
+            }
+
+            r->line_buf[r->line_idx] = '\0';
+
+            size_t copy_len = (r->line_idx < max_len - 1U) ? r->line_idx : (max_len - 1U);
+            for (size_t i = 0; i < copy_len; i++)
+            {
+                out_buffer[i] = r->line_buf[i];
+            }
+            out_buffer[copy_len] = '\0';
+
+            r->line_idx = 0U;
+            return 1;
+        }
+        else if (c == ASCII_BS || c == ASCII_DEL)
+        {
+            if (r->line_idx > 0U)
+            {
+                r->line_idx--;
+            }
+        }
+        else if (c >= ASCII_PRINTABLE_MIN && c <= ASCII_PRINTABLE_MAX)
+        {
+            if (r->line_idx < TEST_CONSOLE_MAX_LINE_LEN - 1U)
+            {
+                r->line_buf[r->line_idx++] = c;
+            }
+        }
+    }
+
+    return 0;
+}
+
+/*
+ * Test 19: Console Line Reader Edge Cases
+ * Tests non-blocking line reading with CRLF (\r\n), standalone \n, standalone \r,
+ * backspace (\b) and delete (\x7f) character erasure, and buffer overflow limit truncation.
+ */
+static void test_console_line_reader_edge_cases(void)
+{
+    printf("  [TEST] console line reader edge cases (crlf, backspace, overflow)...\n");
+
+    test_console_reader_t reader;
+    char out[TEST_CONSOLE_MAX_LINE_LEN];
+
+    /* --- Part 1: Standalone \n --- */
+    test_console_reader_init(&reader);
+    const char input_nl[] = "status\n";
+    test_console_stream_t stream_nl = { .data = input_nl, .len = s_strlen(input_nl), .pos = 0U };
+    int res = test_console_read_line(&reader, &stream_nl, out, sizeof(out));
+    TEST_ASSERT(res == 1, "Standalone newline completes line reading");
+    TEST_ASSERT(s_strcmp(out, "status") == 0, "Line content is 'status'");
+
+    /* --- Part 2: CRLF (\r\n) Line Terminator & Consecutive Command Parsing --- */
+    test_console_reader_init(&reader);
+    const char input_crlf[] = "uptime\r\nhelp\r\n";
+    test_console_stream_t stream_crlf = { .data = input_crlf, .len = s_strlen(input_crlf), .pos = 0U };
+
+    /* First command: uptime\r\n */
+    res = test_console_read_line(&reader, &stream_crlf, out, sizeof(out));
+    TEST_ASSERT(res == 1, "First CRLF command line read succeeds");
+    TEST_ASSERT(s_strcmp(out, "uptime") == 0, "First line content is 'uptime'");
+
+    /* Second command: help\r\n (verify \n was dropped and did not produce phantom empty line) */
+    res = test_console_read_line(&reader, &stream_crlf, out, sizeof(out));
+    TEST_ASSERT(res == 1, "Second CRLF command line read succeeds without phantom blank line");
+    TEST_ASSERT(s_strcmp(out, "help") == 0, "Second line content is 'help'");
+
+    /* Subsequent read with depleted stream returns 0 */
+    res = test_console_read_line(&reader, &stream_crlf, out, sizeof(out));
+    TEST_ASSERT(res == 0, "Depleted stream returns 0");
+
+    /* --- Part 3: Standalone \r Terminator --- */
+    test_console_reader_init(&reader);
+    const char input_cr[] = "tasks\r";
+    test_console_stream_t stream_cr = { .data = input_cr, .len = s_strlen(input_cr), .pos = 0U };
+    res = test_console_read_line(&reader, &stream_cr, out, sizeof(out));
+    TEST_ASSERT(res == 1, "Standalone carriage return completes line reading");
+    TEST_ASSERT(s_strcmp(out, "tasks") == 0, "Line content is 'tasks'");
+
+    /* --- Part 4: Backspace (\b = 0x08) Character Erasure --- */
+    test_console_reader_init(&reader);
+    const char input_bs[] = "helpp\b\bo\n";
+    test_console_stream_t stream_bs = { .data = input_bs, .len = s_strlen(input_bs), .pos = 0U };
+    res = test_console_read_line(&reader, &stream_bs, out, sizeof(out));
+    TEST_ASSERT(res == 1, "Line with backspaces completed");
+    TEST_ASSERT(s_strcmp(out, "helo") == 0, "Backspace erased two characters ('helpp' -> 'helo')");
+
+    /* Backspace underflow guard (more backspaces than characters) */
+    test_console_reader_init(&reader);
+    const char input_bs_under[] = "\b\b\b\babc\n";
+    test_console_stream_t stream_bs_under = { .data = input_bs_under, .len = s_strlen(input_bs_under), .pos = 0U };
+    res = test_console_read_line(&reader, &stream_bs_under, out, sizeof(out));
+    TEST_ASSERT(res == 1, "Line with excess leading backspaces completed");
+    TEST_ASSERT(s_strcmp(out, "abc") == 0, "Excess backspaces safely clamped to 0");
+
+    /* --- Part 5: Delete (\x7f = 0x7F) Character Erasure --- */
+    test_console_reader_init(&reader);
+    const char input_del[] = "iron\x7f\x7f_v\n";
+    test_console_stream_t stream_del = { .data = input_del, .len = s_strlen(input_del), .pos = 0U };
+    res = test_console_read_line(&reader, &stream_del, out, sizeof(out));
+    TEST_ASSERT(res == 1, "Line with DEL characters completed");
+    TEST_ASSERT(s_strcmp(out, "ir_v") == 0, "DEL erased characters ('iron' -> 'ir' + '_v' -> 'ir_v')");
+
+    /* Combined backspace and delete */
+    test_console_reader_init(&reader);
+    const char input_mixed[] = "abcde\b\x7f" "f\n";
+    test_console_stream_t stream_mixed = { .data = input_mixed, .len = s_strlen(input_mixed), .pos = 0U };
+    res = test_console_read_line(&reader, &stream_mixed, out, sizeof(out));
+    TEST_ASSERT(res == 1, "Line with mixed BS and DEL completed");
+    TEST_ASSERT(s_strcmp(out, "abcf") == 0, "Mixed BS and DEL erased 2 characters ('abcde' -> 'abc' + 'f' -> 'abcf')");
+
+    /* --- Part 6: Buffer Overflow Limit Truncation (128 bytes max) --- */
+    test_console_reader_init(&reader);
+    char overflow_input[TEST_CONSOLE_OVERFLOW_FEED_COUNT + 2U];
+    for (size_t i = 0U; i < TEST_CONSOLE_OVERFLOW_FEED_COUNT; i++)
+    {
+        overflow_input[i] = 'X';
+    }
+    overflow_input[TEST_CONSOLE_OVERFLOW_FEED_COUNT] = '\n';
+    overflow_input[TEST_CONSOLE_OVERFLOW_FEED_COUNT + 1U] = '\0';
+
+    test_console_stream_t stream_overflow = {
+        .data = overflow_input,
+        .len = TEST_CONSOLE_OVERFLOW_FEED_COUNT + 1U,
+        .pos = 0U
+    };
+    res = test_console_read_line(&reader, &stream_overflow, out, sizeof(out));
+    TEST_ASSERT(res == 1, "Overflow line read completes on newline");
+    TEST_ASSERT(s_strlen(out) == (TEST_CONSOLE_MAX_LINE_LEN - 1U), "Line length capped at CONSOLE_MAX_LINE_LEN - 1 (127 bytes)");
+    TEST_ASSERT(out[0] == 'X' && out[126] == 'X' && out[127] == '\0', "Buffer content verified and null-terminated");
+
+    /* --- Part 7: Destination Buffer Truncation (small max_len) --- */
+    test_console_reader_init(&reader);
+    const char input_dest_trunc[] = "command123456\n";
+    test_console_stream_t stream_dest = { .data = input_dest_trunc, .len = s_strlen(input_dest_trunc), .pos = 0U };
+    char small_out[TEST_CONSOLE_SMALL_BUF_SIZE]; /* 8 bytes max */
+    res = test_console_read_line(&reader, &stream_dest, small_out, sizeof(small_out));
+    TEST_ASSERT(res == 1, "Destination truncation read completes");
+    TEST_ASSERT(s_strlen(small_out) == (TEST_CONSOLE_SMALL_BUF_SIZE - 1U), "Output truncated to max_len - 1 (7 bytes)");
+    TEST_ASSERT(s_strncmp(small_out, "command", 7) == 0, "Output contains first 7 characters ('command')");
+
+    /* --- Part 8: Null and Boundary Input Validation --- */
+    TEST_ASSERT(test_console_read_line(NULL, &stream_dest, out, sizeof(out)) == 0, "NULL reader returns 0");
+    TEST_ASSERT(test_console_read_line(&reader, NULL, out, sizeof(out)) == 0, "NULL stream returns 0");
+    TEST_ASSERT(test_console_read_line(&reader, &stream_dest, NULL, sizeof(out)) == 0, "NULL out_buffer returns 0");
+    TEST_ASSERT(test_console_read_line(&reader, &stream_dest, out, 0U) == 0, "max_len == 0 returns 0");
+
+    /* Empty line "\n" returns 1 with empty string */
+    test_console_reader_init(&reader);
+    const char input_empty[] = "\n";
+    test_console_stream_t stream_empty = { .data = input_empty, .len = 1U, .pos = 0U };
+    res = test_console_read_line(&reader, &stream_empty, out, sizeof(out));
+    TEST_ASSERT(res == 1, "Empty line completes");
+    TEST_ASSERT(out[0] == '\0', "Empty line output is empty string");
+}
+
 int main(void)
 {
     printf("======================================================================\n");
@@ -867,6 +1841,13 @@ int main(void)
     test_task_structures();
     test_pmp_apm_isolation();
 
+    /* Hardened cross-module integration and edge case tests */
+    test_coroutine_systimer_dpc_integration();
+    test_arena_concurrency_exhaustion();
+    test_pmp_chained_tor_and_locked_regions();
+    test_apm_dynamic_reconfiguration();
+    test_console_line_reader_edge_cases();
+
     printf("======================================================================\n");
     if (g_assert_failures == 0)
     {
@@ -881,3 +1862,4 @@ int main(void)
         return 1;
     }
 }
+

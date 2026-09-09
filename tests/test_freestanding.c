@@ -18,6 +18,7 @@
 #include "task.h"
 #include "pmp.h"
 #include "lp_core.h"
+#include "power.h"
 
 /* Freestanding function aliases matching runtime naming conventions */
 static inline size_t s_strlen(const char *s)
@@ -932,6 +933,85 @@ static void test_lp_core_driver(void)
     TEST_ASSERT(!telem.clock_enabled, "telemetry reports clock_enabled=false after stop");
     TEST_ASSERT(telem.in_reset, "telemetry reports in_reset=true after stop");
     TEST_ASSERT(telem.magic_readback == LP_TEST_MAGIC_EXPECTED, "telemetry retains magic word");
+}
+
+static void test_power_mailbox_subsystem(void)
+{
+    printf("  [TEST] LP SRAM shared mailbox & power state machine (Task 4.2)...\n");
+
+    /* 1. Register Address & Offset Calculation Validation (AGENTS.md rule) */
+    TEST_ASSERT((uintptr_t)LP_AON_STORE_REG(0U) == (LP_AON_BASE_ADDR + LP_AON_STORE0_OFFSET), "LP_AON_STORE_REG(0) address calculation");
+    TEST_ASSERT((uintptr_t)LP_AON_STORE_REG(9U) == (LP_AON_BASE_ADDR + LP_AON_STORE0_OFFSET + 36U), "LP_AON_STORE_REG(9) address calculation");
+    TEST_ASSERT((uintptr_t)PMU_SLP_HP_PERI_CONF_REG == (PMU_BASE_ADDR + PMU_SLP_HP_PERI_CONF_OFFSET), "PMU_SLP_HP_PERI_CONF_REG address calculation");
+
+    /* 2. Mailbox Structure Geometry & Alignment Validation */
+    TEST_ASSERT(sizeof(lp_shared_mailbox_t) == 28U, "lp_shared_mailbox_t size must be exactly 28 bytes (7 * 4 bytes)");
+    TEST_ASSERT((LP_SHARED_MEM_BASE & 0x3U) == 0U, "LP_SHARED_MEM_BASE must be 4-byte aligned");
+    TEST_ASSERT(LP_MAILBOX_MAGIC == 0x49524F4EU, "LP_MAILBOX_MAGIC must be 'IRON' (0x49524F4E)");
+
+    /* 3. Parameter Validation & Error Handling */
+    TEST_ASSERT(power_send_cmd(LP_CMD_NONE, 100U) == POWER_ERR_INVALID_CMD, "power_send_cmd rejects LP_CMD_NONE");
+    TEST_ASSERT(power_sample_telemetry(NULL, 100U) == POWER_ERR_NULL_PTR, "power_sample_telemetry rejects NULL out pointer");
+    TEST_ASSERT(power_get_telemetry(NULL) == POWER_ERR_NULL_PTR, "power_get_telemetry rejects NULL telem pointer");
+    TEST_ASSERT(power_set_mode((power_mode_t)99) == POWER_ERR_INVALID_ARG, "power_set_mode rejects invalid power mode");
+    TEST_ASSERT(power_read_retained_store(POWER_AON_STORE_COUNT) == 0U, "power_read_retained_store out-of-range returns 0");
+    TEST_ASSERT(power_write_retained_store(POWER_AON_STORE_COUNT, 0x1234U) == POWER_ERR_INVALID_ARG, "power_write_retained_store out-of-range rejected");
+
+    /* 4. Subsystem Initialization & Mailbox Setup */
+    TEST_ASSERT(power_init() == POWER_OK, "power_init succeeds");
+    TEST_ASSERT(power_get_mode() == PM_STATE_ACTIVE, "Initial power mode is PM_STATE_ACTIVE");
+
+    volatile lp_shared_mailbox_t *mb = power_get_mailbox();
+    TEST_ASSERT(mb != NULL, "power_get_mailbox returns non-NULL mailbox pointer");
+    TEST_ASSERT(mb->magic == LP_MAILBOX_MAGIC, "Mailbox magic initialized to 0x49524F4E");
+    TEST_ASSERT(mb->hp_to_lp_cmd == LP_CMD_NONE, "Initial hp_to_lp_cmd is LP_CMD_NONE");
+    TEST_ASSERT(mb->lp_to_hp_ack == LP_CMD_NONE, "Initial lp_to_hp_ack is LP_CMD_NONE");
+    TEST_ASSERT(mb->periodic_wake_count == 0U, "Initial periodic_wake_count is 0");
+
+    /* 5. Retained LP_AON Scratchpad Store Access */
+    TEST_ASSERT(power_write_retained_store(0U, 0xDEADBEEFU) == POWER_OK, "write STORE0 succeeds");
+    TEST_ASSERT(power_read_retained_store(0U) == 0xDEADBEEFU, "read STORE0 matches written seed 0xDEADBEEF");
+    TEST_ASSERT(power_write_retained_store(9U, 0xCAFE1234U) == POWER_OK, "write STORE9 succeeds");
+    TEST_ASSERT(power_read_retained_store(9U) == 0xCAFE1234U, "read STORE9 matches written seed 0xCAFE1234");
+
+    /* 6. Mailbox Command Dispatch & Telemetry Protocol */
+    lp_core_init();
+    lp_core_start();
+    TEST_ASSERT(lp_core_is_running(), "LP core is running for mailbox handshake tests");
+
+    TEST_ASSERT(power_send_cmd(LP_CMD_SAMPLE_TELEMETRY, POWER_HANDSHAKE_TIMEOUT_CYCLES) == POWER_OK, "power_send_cmd SAMPLE_TELEMETRY succeeds");
+    TEST_ASSERT(mb->lp_to_hp_ack == LP_CMD_SAMPLE_TELEMETRY, "Mailbox ACK matches SAMPLE_TELEMETRY opcode");
+    TEST_ASSERT(mb->periodic_wake_count >= 1U, "Mailbox periodic_wake_count incremented");
+
+    uint32_t telem_word = 0U;
+    TEST_ASSERT(power_sample_telemetry(&telem_word, POWER_HANDSHAKE_TIMEOUT_CYCLES) == POWER_OK, "power_sample_telemetry succeeds");
+    TEST_ASSERT((telem_word & LP_TELEMETRY_HEADER_MASK) == LP_TELEMETRY_HEADER_MASK, "Sampled telemetry contains 0x4952 header");
+
+    TEST_ASSERT(power_send_cmd(LP_CMD_RESET_STATS, POWER_HANDSHAKE_TIMEOUT_CYCLES) == POWER_OK, "power_send_cmd RESET_STATS succeeds");
+    TEST_ASSERT(mb->lp_to_hp_ack == LP_CMD_RESET_STATS, "Mailbox ACK matches RESET_STATS opcode");
+
+    /* 7. Power State Mode Transitions */
+    TEST_ASSERT(power_set_mode(PM_STATE_LIGHT_SLEEP) == POWER_OK, "Transition to PM_STATE_LIGHT_SLEEP succeeds");
+    TEST_ASSERT(power_get_mode() == PM_STATE_LIGHT_SLEEP, "Current mode is PM_STATE_LIGHT_SLEEP");
+    TEST_ASSERT(mb->lp_to_hp_ack == LP_CMD_ENTER_SLEEP, "Entering light sleep dispatches ENTER_SLEEP cmd to LP core");
+
+    TEST_ASSERT(power_set_mode(PM_STATE_DEEP_SLEEP) == POWER_OK, "Transition to PM_STATE_DEEP_SLEEP succeeds");
+    TEST_ASSERT(power_get_mode() == PM_STATE_DEEP_SLEEP, "Current mode is PM_STATE_DEEP_SLEEP");
+
+    TEST_ASSERT(power_set_mode(PM_STATE_ACTIVE) == POWER_OK, "Transition back to PM_STATE_ACTIVE succeeds");
+    TEST_ASSERT(power_get_mode() == PM_STATE_ACTIVE, "Current mode is restored to PM_STATE_ACTIVE");
+
+    /* 8. Full Power Telemetry Snapshot Query */
+    power_telemetry_t pwr_telem;
+    TEST_ASSERT(power_get_telemetry(&pwr_telem) == POWER_OK, "power_get_telemetry succeeds");
+    TEST_ASSERT(pwr_telem.current_mode == PM_STATE_ACTIVE, "Telemetry reports current_mode == PM_STATE_ACTIVE");
+    TEST_ASSERT(pwr_telem.mailbox_magic == LP_MAILBOX_MAGIC, "Telemetry reports mailbox_magic == 0x49524F4E");
+    TEST_ASSERT(pwr_telem.aon_store0_val == 0xDEADBEEFU, "Telemetry reports aon_store0_val == 0xDEADBEEF");
+    TEST_ASSERT(pwr_telem.lp_running, "Telemetry reports lp_running == true");
+
+    /* Clean up LP core */
+    lp_core_stop();
+    TEST_ASSERT(!lp_core_is_running(), "LP core stopped cleanly after power tests");
 }
 
 /* ========================================================================= */
@@ -1929,6 +2009,7 @@ int main(void)
     test_task_structures();
     test_pmp_apm_isolation();
     test_lp_core_driver();
+    test_power_mailbox_subsystem();
 
     /* Hardened cross-module integration and edge case tests */
     test_coroutine_systimer_dpc_integration();

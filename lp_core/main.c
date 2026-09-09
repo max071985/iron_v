@@ -22,12 +22,35 @@
 #define LP_TEST_COUNTER_ADDR             0x50002FF8U  /* Autonomous tick counter */
 #define LP_TEST_MAGIC_VAL                0xCAFEBABEU
 
+/* Shared Mailbox Mapping and Command Opcodes (Task 4.2) */
+#define LP_MAILBOX_BASE_ADDR             0x50003000U
+#define LP_MAILBOX_MAGIC_VAL             0x49524F4EU  /* "IRON" */
+
+#define LP_CMD_NONE                      0x00000000U
+#define LP_CMD_SAMPLE_TELEMETRY          0x00000001U
+#define LP_CMD_ENTER_SLEEP               0x00000002U
+#define LP_CMD_RESET_STATS               0x00000003U
+
+#define LP_ACK_ERROR_FLAG                0x80000000U
+#define LP_TELEMETRY_HEADER_MASK         0x49520000U
+
 /* PMU Inter-Core Communications Register (Write-Trigger WT) */
 #define LP_PMU_HP_LP_COMM_ADDR           0x600B0184U
 #define LP_PMU_LP_TRIGGER_HP_BIT         (1U << 30)
 
 /* Telemetry loop delay iterations */
 #define LP_TICK_DELAY_CYCLES             500U
+
+/* Shared Mailbox Structure matching Task 4.2 specification */
+typedef struct {
+    volatile uint32_t magic;              /* 0x49524F4E ("IRON") */
+    volatile uint32_t hp_to_lp_cmd;       /* Command opcode from HP to LP */
+    volatile uint32_t lp_to_hp_ack;       /* Acknowledgment from LP to HP */
+    volatile uint32_t wake_reason;        /* Wakeup reason code */
+    volatile uint32_t periodic_wake_count;/* Autonomous wake count */
+    volatile uint32_t sensor_telemetry_raw;/* Sensor telemetry */
+    volatile uint32_t atomic_lock;        /* Synchronization spinlock */
+} __attribute__((packed, aligned(4))) lp_shared_mailbox_t;
 
 void lp_main(void);
 void _lp_reset(void);
@@ -102,22 +125,73 @@ void lp_main(void)
     volatile uint32_t *magic_ptr   = (volatile uint32_t *)LP_TEST_MAGIC_ADDR;
     volatile uint32_t *counter_ptr = (volatile uint32_t *)LP_TEST_COUNTER_ADDR;
     volatile uint32_t *comm_reg    = (volatile uint32_t *)LP_PMU_HP_LP_COMM_ADDR;
+    volatile lp_shared_mailbox_t *mb = (volatile lp_shared_mailbox_t *)LP_MAILBOX_BASE_ADDR;
 
-    /* 1. Write golden magic pattern to confirm successful boot */
+    /* 1. Write golden magic pattern to confirm successful boot (Task 4.1 Test 25 compat) */
     *magic_ptr = LP_TEST_MAGIC_VAL;
 
     /* 2. Initialize execution tick counter to 1 */
     *counter_ptr = 1U;
 
-    /* 3. Enforce memory barrier before signaling HP CPU */
+    /* 3. Initialize shared mailbox fields if uninitialized */
+    if (mb->magic != LP_MAILBOX_MAGIC_VAL)
+    {
+        mb->magic = LP_MAILBOX_MAGIC_VAL;
+        mb->hp_to_lp_cmd = LP_CMD_NONE;
+        mb->lp_to_hp_ack = LP_CMD_NONE;
+        mb->wake_reason = 0U;
+        mb->periodic_wake_count = 0U;
+        mb->sensor_telemetry_raw = 0U;
+        mb->atomic_lock = 0U;
+    }
+
+    /* 4. Enforce memory barrier before signaling HP CPU */
     asm volatile("fence rw, rw" ::: "memory");
 
-    /* 4. Pulse PMU LP_TRIGGER_HP (bit 30) - WT register write */
+    /* 5. Pulse PMU LP_TRIGGER_HP (bit 30) - WT register write */
     *comm_reg = LP_PMU_LP_TRIGGER_HP_BIT;
 
-    /* 5. Autonomous telemetry tick loop */
+    /* 6. Autonomous telemetry tick and mailbox servicing loop */
     while (1)
     {
+        /* Check for pending command from HP CPU */
+        uint32_t cmd = mb->hp_to_lp_cmd;
+        if (cmd != LP_CMD_NONE)
+        {
+            if (cmd == LP_CMD_SAMPLE_TELEMETRY)
+            {
+                mb->periodic_wake_count++;
+                mb->sensor_telemetry_raw = LP_TELEMETRY_HEADER_MASK | (mb->periodic_wake_count & 0xFFFFU);
+                mb->lp_to_hp_ack = cmd;
+                asm volatile("fence rw, rw" ::: "memory");
+                *comm_reg = LP_PMU_LP_TRIGGER_HP_BIT;
+                mb->hp_to_lp_cmd = LP_CMD_NONE;
+            }
+            else if (cmd == LP_CMD_ENTER_SLEEP)
+            {
+                mb->lp_to_hp_ack = cmd;
+                asm volatile("fence rw, rw" ::: "memory");
+                *comm_reg = LP_PMU_LP_TRIGGER_HP_BIT;
+                mb->hp_to_lp_cmd = LP_CMD_NONE;
+            }
+            else if (cmd == LP_CMD_RESET_STATS)
+            {
+                mb->periodic_wake_count = 0U;
+                mb->sensor_telemetry_raw = 0U;
+                mb->lp_to_hp_ack = cmd;
+                asm volatile("fence rw, rw" ::: "memory");
+                *comm_reg = LP_PMU_LP_TRIGGER_HP_BIT;
+                mb->hp_to_lp_cmd = LP_CMD_NONE;
+            }
+            else
+            {
+                mb->lp_to_hp_ack = LP_ACK_ERROR_FLAG | cmd;
+                asm volatile("fence rw, rw" ::: "memory");
+                *comm_reg = LP_PMU_LP_TRIGGER_HP_BIT;
+                mb->hp_to_lp_cmd = LP_CMD_NONE;
+            }
+        }
+
         for (volatile uint32_t i = 0; i < LP_TICK_DELAY_CYCLES; i++)
         {
             asm volatile("nop");

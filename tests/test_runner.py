@@ -322,7 +322,7 @@ def run_suite():
     native_desc = ""
     if not os.path.exists(native_test_bin):
         comp = subprocess.run(
-            ["gcc", "-O2", "-fno-tree-loop-distribute-patterns", "-Wall", "-Wextra", "-Werror", "-Isrc", "tests/test_freestanding.c", "src/string.c", "src/dpc.c", "src/arena.c", "src/pmp.c", "-o", native_test_bin],
+            ["gcc", "-O2", "-fno-tree-loop-distribute-patterns", "-Wall", "-Wextra", "-Werror", "-Isrc", "tests/test_freestanding.c", "src/string.c", "src/dpc.c", "src/arena.c", "src/pmp.c", "src/lp_core.c", "-o", native_test_bin],
             capture_output=True, text=True
         )
         if comp.returncode != 0:
@@ -740,6 +740,41 @@ def run_suite():
         f"All {len(pmp_syms)} PMP and APM symbols present in IRAM text section [0x40800000, 0x40820000)",
         t23_actual,
         t23_pass
+    )
+
+    # TEST 24: LP Core Coprocessor Driver Linkage & Symbols Validation (Task 4.1)
+    total += 1
+    lp_syms = [
+        "lp_core_init",
+        "lp_core_load_firmware",
+        "lp_core_load_header",
+        "lp_core_start",
+        "lp_core_stop",
+        "lp_core_trigger_lp",
+        "lp_core_get_lp_trigger",
+        "lp_core_clear_lp_trigger",
+        "lp_core_wait_handshake",
+        "lp_core_is_running",
+        "lp_core_read_counter",
+        "lp_core_read_magic",
+        "lp_core_get_telemetry",
+        "lp_core_get_default_firmware"
+    ]
+    found_lp_syms = [s for s in lp_syms if s in symbols]
+    all_lp_found = len(found_lp_syms) == len(lp_syms)
+    all_lp_in_text = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40820000)
+        for s in found_lp_syms
+    )
+    t24_pass = all_lp_found and all_lp_in_text
+    t24_actual = f"Found {len(found_lp_syms)}/{len(lp_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    passed += print_result_line(
+        total,
+        "LP Core Coprocessor Driver Linkage & Symbols Validation",
+        "Verify lp_core_init, load, start/stop, trigger, handshake, and telemetry symbols exist in IRAM",
+        f"All {len(lp_syms)} LP Core driver symbols present in IRAM text section [0x40800000, 0x40820000)",
+        t24_actual,
+        t24_pass
     )
 
     print("\n" + "=" * 70)

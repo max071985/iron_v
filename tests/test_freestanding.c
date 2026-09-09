@@ -17,6 +17,7 @@
 #include "systimer.h"
 #include "task.h"
 #include "pmp.h"
+#include "lp_core.h"
 
 /* Freestanding function aliases matching runtime naming conventions */
 static inline size_t s_strlen(const char *s)
@@ -844,6 +845,93 @@ static void test_pmp_apm_isolation(void)
     pmp_get_telemetry(&tel);
     TEST_ASSERT(tel.pmp_active_count == 0U, "telemetry reports 0 active PMP regions after disable");
     TEST_ASSERT(tel.apm_active_count == 1U, "telemetry reports 1 active APM region (Region 0 pass-through)");
+}
+
+static void test_lp_core_driver(void)
+{
+    printf("  [TEST] lp_core coprocessor driver (Task 4.1)...\n");
+
+    /* 1. Register Address & Offset Calculation Validation (AGENTS.md rule) */
+    TEST_ASSERT((uintptr_t)LP_PERI_CLK_EN_REG == (LP_PERI_BASE_ADDR + LP_PERI_CLK_EN_OFFSET), "LP_PERI_CLK_EN_REG address calculation");
+    TEST_ASSERT((uintptr_t)LP_PERI_RESET_EN_REG == (LP_PERI_BASE_ADDR + LP_PERI_RESET_EN_OFFSET), "LP_PERI_RESET_EN_REG address calculation");
+    TEST_ASSERT((uintptr_t)LP_PERI_CPU_REG == (LP_PERI_BASE_ADDR + LP_PERI_CPU_OFFSET), "LP_PERI_CPU_REG address calculation");
+    TEST_ASSERT((uintptr_t)LP_CLKRST_LP_CLK_EN_REG == (LP_CLKRST_BASE_ADDR + LP_CLKRST_LP_CLK_EN_OFFSET), "LP_CLKRST_LP_CLK_EN_REG address calculation");
+    TEST_ASSERT((uintptr_t)LP_CLKRST_LPMEM_FORCE_REG == (LP_CLKRST_BASE_ADDR + LP_CLKRST_LPMEM_FORCE_OFFSET), "LP_CLKRST_LPMEM_FORCE_REG address calculation");
+    TEST_ASSERT((uintptr_t)LP_AON_LPBUS_REG == (LP_AON_BASE_ADDR + LP_AON_LPBUS_OFFSET), "LP_AON_LPBUS_REG address calculation");
+    TEST_ASSERT((uintptr_t)LP_APM_FUNC_CTRL_REG == (LP_APM_BASE_ADDR + LP_APM_FUNC_CTRL_OFFSET), "LP_APM_FUNC_CTRL_REG address calculation");
+    TEST_ASSERT((uintptr_t)LP_APM0_FUNC_CTRL_REG == (LP_APM0_BASE_ADDR + LP_APM0_FUNC_CTRL_OFFSET), "LP_APM0_FUNC_CTRL_REG address calculation");
+    TEST_ASSERT((uintptr_t)PMU_INT_RAW_REG == (PMU_BASE_ADDR + PMU_INT_RAW_OFFSET), "PMU_INT_RAW_REG address calculation");
+    TEST_ASSERT((uintptr_t)PMU_HP_INT_CLR_REG == (PMU_BASE_ADDR + PMU_HP_INT_CLR_OFFSET), "PMU_HP_INT_CLR_REG address calculation");
+    TEST_ASSERT((uintptr_t)PMU_LP_CPU_PWR0_REG == (PMU_BASE_ADDR + PMU_LP_CPU_PWR0_OFFSET), "PMU_LP_CPU_PWR0_REG address calculation");
+    TEST_ASSERT((uintptr_t)PMU_LP_CPU_PWR1_REG == (PMU_BASE_ADDR + PMU_LP_CPU_PWR1_OFFSET), "PMU_LP_CPU_PWR1_REG address calculation");
+    TEST_ASSERT((uintptr_t)PMU_HP_LP_CPU_COMM_REG == (PMU_BASE_ADDR + PMU_HP_LP_CPU_COMM_OFFSET), "PMU_HP_LP_CPU_COMM_REG address calculation");
+
+    /* 2. Embedded Default Firmware Header Validation */
+    const lp_firmware_header_t *fw_hdr = lp_core_get_default_firmware();
+    TEST_ASSERT(fw_hdr != NULL, "default firmware header must be non-NULL");
+    TEST_ASSERT(fw_hdr->magic == LP_FIRMWARE_HEADER_MAGIC, "firmware magic must be 'IRON' (0x49524F4E)");
+    TEST_ASSERT(fw_hdr->version == LP_FIRMWARE_VERSION_1_0, "firmware version must be 1.0 (0x00010000)");
+    TEST_ASSERT(fw_hdr->entry_point == LP_SRAM_ENTRY_ADDR, "firmware entry must be 0x50000080");
+    TEST_ASSERT(fw_hdr->size_bytes > 0U, "firmware size must be non-zero");
+    TEST_ASSERT(fw_hdr->size_bytes <= (LP_SRAM_SIZE_BYTES / 2U), "firmware size within LP SRAM limit");
+    TEST_ASSERT(fw_hdr->binary != NULL, "firmware binary payload pointer must be non-NULL");
+
+    /* 3. Parameter Validation & Error Handling */
+    TEST_ASSERT(lp_core_load_firmware(NULL, 100U) == LP_CORE_ERR_NULL_PTR, "load_firmware rejects NULL binary");
+    TEST_ASSERT(lp_core_load_firmware(fw_hdr->binary, 0U) == LP_CORE_ERR_INVALID_SIZE, "load_firmware rejects 0 size");
+    TEST_ASSERT(lp_core_load_firmware(fw_hdr->binary, LP_SRAM_SIZE_BYTES) == LP_CORE_ERR_INVALID_SIZE, "load_firmware rejects oversized payload");
+    TEST_ASSERT(lp_core_load_header(NULL) == LP_CORE_ERR_NULL_PTR, "load_header rejects NULL header");
+
+    lp_firmware_header_t invalid_hdr = *fw_hdr;
+    invalid_hdr.magic = 0xDEADBEEFU;
+    TEST_ASSERT(lp_core_load_header(&invalid_hdr) == LP_CORE_ERR_INVALID_MAGIC, "load_header rejects invalid magic");
+
+    invalid_hdr = *fw_hdr;
+    invalid_hdr.entry_point = 0x40800000U;
+    TEST_ASSERT(lp_core_load_header(&invalid_hdr) == LP_CORE_ERR_INVALID_ENTRY, "load_header rejects non-LP entry point");
+
+    TEST_ASSERT(lp_core_get_telemetry(NULL) == LP_CORE_ERR_NULL_PTR, "get_telemetry rejects NULL pointer");
+
+    /* 4. Subsystem Initialization & Lifecycle */
+    TEST_ASSERT(lp_core_init() == LP_CORE_OK, "lp_core_init succeeds");
+    TEST_ASSERT(!lp_core_is_running(), "LP core must not be running immediately after init");
+
+    lp_core_telemetry_t telem;
+    TEST_ASSERT(lp_core_get_telemetry(&telem) == LP_CORE_OK, "get_telemetry succeeds after init");
+    TEST_ASSERT(!telem.is_running, "telemetry reports is_running=false after init");
+    TEST_ASSERT(!telem.clock_enabled, "telemetry reports clock_enabled=false after init");
+    TEST_ASSERT(telem.in_reset, "telemetry reports in_reset=true after init");
+    TEST_ASSERT(!telem.hp_trigger_active, "hp_trigger_active=false after init");
+    TEST_ASSERT(!telem.lp_trigger_active, "lp_trigger_active=false after init");
+
+    /* 5. Firmware Deployment into Retained Memory */
+    TEST_ASSERT(lp_core_load_header(fw_hdr) == LP_CORE_OK, "load_header succeeds with default image");
+    TEST_ASSERT(lp_core_read_magic() == 0U, "magic word cleared before boot");
+    TEST_ASSERT(lp_core_read_counter() == 0U, "counter cleared before boot");
+
+    /* 6. Execution Start & Mock Handshake */
+    TEST_ASSERT(lp_core_start() == LP_CORE_OK, "lp_core_start succeeds");
+    TEST_ASSERT(lp_core_is_running(), "LP core reports running after start");
+
+    /* Verify PMU Trigger & Handshake */
+    TEST_ASSERT(lp_core_trigger_lp() == LP_CORE_OK, "trigger_lp succeeds");
+    TEST_ASSERT(lp_core_wait_handshake(100U) == LP_CORE_OK, "wait_handshake succeeds with mock response");
+    TEST_ASSERT(lp_core_read_magic() == LP_TEST_MAGIC_EXPECTED, "handshake magic matches 0xCAFEBABE");
+    TEST_ASSERT(lp_core_read_counter() >= 1U, "counter readback is non-zero");
+    TEST_ASSERT(lp_core_get_lp_trigger() == 1U, "LP trigger is asserted");
+
+    lp_core_clear_lp_trigger();
+    TEST_ASSERT(lp_core_get_lp_trigger() == 0U, "clear_lp_trigger deasserts trigger flag");
+
+    /* 7. Stop Subsystem */
+    TEST_ASSERT(lp_core_stop() == LP_CORE_OK, "lp_core_stop succeeds");
+    TEST_ASSERT(!lp_core_is_running(), "LP core reports stopped after stop");
+
+    TEST_ASSERT(lp_core_get_telemetry(&telem) == LP_CORE_OK, "get_telemetry succeeds after stop");
+    TEST_ASSERT(!telem.is_running, "telemetry reports is_running=false after stop");
+    TEST_ASSERT(!telem.clock_enabled, "telemetry reports clock_enabled=false after stop");
+    TEST_ASSERT(telem.in_reset, "telemetry reports in_reset=true after stop");
+    TEST_ASSERT(telem.magic_readback == LP_TEST_MAGIC_EXPECTED, "telemetry retains magic word");
 }
 
 /* ========================================================================= */
@@ -1840,6 +1928,7 @@ int main(void)
     test_systimer_timebase();
     test_task_structures();
     test_pmp_apm_isolation();
+    test_lp_core_driver();
 
     /* Hardened cross-module integration and edge case tests */
     test_coroutine_systimer_dpc_integration();

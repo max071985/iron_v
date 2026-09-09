@@ -15,6 +15,7 @@
 #include "systimer.h"
 #include "task.h"
 #include "pmp.h"
+#include "lp_core.h"
 
 /* Route all test output to unified dual-console multiplexer */
 #define uart_puts console_puts
@@ -1367,6 +1368,87 @@ void run_validation_suite(void)
                    apm_reg_ok && pmp_cleanup_ok && apm_cleanup_ok;
     if (t24_pass) passed_tests++;
     print_result(t24_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 25: LP Core Coprocessor Firmware Build, Lifecycle & PMU  */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(25, "LP Core Coprocessor Firmware Build, Lifecycle & PMU Handshake",
+                      "Load LP firmware to 0x50000000, start LP core, verify 0xCAFEBABE and PMU handshake");
+
+    /* 1. Initialize LP core driver subsystem */
+    int lp_init_ok = (lp_core_init() == LP_CORE_OK);
+
+    /* 2. Validate default embedded firmware packaging */
+    const lp_firmware_header_t *fw_hdr = lp_core_get_default_firmware();
+    int lp_hdr_ok = (fw_hdr != NULL) &&
+                    (fw_hdr->magic == LP_FIRMWARE_HEADER_MAGIC) &&
+                    (fw_hdr->version == LP_FIRMWARE_VERSION_1_0) &&
+                    (fw_hdr->entry_point == LP_SRAM_ENTRY_ADDR) &&
+                    (fw_hdr->size_bytes > 0U) &&
+                    (fw_hdr->binary != NULL);
+
+    /* 3. Load firmware into LP SRAM (0x50000000) */
+    int lp_load_ok = (lp_core_load_header(fw_hdr) == LP_CORE_OK);
+
+    /* Verify initial handshake words are cleared */
+    int lp_pre_clean = (lp_core_read_magic() == 0U) && (lp_core_read_counter() == 0U);
+
+    /* 4. Start LP core coprocessor */
+    int lp_start_ok = (lp_core_start() == LP_CORE_OK);
+
+    /* 5. Trigger LP core via PMU hardware register */
+    int lp_trig_ok = (lp_core_trigger_lp() == LP_CORE_OK);
+
+    /* 6. Wait for PMU handshake confirmation */
+    int lp_hs_ok = (lp_core_wait_handshake(LP_CORE_HANDSHAKE_TIMEOUT_CYCLES) == LP_CORE_OK);
+
+    /* 7. Read back magic word and execution counter */
+    uint32_t lp_magic = lp_core_read_magic();
+    uint32_t lp_cnt1 = lp_core_read_counter();
+    int lp_magic_ok = (lp_magic == LP_TEST_MAGIC_EXPECTED);
+    int lp_cnt_ok = (lp_cnt1 >= 1U);
+    int lp_trig_asserted = (lp_core_get_lp_trigger() == 1U);
+
+    /* Clear LP trigger flag */
+    lp_core_clear_lp_trigger();
+    int lp_trig_cleared = (lp_core_get_lp_trigger() == 0U);
+
+    /* Delay and verify counter advances */
+    uint32_t spin_count = 0;
+    while (spin_count < LP_CORE_SPIN_ADVANCE_CYCLES) { asm volatile("nop"); spin_count++; }
+    uint32_t lp_cnt2 = lp_core_read_counter();
+    int lp_advancing = (lp_cnt2 > lp_cnt1);
+
+    /* 8. Stop LP core and verify clock/reset state */
+    int lp_stop_ok = (lp_core_stop() == LP_CORE_OK);
+    int lp_stopped = (!lp_core_is_running());
+
+    uart_puts("  Expected:    Init=1, Hdr=1, Load=1, Start=1, Handshake=1, Magic=0xCAFEBABE, Advancing=1, Stop=1\r\n");
+    uart_puts("  Actual:      Init=");
+    put_dec(lp_init_ok);
+    uart_puts(", Hdr=");
+    put_dec(lp_hdr_ok);
+    uart_puts(", Load=");
+    put_dec(lp_load_ok && lp_pre_clean);
+    uart_puts(", Start=");
+    put_dec(lp_start_ok);
+    uart_puts(", Handshake=");
+    put_dec(lp_trig_ok && lp_hs_ok && lp_trig_asserted && lp_trig_cleared);
+    uart_puts(", Magic=");
+    put_hex(lp_magic);
+    uart_puts(", Advancing=");
+    put_dec(lp_cnt_ok && lp_advancing);
+    uart_puts(", Stop=");
+    put_dec(lp_stop_ok && lp_stopped);
+    uart_puts("\r\n");
+
+    int t25_pass = lp_init_ok && lp_hdr_ok && lp_load_ok && lp_pre_clean &&
+                   lp_start_ok && lp_trig_ok && lp_hs_ok && lp_magic_ok &&
+                   lp_cnt_ok && lp_trig_asserted && lp_trig_cleared &&
+                   lp_advancing && lp_stop_ok && lp_stopped;
+    if (t25_pass) passed_tests++;
+    print_result(t25_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

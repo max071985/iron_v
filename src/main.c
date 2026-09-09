@@ -16,6 +16,7 @@
 #include "systimer.h"
 #include "task.h"
 #include "pmp.h"
+#include "lp_core.h"
 
 static void print_help(void)
 {
@@ -31,6 +32,7 @@ static void print_help(void)
     console_puts("  panic               - Trigger illegal instruction exception to test panic dump\r\n");
     console_puts("  timer [start|stop]  - Show or control periodic timer telemetry\r\n");
     console_puts("  arena               - Show static memory arena allocation telemetry\r\n");
+    console_puts("  lp [status|start|stop] - Show or control LP core coprocessor\r\n");
     console_puts("  do-test             - Run full baseline validation test suite\r\n");
 }
 
@@ -159,6 +161,18 @@ static void print_info(void)
     console_puts("), APM Active: ");
     put_dec(ptel.apm_active_count);
     console_puts("/16\r\n");
+
+    lp_core_telemetry_t lptel;
+    lp_core_get_telemetry(&lptel);
+    console_puts(" LP Core: ");
+    console_puts(lptel.is_running ? "Running" : "Stopped");
+    console_puts(" (Clock: ");
+    console_puts(lptel.clock_enabled ? "ON" : "OFF");
+    console_puts(", Reset: ");
+    console_puts(lptel.in_reset ? "HELD" : "RELEASED");
+    console_puts(", Ticks: ");
+    put_dec(lptel.counter_readback);
+    console_puts(")\r\n");
     console_puts("========================================\r\n");
 }
 
@@ -554,6 +568,95 @@ static void shell_execute(char *input_buffer)
         put_dec((tel.apm_func_ctrl_val & 8U) != 0U);
         console_puts(")\r\n");
     }
+    else if (strncmp(input_buffer, "lp", 2) == 0 && (input_buffer[2] == ' ' || input_buffer[2] == '\0'))
+    {
+        char *subcmd = input_buffer + 2;
+        while (*subcmd == ' ') subcmd++;
+
+        if (strcmp(subcmd, "start") == 0)
+        {
+            console_puts("Deploying default LP firmware...\r\n");
+            int load_res = lp_core_load_header(lp_core_get_default_firmware());
+            if (load_res != LP_CORE_OK)
+            {
+                console_puts("ERROR: Failed to load LP firmware payload.\r\n");
+            }
+            else
+            {
+                int start_res = lp_core_start();
+                if (start_res != LP_CORE_OK)
+                {
+                    console_puts("ERROR: Failed to start LP core.\r\n");
+                }
+                else
+                {
+                    lp_core_trigger_lp();
+                    console_puts("Waiting for PMU handshake...\r\n");
+                    int hs_res = lp_core_wait_handshake(LP_CORE_HANDSHAKE_TIMEOUT_CYCLES);
+                    if (hs_res == LP_CORE_OK)
+                    {
+                        console_puts("LP Core started successfully! Magic: ");
+                        put_hex(lp_core_read_magic());
+                        console_puts(", Ticks: ");
+                        put_dec(lp_core_read_counter());
+                        console_puts("\r\n");
+                    }
+                    else
+                    {
+                        console_puts("WARNING: LP Core started but handshake timed out.\r\n");
+                    }
+                }
+            }
+        }
+        else if (strcmp(subcmd, "stop") == 0)
+        {
+            lp_core_stop();
+            console_puts("LP Core stopped (clock gated, reset held).\r\n");
+        }
+        else if (strcmp(subcmd, "trigger") == 0)
+        {
+            lp_core_trigger_lp();
+            console_puts("Sent PMU_HP_TRIGGER_LP pulse.\r\n");
+        }
+        else
+        {
+            lp_core_telemetry_t tel;
+            lp_core_get_telemetry(&tel);
+            const lp_firmware_header_t *fw = lp_core_get_default_firmware();
+
+            console_puts("Low-Power (LP) RISC-V Coprocessor Status:\r\n");
+            console_puts("  State:           ");
+            console_puts(tel.is_running ? "RUNNING" : "STOPPED");
+            console_puts("\r\n");
+            console_puts("  Clock (LP_PERI): ");
+            console_puts(tel.clock_enabled ? "ENABLED (20 MHz)" : "DISABLED");
+            console_puts("\r\n");
+            console_puts("  Reset:           ");
+            console_puts(tel.in_reset ? "HELD IN RESET" : "RELEASED");
+            console_puts("\r\n");
+            console_puts("  PMU HP->LP Trig: ");
+            put_dec(tel.hp_trigger_active);
+            console_puts("\r\n");
+            console_puts("  PMU LP->HP Trig: ");
+            put_dec(tel.lp_trigger_active);
+            console_puts("\r\n");
+            console_puts("  Magic Readback:  ");
+            put_hex(tel.magic_readback);
+            if (tel.magic_readback == LP_TEST_MAGIC_EXPECTED)
+            {
+                console_puts(" (VALID)");
+            }
+            console_puts("\r\n");
+            console_puts("  Tick Counter:    ");
+            put_dec(tel.counter_readback);
+            console_puts("\r\n");
+            console_puts("  Default Payload: ");
+            put_dec(fw->size_bytes);
+            console_puts(" bytes @ ");
+            put_hex(fw->entry_point);
+            console_puts("\r\n");
+        }
+    }
     else
     {
         console_puts("Unknown command. Type 'help' for available commands.\r\n");
@@ -614,6 +717,9 @@ void main(void)
     /* Initialize RISC-V Physical Memory Protection (PMP) & APM Fault Isolation */
     pmp_init();
     apm_init();
+
+    /* Initialize Low-Power (LP) RISC-V Coprocessor Subsystem */
+    lp_core_init();
 
     console_puts("\r\n");
     print_info();

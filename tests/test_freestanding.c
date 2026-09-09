@@ -20,6 +20,7 @@
 #include "lp_core.h"
 #include "power.h"
 #include "gpio.h"
+#include "gdma.h"
 
 /* Freestanding function aliases matching runtime naming conventions */
 static inline size_t s_strlen(const char *s)
@@ -1097,6 +1098,109 @@ static void test_gpio_subsystem(void)
     TEST_ASSERT((telem.enable_mask & (1U << 15U)) != 0U, "telemetry reports GPIO 15 output enabled");
 }
 
+static void test_gdma_subsystem(void)
+{
+    printf("  [TEST] GDMA multi-channel engine & descriptor rings (Task 4.4)...\n");
+
+    /* 1. Register Address & Offset Calculation Validation (AGENTS.md rule) */
+    TEST_ASSERT((uintptr_t)GDMA_IN_CONF0_REG(0U) == 0x60080070U, "GDMA_IN_CONF0_REG(0) address calculation");
+    TEST_ASSERT((uintptr_t)GDMA_IN_LINK_REG(0U) == 0x60080080U, "GDMA_IN_LINK_REG(0) address calculation");
+    TEST_ASSERT((uintptr_t)GDMA_IN_DSCR_REG(0U) == 0x60080090U, "GDMA_IN_DSCR_REG(0) address calculation");
+    TEST_ASSERT((uintptr_t)GDMA_OUT_CONF0_REG(0U) == 0x600800D0U, "GDMA_OUT_CONF0_REG(0) address calculation");
+    TEST_ASSERT((uintptr_t)GDMA_OUT_LINK_REG(0U) == 0x600800E0U, "GDMA_OUT_LINK_REG(0) address calculation");
+    TEST_ASSERT((uintptr_t)GDMA_OUT_DSCR_REG(0U) == 0x600800F0U, "GDMA_OUT_DSCR_REG(0) address calculation");
+
+    TEST_ASSERT((uintptr_t)GDMA_IN_CONF0_REG(1U) == 0x60080130U, "GDMA_IN_CONF0_REG(1) address calculation");
+    TEST_ASSERT((uintptr_t)GDMA_OUT_CONF0_REG(1U) == 0x60080190U, "GDMA_OUT_CONF0_REG(1) address calculation");
+    TEST_ASSERT((uintptr_t)GDMA_IN_CONF0_REG(2U) == 0x600801F0U, "GDMA_IN_CONF0_REG(2) address calculation");
+    TEST_ASSERT((uintptr_t)GDMA_OUT_CONF0_REG(2U) == 0x60080250U, "GDMA_OUT_CONF0_REG(2) address calculation");
+
+    TEST_ASSERT((uintptr_t)GDMA_IN_INT_RAW_REG(0U) == 0x60080000U, "GDMA_IN_INT_RAW_REG(0) address calculation");
+    TEST_ASSERT((uintptr_t)GDMA_IN_INT_RAW_REG(1U) == 0x60080010U, "GDMA_IN_INT_RAW_REG(1) address calculation");
+    TEST_ASSERT((uintptr_t)GDMA_OUT_INT_RAW_REG(0U) == 0x60080030U, "GDMA_OUT_INT_RAW_REG(0) address calculation");
+    TEST_ASSERT((uintptr_t)GDMA_OUT_INT_RAW_REG(1U) == 0x60080040U, "GDMA_OUT_INT_RAW_REG(1) address calculation");
+    TEST_ASSERT((uintptr_t)GDMA_DATE_REG == 0x60080068U, "GDMA_DATE_REG address calculation");
+    TEST_ASSERT((uintptr_t)PCR_GDMA_CONF_REG == 0x600960BCU, "PCR_GDMA_CONF_REG address calculation");
+
+    /* 2. Descriptor Structure Geometry & Packing */
+#if defined(__SIZEOF_POINTER__) && (__SIZEOF_POINTER__ == 4)
+    TEST_ASSERT(sizeof(dma_descriptor_t) == 12U, "sizeof(dma_descriptor_t) must be exactly 12 bytes on 32-bit target");
+#else
+    TEST_ASSERT(sizeof(dma_descriptor_t) == 16U, "sizeof(dma_descriptor_t) is 16 bytes on 64-bit host platform (32-bit pointer in target hardware)");
+#endif
+    TEST_ASSERT(offsetof(dma_descriptor_t, buffer_addr) == 4U, "buffer_addr offset must be 4 bytes");
+    TEST_ASSERT(offsetof(dma_descriptor_t, next_descriptor) == 8U, "next_descriptor offset must be 8 bytes");
+
+    /* 3. Descriptor Formatting & Helper Functions */
+    static dma_descriptor_t desc0 __attribute__((aligned(4)));
+    static dma_descriptor_t desc1 __attribute__((aligned(4)));
+    static uint8_t buf0[64] __attribute__((aligned(4)));
+    static uint8_t buf1[64] __attribute__((aligned(4)));
+
+    TEST_ASSERT(gdma_desc_init(&desc0, buf0, 64U, 0U, DMA_OWNER_DMA) == GDMA_OK, "gdma_desc_init desc0 succeeds");
+    TEST_ASSERT(desc0.size == 64U, "desc0 size is 64");
+    TEST_ASSERT(desc0.length == 0U, "desc0 length is 0");
+    TEST_ASSERT(desc0.owner == DMA_OWNER_DMA, "desc0 owner is DMA");
+    TEST_ASSERT(desc0.buffer_addr == (uint32_t)(uintptr_t)buf0, "desc0 buffer_addr matches buf0");
+    TEST_ASSERT(desc0.next_descriptor == NULL, "desc0 next_descriptor initially NULL");
+
+    TEST_ASSERT(gdma_desc_init(&desc1, buf1, 64U, 32U, DMA_OWNER_CPU) == GDMA_OK, "gdma_desc_init desc1 succeeds");
+    TEST_ASSERT(desc1.size == 64U, "desc1 size is 64");
+    TEST_ASSERT(desc1.length == 32U, "desc1 length is 32");
+    TEST_ASSERT(desc1.owner == DMA_OWNER_CPU, "desc1 owner is CPU");
+    TEST_ASSERT(desc1.buffer_addr == (uint32_t)(uintptr_t)buf1, "desc1 buffer_addr matches buf1");
+
+    TEST_ASSERT(gdma_desc_link_circular(&desc0, &desc1) == GDMA_OK, "gdma_desc_link_circular succeeds");
+    TEST_ASSERT(desc0.next_descriptor == &desc1, "desc0 points to desc1");
+    TEST_ASSERT(desc1.next_descriptor == &desc0, "desc1 points back to desc0 (circular ring)");
+
+    /* 4. Parameter & Boundary Validation */
+    TEST_ASSERT(gdma_desc_init(NULL, buf0, 64U, 0U, DMA_OWNER_DMA) == GDMA_ERR_INVALID_ARG, "desc_init rejects NULL desc");
+    TEST_ASSERT(gdma_desc_init(&desc0, buf0, 5000U, 0U, DMA_OWNER_DMA) == GDMA_ERR_INVALID_ARG, "desc_init rejects size > 4095");
+    TEST_ASSERT(gdma_desc_init(&desc0, buf0, 64U, 5000U, DMA_OWNER_DMA) == GDMA_ERR_INVALID_ARG, "desc_init rejects length > 4095");
+    TEST_ASSERT(gdma_desc_link_circular(NULL, &desc1) == GDMA_ERR_INVALID_ARG, "link_circular rejects NULL desc0");
+    TEST_ASSERT(gdma_desc_link_circular(&desc0, NULL) == GDMA_ERR_INVALID_ARG, "link_circular rejects NULL desc1");
+
+    /* 5. Driver Lifecycle & Channel Controls */
+    TEST_ASSERT(gdma_init() == GDMA_OK, "gdma_init succeeds");
+    TEST_ASSERT(gdma_get_date_version() == GDMA_HARDWARE_DATE_EXPECTED, "gdma_get_date_version matches expected");
+
+    TEST_ASSERT(gdma_channel_init(GDMA_CHANNEL_0) == GDMA_OK, "gdma_channel_init(0) succeeds");
+    TEST_ASSERT(gdma_channel_init(GDMA_CHANNEL_1) == GDMA_OK, "gdma_channel_init(1) succeeds");
+    TEST_ASSERT(gdma_channel_init(GDMA_CHANNEL_2) == GDMA_OK, "gdma_channel_init(2) succeeds");
+    TEST_ASSERT(gdma_channel_init(3U) == GDMA_ERR_OUT_OF_RANGE, "gdma_channel_init(3) rejected as out of range");
+
+    TEST_ASSERT(gdma_inlink_set(GDMA_CHANNEL_0, &desc0) == GDMA_OK, "gdma_inlink_set(0, &desc0) succeeds");
+    TEST_ASSERT(gdma_inlink_set(GDMA_CHANNEL_0, NULL) == GDMA_ERR_INVALID_ARG, "gdma_inlink_set rejects NULL desc");
+    TEST_ASSERT(gdma_inlink_set(3U, &desc0) == GDMA_ERR_OUT_OF_RANGE, "gdma_inlink_set rejects channel 3");
+
+    TEST_ASSERT(gdma_inlink_start(GDMA_CHANNEL_0) == GDMA_OK, "gdma_inlink_start(0) succeeds");
+    TEST_ASSERT(gdma_inlink_stop(GDMA_CHANNEL_0) == GDMA_OK, "gdma_inlink_stop(0) succeeds");
+    TEST_ASSERT(gdma_inlink_restart(GDMA_CHANNEL_0) == GDMA_OK, "gdma_inlink_restart(0) succeeds");
+
+    TEST_ASSERT(gdma_outlink_set(GDMA_CHANNEL_0, &desc1) == GDMA_OK, "gdma_outlink_set(0, &desc1) succeeds");
+    TEST_ASSERT(gdma_outlink_set(GDMA_CHANNEL_0, NULL) == GDMA_ERR_INVALID_ARG, "gdma_outlink_set rejects NULL desc");
+    TEST_ASSERT(gdma_outlink_set(3U, &desc1) == GDMA_ERR_OUT_OF_RANGE, "gdma_outlink_set rejects channel 3");
+
+    TEST_ASSERT(gdma_outlink_start(GDMA_CHANNEL_0) == GDMA_OK, "gdma_outlink_start(0) succeeds");
+    TEST_ASSERT(gdma_outlink_stop(GDMA_CHANNEL_0) == GDMA_OK, "gdma_outlink_stop(0) succeeds");
+    TEST_ASSERT(gdma_outlink_restart(GDMA_CHANNEL_0) == GDMA_OK, "gdma_outlink_restart(0) succeeds");
+
+    TEST_ASSERT(gdma_channel_reset(GDMA_CHANNEL_0) == GDMA_OK, "gdma_channel_reset(0) succeeds");
+    TEST_ASSERT(gdma_channel_reset(3U) == GDMA_ERR_OUT_OF_RANGE, "gdma_channel_reset(3) rejected as out of range");
+
+    /* 6. Subsystem Telemetry Snapshot */
+    gdma_telemetry_t telem;
+    TEST_ASSERT(gdma_get_telemetry(&telem) == GDMA_OK, "gdma_get_telemetry succeeds");
+    TEST_ASSERT(telem.date_version == GDMA_HARDWARE_DATE_EXPECTED, "telemetry reports expected date version");
+    TEST_ASSERT(gdma_get_telemetry(NULL) == GDMA_ERR_INVALID_ARG, "gdma_get_telemetry rejects NULL");
+
+    gdma_channel_telemetry_t ch_telem;
+    TEST_ASSERT(gdma_get_channel_telemetry(GDMA_CHANNEL_0, &ch_telem) == GDMA_OK, "gdma_get_channel_telemetry(0) succeeds");
+    TEST_ASSERT(gdma_get_channel_telemetry(3U, &ch_telem) == GDMA_ERR_OUT_OF_RANGE, "gdma_get_channel_telemetry(3) rejected as out of range");
+    TEST_ASSERT(gdma_get_channel_telemetry(GDMA_CHANNEL_0, NULL) == GDMA_ERR_INVALID_ARG, "gdma_get_channel_telemetry rejects NULL");
+}
+
 /* ========================================================================= */
 /* Phase 0-3 Host Test Hardening: Cross-Module Integration & Edge Case Tests */
 /* ========================================================================= */
@@ -2094,6 +2198,7 @@ int main(void)
     test_lp_core_driver();
     test_power_mailbox_subsystem();
     test_gpio_subsystem();
+    test_gdma_subsystem();
 
     /* Hardened cross-module integration and edge case tests */
     test_coroutine_systimer_dpc_integration();

@@ -424,9 +424,22 @@ int apm_init(void)
     clk_gate |= HP_APM_CLOCK_GATE_CLK_EN_M;
     APM_REG_WR(HP_APM_CLK_GATE_REG, clk_gate);
 
-    /* 2. Preserve Region 0 default boot mapping (0x0 - 0xFFFFFFFF) and clear dynamic filters 1..15 */
+    /* 2. Grant full read/write/execute permissions to Region 0 across all REE modes
+     * so non-CPU masters (such as GDMA and coprocessors) have unblocked bus access */
+    APM_REG_WR(HP_APM_REGION_PMS_ATTR_REG(0U), APM_REGION_ATTR_ALL_PERM);
+
+    /* 3. Preserve Region 0 default boot mapping (0x0 - 0xFFFFFFFF) and clear dynamic filters 1..15 */
     uint32_t filter_en = APM_REG_RD(HP_APM_REGION_FILTER_ENABLE_REG);
     APM_REG_WR(HP_APM_REGION_FILTER_ENABLE_REG, (filter_en & APM_REGION0_FILTER_EN_BIT) | APM_REGION0_FILTER_EN_BIT);
+
+#if defined(__riscv)
+    /* 4. Enable HP_TEE clock gating and configure all masters (0..31) to TEE mode */
+    *HP_TEE_CLOCK_GATE_REG = 1U;
+    for (uint32_t m = 0; m < HP_TEE_MAX_MASTERS; m++)
+    {
+        *HP_TEE_M_MODE_CTRL_REG(m) = HP_TEE_MODE_TEE;
+    }
+#endif
 
     return APM_OK;
 }

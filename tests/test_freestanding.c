@@ -19,6 +19,7 @@
 #include "pmp.h"
 #include "lp_core.h"
 #include "power.h"
+#include "gpio.h"
 
 /* Freestanding function aliases matching runtime naming conventions */
 static inline size_t s_strlen(const char *s)
@@ -1012,6 +1013,88 @@ static void test_power_mailbox_subsystem(void)
     /* Clean up LP core */
     lp_core_stop();
     TEST_ASSERT(!lp_core_is_running(), "LP core stopped cleanly after power tests");
+}
+
+static void test_gpio_subsystem(void)
+{
+    printf("  [TEST] GPIO matrix & IO_MUX pin routing (Task 4.3)...\n");
+
+    /* 1. Register Address & Offset Calculation Validation (AGENTS.md rule) */
+    TEST_ASSERT((uintptr_t)IO_MUX_GPIO_REG(0U) == (IO_MUX_BASE_ADDR + IO_MUX_GPIO0_OFFSET), "IO_MUX_GPIO_REG(0) address calculation");
+    TEST_ASSERT((uintptr_t)IO_MUX_GPIO_REG(15U) == (IO_MUX_BASE_ADDR + IO_MUX_GPIO0_OFFSET + (15U * 4U)), "IO_MUX_GPIO_REG(15) address calculation");
+    TEST_ASSERT((uintptr_t)IO_MUX_GPIO_REG(30U) == (IO_MUX_BASE_ADDR + IO_MUX_GPIO0_OFFSET + (30U * 4U)), "IO_MUX_GPIO_REG(30) address calculation");
+    TEST_ASSERT((uintptr_t)GPIO_PIN_CONF_REG(15U) == (GPIO_BASE_ADDR + GPIO_PIN0_CONF_OFFSET + (15U * 4U)), "GPIO_PIN_CONF_REG(15) address calculation");
+    TEST_ASSERT((uintptr_t)GPIO_FUNC_OUT_SEL_REG(15U) == (GPIO_BASE_ADDR + GPIO_FUNC_OUT_SEL_OFFSET + (15U * 4U)), "GPIO_FUNC_OUT_SEL_REG(15) address calculation");
+    TEST_ASSERT((uintptr_t)GPIO_OUT_REG == (GPIO_BASE_ADDR + GPIO_OUT_OFFSET), "GPIO_OUT_REG address calculation");
+    TEST_ASSERT((uintptr_t)GPIO_OUT_W1TS_REG == (GPIO_BASE_ADDR + GPIO_OUT_W1TS_OFFSET), "GPIO_OUT_W1TS_REG address calculation");
+    TEST_ASSERT((uintptr_t)GPIO_OUT_W1TC_REG == (GPIO_BASE_ADDR + GPIO_OUT_W1TC_OFFSET), "GPIO_OUT_W1TC_REG address calculation");
+    TEST_ASSERT((uintptr_t)GPIO_ENABLE_REG == (GPIO_BASE_ADDR + GPIO_ENABLE_OFFSET), "GPIO_ENABLE_REG address calculation");
+    TEST_ASSERT((uintptr_t)GPIO_ENABLE_W1TS_REG == (GPIO_BASE_ADDR + GPIO_ENABLE_W1TS_OFFSET), "GPIO_ENABLE_W1TS_REG address calculation");
+    TEST_ASSERT((uintptr_t)GPIO_ENABLE_W1TC_REG == (GPIO_BASE_ADDR + GPIO_ENABLE_W1TC_OFFSET), "GPIO_ENABLE_W1TC_REG address calculation");
+    TEST_ASSERT((uintptr_t)GPIO_IN_REG == (GPIO_BASE_ADDR + GPIO_IN_OFFSET), "GPIO_IN_REG address calculation");
+    TEST_ASSERT((uintptr_t)GPIO_STATUS_REG == (GPIO_BASE_ADDR + GPIO_STATUS_OFFSET), "GPIO_STATUS_REG address calculation");
+    TEST_ASSERT((uintptr_t)PCR_IOMUX_CONF_REG == (PCR_BASE_ADDR + PCR_IOMUX_CONF_OFFSET), "PCR_IOMUX_CONF_REG address calculation");
+
+    /* 2. Parameter Validation & Boundary Checks */
+    TEST_ASSERT(gpio_set_direction(31U, GPIO_DIR_OUTPUT) == GPIO_ERR_INVALID_PIN, "gpio_set_direction rejects pin 31");
+    TEST_ASSERT(gpio_set_direction(99U, GPIO_DIR_OUTPUT) == GPIO_ERR_INVALID_PIN, "gpio_set_direction rejects pin 99");
+    TEST_ASSERT(gpio_set_pull(31U, GPIO_PULL_UP) == GPIO_ERR_INVALID_PIN, "gpio_set_pull rejects pin 31");
+    TEST_ASSERT(gpio_set_drive_strength(31U, GPIO_DRIVE_0) == GPIO_ERR_INVALID_PIN, "gpio_set_drive_strength rejects pin 31");
+    TEST_ASSERT(gpio_set_drive_strength(15U, (gpio_drive_strength_t)99) == GPIO_ERR_INVALID_ARG, "gpio_set_drive_strength rejects invalid drive level");
+    TEST_ASSERT(gpio_set_function(31U, 1U) == GPIO_ERR_INVALID_PIN, "gpio_set_function rejects pin 31");
+    TEST_ASSERT(gpio_set_function(15U, 8U) == GPIO_ERR_INVALID_ARG, "gpio_set_function rejects function > 7");
+    TEST_ASSERT(gpio_set_drive_mode(31U, GPIO_MODE_OPEN_DRAIN) == GPIO_ERR_INVALID_PIN, "gpio_set_drive_mode rejects pin 31");
+    TEST_ASSERT(gpio_set_level(31U, 1U) == GPIO_ERR_INVALID_PIN, "gpio_set_level rejects pin 31");
+    TEST_ASSERT(gpio_get_level(31U) == GPIO_ERR_INVALID_PIN, "gpio_get_level rejects pin 31");
+    TEST_ASSERT(gpio_get_output_level(31U) == GPIO_ERR_INVALID_PIN, "gpio_get_output_level rejects pin 31");
+    TEST_ASSERT(gpio_toggle_level(31U) == GPIO_ERR_INVALID_PIN, "gpio_toggle_level rejects pin 31");
+    TEST_ASSERT(gpio_set_intr_type(31U, GPIO_INTR_RISING_EDGE) == GPIO_ERR_INVALID_PIN, "gpio_set_intr_type rejects pin 31");
+    TEST_ASSERT(gpio_intr_enable(31U) == GPIO_ERR_INVALID_PIN, "gpio_intr_enable rejects pin 31");
+    TEST_ASSERT(gpio_intr_disable(31U) == GPIO_ERR_INVALID_PIN, "gpio_intr_disable rejects pin 31");
+    TEST_ASSERT(gpio_intr_clear(31U) == GPIO_ERR_INVALID_PIN, "gpio_intr_clear rejects pin 31");
+    TEST_ASSERT(gpio_get_telemetry(NULL) == GPIO_ERR_INVALID_ARG, "gpio_get_telemetry rejects NULL pointer");
+
+    /* 3. Subsystem Initialization */
+    TEST_ASSERT(gpio_init() == GPIO_OK, "gpio_init succeeds");
+
+    /* 4. Direction & Output Control */
+    TEST_ASSERT(gpio_set_direction(15U, GPIO_DIR_OUTPUT) == GPIO_OK, "set GPIO 15 as OUTPUT succeeds");
+    TEST_ASSERT(gpio_set_function(15U, IO_MUX_MCU_SEL_FUNC1_GPIO) == GPIO_OK, "set GPIO 15 function to GPIO succeeds");
+    TEST_ASSERT(gpio_set_level(15U, 1U) == GPIO_OK, "gpio_set_level 15 HIGH succeeds");
+    TEST_ASSERT(gpio_get_output_level(15U) == 1, "gpio_get_output_level 15 reports 1");
+
+    TEST_ASSERT(gpio_toggle_level(15U) == GPIO_OK, "gpio_toggle_level 15 succeeds");
+    TEST_ASSERT(gpio_get_output_level(15U) == 0, "gpio_get_output_level 15 reports 0 after toggle");
+
+    TEST_ASSERT(gpio_set_level(15U, 1U) == GPIO_OK, "gpio_set_level 15 HIGH succeeds");
+    TEST_ASSERT(gpio_set_level(15U, 0U) == GPIO_OK, "gpio_set_level 15 LOW succeeds");
+    TEST_ASSERT(gpio_get_output_level(15U) == 0, "gpio_get_output_level 15 reports 0");
+
+    /* 5. Input Direction & Internal Pull Resistors */
+    TEST_ASSERT(gpio_set_direction(16U, GPIO_DIR_INPUT) == GPIO_OK, "set GPIO 16 as INPUT succeeds");
+    TEST_ASSERT(gpio_set_pull(16U, GPIO_PULL_UP) == GPIO_OK, "gpio_set_pull 16 UP succeeds");
+    TEST_ASSERT(gpio_get_level(16U) == 1, "gpio_get_level 16 reads 1 with pull-up");
+
+    TEST_ASSERT(gpio_set_pull(16U, GPIO_PULL_DOWN) == GPIO_OK, "gpio_set_pull 16 DOWN succeeds");
+    TEST_ASSERT(gpio_get_level(16U) == 0, "gpio_get_level 16 reads 0 with pull-down");
+
+    TEST_ASSERT(gpio_set_pull(16U, GPIO_PULL_NONE) == GPIO_OK, "gpio_set_pull 16 NONE succeeds");
+
+    /* 6. Drive Strength & Open-Drain Configuration */
+    TEST_ASSERT(gpio_set_drive_strength(15U, GPIO_DRIVE_3) == GPIO_OK, "gpio_set_drive_strength 15 DRIVE_3 succeeds");
+    TEST_ASSERT(gpio_set_drive_mode(15U, GPIO_MODE_OPEN_DRAIN) == GPIO_OK, "gpio_set_drive_mode 15 OPEN_DRAIN succeeds");
+    TEST_ASSERT(gpio_set_drive_mode(15U, GPIO_MODE_PUSH_PULL) == GPIO_OK, "gpio_set_drive_mode 15 PUSH_PULL succeeds");
+
+    /* 7. Interrupt Configuration */
+    TEST_ASSERT(gpio_set_intr_type(16U, GPIO_INTR_RISING_EDGE) == GPIO_OK, "gpio_set_intr_type 16 RISING_EDGE succeeds");
+    TEST_ASSERT(gpio_intr_enable(16U) == GPIO_OK, "gpio_intr_enable 16 succeeds");
+    TEST_ASSERT(gpio_intr_disable(16U) == GPIO_OK, "gpio_intr_disable 16 succeeds");
+    TEST_ASSERT(gpio_intr_clear(16U) == GPIO_OK, "gpio_intr_clear 16 succeeds");
+
+    /* 8. Telemetry Snapshot Query */
+    gpio_telemetry_t telem;
+    TEST_ASSERT(gpio_get_telemetry(&telem) == GPIO_OK, "gpio_get_telemetry succeeds");
+    TEST_ASSERT((telem.enable_mask & (1U << 15U)) != 0U, "telemetry reports GPIO 15 output enabled");
 }
 
 /* ========================================================================= */
@@ -2010,6 +2093,7 @@ int main(void)
     test_pmp_apm_isolation();
     test_lp_core_driver();
     test_power_mailbox_subsystem();
+    test_gpio_subsystem();
 
     /* Hardened cross-module integration and edge case tests */
     test_coroutine_systimer_dpc_integration();

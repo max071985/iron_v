@@ -322,7 +322,7 @@ def run_suite():
     native_desc = ""
     if not os.path.exists(native_test_bin):
         comp = subprocess.run(
-            ["gcc", "-O2", "-fno-tree-loop-distribute-patterns", "-Wall", "-Wextra", "-Werror", "-Isrc", "tests/test_freestanding.c", "src/string.c", "src/dpc.c", "src/arena.c", "src/pmp.c", "src/lp_core.c", "src/power.c", "-o", native_test_bin],
+            ["gcc", "-O2", "-fno-tree-loop-distribute-patterns", "-Wall", "-Wextra", "-Werror", "-Isrc", "tests/test_freestanding.c", "src/string.c", "src/dpc.c", "src/arena.c", "src/pmp.c", "src/lp_core.c", "src/power.c", "src/gpio.c", "-o", native_test_bin],
             capture_output=True, text=True
         )
         if comp.returncode != 0:
@@ -806,6 +806,42 @@ def run_suite():
         f"All {len(pwr_syms)} power management symbols present in IRAM text section [0x40800000, 0x40820000)",
         t25_actual,
         t25_pass
+    )
+
+    # TEST 26: GPIO Matrix & IO_MUX Pin Routing Linkage & Symbols Validation (Task 4.3)
+    total += 1
+    gpio_syms = [
+        "gpio_init",
+        "gpio_set_direction",
+        "gpio_set_pull",
+        "gpio_set_drive_strength",
+        "gpio_set_function",
+        "gpio_set_drive_mode",
+        "gpio_set_level",
+        "gpio_get_level",
+        "gpio_get_output_level",
+        "gpio_toggle_level",
+        "gpio_set_intr_type",
+        "gpio_intr_enable",
+        "gpio_intr_disable",
+        "gpio_intr_clear",
+        "gpio_get_telemetry"
+    ]
+    found_gpio_syms = [s for s in gpio_syms if s in symbols]
+    all_gpio_found = len(found_gpio_syms) == len(gpio_syms)
+    all_gpio_in_text = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40820000)
+        for s in found_gpio_syms
+    )
+    t26_pass = all_gpio_found and all_gpio_in_text
+    t26_actual = f"Found {len(found_gpio_syms)}/{len(gpio_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    passed += print_result_line(
+        total,
+        "GPIO Matrix & IO_MUX Pin Routing Subsystem Linkage",
+        "Verify gpio_init, set/get direction, pull, drive strength, level toggle, intr, and telemetry symbols exist in IRAM",
+        f"All {len(gpio_syms)} GPIO driver symbols present in IRAM text section [0x40800000, 0x40820000)",
+        t26_actual,
+        t26_pass
     )
 
     print("\n" + "=" * 70)

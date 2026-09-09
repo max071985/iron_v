@@ -18,6 +18,7 @@
 #include "pmp.h"
 #include "lp_core.h"
 #include "power.h"
+#include "gpio.h"
 
 static void print_help(void)
 {
@@ -35,6 +36,7 @@ static void print_help(void)
     console_puts("  arena               - Show static memory arena allocation telemetry\r\n");
     console_puts("  lp [status|start|stop] - Show or control LP core coprocessor\r\n");
     console_puts("  power [status|mode|sample|store] - Show or control power management & shared mailbox\r\n");
+    console_puts("  gpio [status|set|get|dir|pull] - Show or control GPIO pins & IO_MUX\r\n");
     console_puts("  do-test             - Run full baseline validation test suite\r\n");
 }
 
@@ -187,7 +189,46 @@ static void print_info(void)
     console_puts(", WakeCount: ");
     put_dec(pwtel.wake_count);
     console_puts("\r\n");
+
+    gpio_telemetry_t gptel;
+    gpio_get_telemetry(&gptel);
+    console_puts(" GPIO:    OutEn: ");
+    put_hex(gptel.enable_mask);
+    console_puts(", Out: ");
+    put_hex(gptel.out_mask);
+    console_puts(", In: ");
+    put_hex(gptel.in_mask);
+    console_puts("\r\n");
     console_puts("========================================\r\n");
+}
+
+static int parse_uint(char **str, uint32_t *out)
+{
+    if (!str || !*str || !out) return 0;
+    skip_space(str);
+    char *p = *str;
+    if (*p == '\0') return 0;
+
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X'))
+    {
+        return s_htoi(str, out);
+    }
+
+    uint32_t val = 0;
+    int parsed = 0;
+    while (*p >= '0' && *p <= '9')
+    {
+        val = (val * 10U) + (uint32_t)(*p - '0');
+        p++;
+        parsed = 1;
+    }
+    if (parsed)
+    {
+        *out = val;
+        *str = p;
+        return 1;
+    }
+    return 0;
 }
 
 static void shell_execute(char *input_buffer)
@@ -781,6 +822,147 @@ static void shell_execute(char *input_buffer)
             console_puts(pt.lp_running ? "RUNNING\r\n" : "STOPPED\r\n");
         }
     }
+    else if (strncmp(input_buffer, "gpio", 4) == 0 && (input_buffer[4] == ' ' || input_buffer[4] == '\0'))
+    {
+        char *subcmd = input_buffer + 4;
+        while (*subcmd == ' ') subcmd++;
+
+        if (strncmp(subcmd, "set", 3) == 0)
+        {
+            char *args = subcmd + 3;
+            while (*args == ' ') args++;
+            uint32_t pin = 0U;
+            if (parse_uint(&args, &pin))
+            {
+                uint32_t val = 0U;
+                if (parse_uint(&args, &val))
+                {
+                    gpio_set_level(pin, val);
+                    console_puts("GPIO ");
+                    put_dec(pin);
+                    console_puts(" output set to ");
+                    put_dec(val ? 1 : 0);
+                    console_puts("\r\n");
+                }
+                else
+                {
+                    console_puts("Usage: gpio set <pin> <0|1>\r\n");
+                }
+            }
+            else
+            {
+                console_puts("Usage: gpio set <pin> <0|1>\r\n");
+            }
+        }
+        else if (strncmp(subcmd, "get", 3) == 0)
+        {
+            char *args = subcmd + 3;
+            while (*args == ' ') args++;
+            uint32_t pin = 0U;
+            if (parse_uint(&args, &pin))
+            {
+                int lvl = gpio_get_level(pin);
+                console_puts("GPIO ");
+                put_dec(pin);
+                console_puts(" input level: ");
+                put_dec(lvl);
+                console_puts("\r\n");
+            }
+            else
+            {
+                console_puts("Usage: gpio get <pin>\r\n");
+            }
+        }
+        else if (strncmp(subcmd, "dir", 3) == 0)
+        {
+            char *args = subcmd + 3;
+            while (*args == ' ') args++;
+            uint32_t pin = 0U;
+            if (parse_uint(&args, &pin))
+            {
+                while (*args == ' ') args++;
+                if (strcmp(args, "out") == 0)
+                {
+                    gpio_set_direction(pin, GPIO_DIR_OUTPUT);
+                    console_puts("GPIO ");
+                    put_dec(pin);
+                    console_puts(" direction set to OUTPUT\r\n");
+                }
+                else if (strcmp(args, "in") == 0)
+                {
+                    gpio_set_direction(pin, GPIO_DIR_INPUT);
+                    console_puts("GPIO ");
+                    put_dec(pin);
+                    console_puts(" direction set to INPUT\r\n");
+                }
+                else
+                {
+                    console_puts("Usage: gpio dir <pin> <in|out>\r\n");
+                }
+            }
+            else
+            {
+                console_puts("Usage: gpio dir <pin> <in|out>\r\n");
+            }
+        }
+        else if (strncmp(subcmd, "pull", 4) == 0)
+        {
+            char *args = subcmd + 4;
+            while (*args == ' ') args++;
+            uint32_t pin = 0U;
+            if (parse_uint(&args, &pin))
+            {
+                while (*args == ' ') args++;
+                if (strcmp(args, "up") == 0)
+                {
+                    gpio_set_pull(pin, GPIO_PULL_UP);
+                    console_puts("GPIO ");
+                    put_dec(pin);
+                    console_puts(" pull set to UP\r\n");
+                }
+                else if (strcmp(args, "down") == 0)
+                {
+                    gpio_set_pull(pin, GPIO_PULL_DOWN);
+                    console_puts("GPIO ");
+                    put_dec(pin);
+                    console_puts(" pull set to DOWN\r\n");
+                }
+                else if (strcmp(args, "none") == 0)
+                {
+                    gpio_set_pull(pin, GPIO_PULL_NONE);
+                    console_puts("GPIO ");
+                    put_dec(pin);
+                    console_puts(" pull set to NONE\r\n");
+                }
+                else
+                {
+                    console_puts("Usage: gpio pull <pin> <none|up|down>\r\n");
+                }
+            }
+            else
+            {
+                console_puts("Usage: gpio pull <pin> <none|up|down>\r\n");
+            }
+        }
+        else
+        {
+            gpio_telemetry_t gt;
+            gpio_get_telemetry(&gt);
+            console_puts("GPIO Subsystem & IO_MUX Status:\r\n");
+            console_puts("  Output Enable Mask: ");
+            put_hex(gt.enable_mask);
+            console_puts("\r\n");
+            console_puts("  Output Level Mask:  ");
+            put_hex(gt.out_mask);
+            console_puts("\r\n");
+            console_puts("  Input Level Mask:   ");
+            put_hex(gt.in_mask);
+            console_puts("\r\n");
+            console_puts("  Interrupt Status:   ");
+            put_hex(gt.status_mask);
+            console_puts("\r\n");
+        }
+    }
     else
     {
         console_puts("Unknown command. Type 'help' for available commands.\r\n");
@@ -847,6 +1029,9 @@ void main(void)
 
     /* Initialize Power Management & Retained Shared Mailbox Subsystem */
     power_init();
+
+    /* Initialize GPIO Matrix & IO_MUX Multi-Function Pin Subsystem */
+    gpio_init();
 
     console_puts("\r\n");
     print_info();

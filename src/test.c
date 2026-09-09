@@ -17,6 +17,7 @@
 #include "pmp.h"
 #include "lp_core.h"
 #include "power.h"
+#include "gpio.h"
 
 /* Route all test output to unified dual-console multiplexer */
 #define uart_puts console_puts
@@ -1519,6 +1520,92 @@ void run_validation_suite(void)
                    pwr_active_restore;
     if (t26_pass) passed_tests++;
     print_result(t26_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 27: GPIO Matrix & IO_MUX Multi-Function Pin Routing      */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(27, "GPIO Matrix & IO_MUX Multi-Function Pin Routing",
+                      "Configure GPIO 15 (Out) & GPIO 16 (In), toggle level, assert W1TS/W1TC & pull-up/down");
+
+    /* 1. Save original register states for non-destructive restoration */
+    volatile uint32_t *mux_15 = IO_MUX_GPIO_REG(15U);
+    volatile uint32_t *mux_16 = IO_MUX_GPIO_REG(16U);
+    uint32_t orig_mux_15 = *mux_15;
+    uint32_t orig_mux_16 = *mux_16;
+    uint32_t orig_enable = *GPIO_ENABLE_REG;
+    uint32_t orig_out = *GPIO_OUT_REG;
+
+    /* 2. Initialize GPIO & IO_MUX subsystem clocks */
+    int gpio_init_ok = (gpio_init() == GPIO_OK);
+
+    /* 3. Configure IO_MUX for GPIO 15: Function 1 (GPIO), clear pull-up and pull-down */
+    int func_15_ok = (gpio_set_function(15U, IO_MUX_MCU_SEL_FUNC1_GPIO) == GPIO_OK);
+    int pull_15_ok = (gpio_set_pull(15U, GPIO_PULL_NONE) == GPIO_OK);
+    int dir_15_ok = (gpio_set_direction(15U, GPIO_DIR_OUTPUT) == GPIO_OK);
+    int out_en_15 = ((*GPIO_ENABLE_REG & (1U << 15U)) != 0U);
+
+    /* 4. Drive GPIO 15 High via W1TS; assert bit 15 reads 1 */
+    uint32_t pre_adj_bits = *GPIO_OUT_REG & ~(1U << 15U);
+    int set_high_ok = (gpio_set_level(15U, 1U) == GPIO_OK);
+    uint32_t out_high = *GPIO_OUT_REG;
+    int high_bit_set = ((out_high & (1U << 15U)) != 0U);
+
+    /* 5. Drive GPIO 15 Low via W1TC; assert bit 15 reads 0 */
+    int set_low_ok = (gpio_set_level(15U, 0U) == GPIO_OK);
+    uint32_t out_low = *GPIO_OUT_REG;
+    int low_bit_cleared = ((out_low & (1U << 15U)) == 0U);
+
+    /* 6. Verify atomic execution: adjacent bits in GPIO_OUT_REG unchanged */
+    uint32_t post_adj_bits = out_low & ~(1U << 15U);
+    int atomic_preserved = (pre_adj_bits == post_adj_bits);
+
+    /* 7. Configure GPIO 16: input enable with internal pull-up */
+    int func_16_ok = (gpio_set_function(16U, IO_MUX_MCU_SEL_FUNC1_GPIO) == GPIO_OK);
+    int dir_16_ok = (gpio_set_direction(16U, GPIO_DIR_INPUT) == GPIO_OK);
+    int pull_up_ok = (gpio_set_pull(16U, GPIO_PULL_UP) == GPIO_OK);
+    for (volatile int d = 0; d < 1000; d++) { asm volatile("nop"); }
+    int read_pull_up = gpio_get_level(16U);
+
+    /* 8. Configure GPIO 16 with internal pull-down */
+    int pull_down_ok = (gpio_set_pull(16U, GPIO_PULL_DOWN) == GPIO_OK);
+    for (volatile int d = 0; d < 1000; d++) { asm volatile("nop"); }
+    int read_pull_down = gpio_get_level(16U);
+
+    /* 9. Restore pristine hardware states for GPIO 15 and GPIO 16 */
+    *mux_15 = orig_mux_15;
+    *mux_16 = orig_mux_16;
+    if (orig_enable & (1U << 15U)) { *GPIO_ENABLE_W1TS_REG = (1U << 15U); }
+    else { *GPIO_ENABLE_W1TC_REG = (1U << 15U); }
+    if (orig_enable & (1U << 16U)) { *GPIO_ENABLE_W1TS_REG = (1U << 16U); }
+    else { *GPIO_ENABLE_W1TC_REG = (1U << 16U); }
+    if (orig_out & (1U << 15U)) { *GPIO_OUT_W1TS_REG = (1U << 15U); }
+    else { *GPIO_OUT_W1TC_REG = (1U << 15U); }
+    asm volatile("fence rw, rw" ::: "memory");
+
+    uart_puts("  Expected:    Init=1, OutEn=1, High=1, Low=1, Atomic=1, PullUp=1, PullDown=0\r\n");
+    uart_puts("  Actual:      Init=");
+    put_dec(gpio_init_ok && func_15_ok && pull_15_ok && dir_15_ok && func_16_ok && dir_16_ok && pull_up_ok && pull_down_ok);
+    uart_puts(", OutEn=");
+    put_dec(out_en_15);
+    uart_puts(", High=");
+    put_dec(set_high_ok && high_bit_set);
+    uart_puts(", Low=");
+    put_dec(set_low_ok && low_bit_cleared);
+    uart_puts(", Atomic=");
+    put_dec(atomic_preserved);
+    uart_puts(", PullUp=");
+    put_dec(read_pull_up);
+    uart_puts(", PullDown=");
+    put_dec(read_pull_down);
+    uart_puts("\r\n");
+
+    int t27_pass = gpio_init_ok && func_15_ok && pull_15_ok && dir_15_ok && out_en_15 &&
+                   set_high_ok && high_bit_set && set_low_ok && low_bit_cleared &&
+                   atomic_preserved && func_16_ok && dir_16_ok && pull_up_ok &&
+                   (read_pull_up == 1) && pull_down_ok && (read_pull_down == 0);
+    if (t27_pass) passed_tests++;
+    print_result(t27_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

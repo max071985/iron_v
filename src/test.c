@@ -16,6 +16,7 @@
 #include "task.h"
 #include "pmp.h"
 #include "lp_core.h"
+#include "power.h"
 
 /* Route all test output to unified dual-console multiplexer */
 #define uart_puts console_puts
@@ -1449,6 +1450,75 @@ void run_validation_suite(void)
                    lp_advancing && lp_stop_ok && lp_stopped;
     if (t25_pass) passed_tests++;
     print_result(t25_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 26: LP SRAM Shared Mailbox, Retention & Power Management */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(26, "LP SRAM Shared Mailbox, Retention & Deep/Light Sleep State Machine",
+                      "Assert mailbox magic 0x49524F4E, send telemetry cmd, verify ACK, and check AON retention");
+
+    /* 1. Initialize power subsystem and shared mailbox */
+    int pwr_init_ok = (power_init() == POWER_OK);
+    volatile lp_shared_mailbox_t *mb = power_get_mailbox();
+    int mb_valid = (mb != NULL) && (mb->magic == LP_MAILBOX_MAGIC);
+
+    /* 2. Ensure LP core is started and executing */
+    if (!lp_core_is_running())
+    {
+        lp_core_start();
+    }
+    int lp_executing = lp_core_is_running();
+
+    /* 3. Write retained seed value to LP_AON scratchpad STORE0 */
+    uint32_t seed_val = 0xDEADBEEFU;
+    int store_write_ok = (power_write_retained_store(0U, seed_val) == POWER_OK);
+
+    /* 4. Send telemetry sample command to LP core across shared mailbox */
+    uint32_t sampled_telem = 0U;
+    int cmd_send_ok = (power_sample_telemetry(&sampled_telem, POWER_HANDSHAKE_TIMEOUT_CYCLES) == POWER_OK);
+
+    /* 5. Verify mailbox response and protocol invariants */
+    int ack_match = (mb != NULL) && (mb->lp_to_hp_ack == LP_CMD_SAMPLE_TELEMETRY);
+    int wake_cnt_ok = (mb != NULL) && (mb->periodic_wake_count >= 1U);
+    int telem_match = ((sampled_telem & LP_TELEMETRY_HEADER_MASK) == LP_TELEMETRY_HEADER_MASK);
+
+    /* 6. Verify retained LP_AON scratchpad preserved seed without corruption */
+    uint32_t read_seed = power_read_retained_store(0U);
+    int store_retained = (read_seed == seed_val);
+
+    /* 7. Verify power state transitions */
+    int pwr_mode_init_active = (power_get_mode() == PM_STATE_ACTIVE);
+    int pwr_light_sleep_ok = (power_set_mode(PM_STATE_LIGHT_SLEEP) == POWER_OK) &&
+                             (power_get_mode() == PM_STATE_LIGHT_SLEEP);
+    int pwr_active_restore = (power_set_mode(PM_STATE_ACTIVE) == POWER_OK) &&
+                             (power_get_mode() == PM_STATE_ACTIVE);
+
+    uart_puts("  Expected:    Init=1, Magic=0x49524F4E, LP=1, StoreWrite=1, CmdAck=1, WakeCnt>=1, StoreRetained=1, Mode=1\r\n");
+    uart_puts("  Actual:      Init=");
+    put_dec(pwr_init_ok && mb_valid);
+    uart_puts(", Magic=");
+    put_hex(mb ? mb->magic : 0U);
+    uart_puts(", LP=");
+    put_dec(lp_executing);
+    uart_puts(", StoreWrite=");
+    put_dec(store_write_ok);
+    uart_puts(", CmdAck=");
+    put_dec(cmd_send_ok && ack_match && telem_match);
+    uart_puts(", WakeCnt=");
+    put_dec(mb ? mb->periodic_wake_count : 0U);
+    uart_puts(", StoreRetained=");
+    put_dec(store_retained);
+    uart_puts(", Mode=");
+    put_dec(pwr_mode_init_active && pwr_light_sleep_ok && pwr_active_restore);
+    uart_puts("\r\n");
+
+    int t26_pass = pwr_init_ok && mb_valid && lp_executing && store_write_ok &&
+                   cmd_send_ok && ack_match && wake_cnt_ok && telem_match &&
+                   store_retained && pwr_mode_init_active && pwr_light_sleep_ok &&
+                   pwr_active_restore;
+    if (t26_pass) passed_tests++;
+    print_result(t26_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

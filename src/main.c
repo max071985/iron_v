@@ -17,6 +17,7 @@
 #include "task.h"
 #include "pmp.h"
 #include "lp_core.h"
+#include "power.h"
 
 static void print_help(void)
 {
@@ -33,6 +34,7 @@ static void print_help(void)
     console_puts("  timer [start|stop]  - Show or control periodic timer telemetry\r\n");
     console_puts("  arena               - Show static memory arena allocation telemetry\r\n");
     console_puts("  lp [status|start|stop] - Show or control LP core coprocessor\r\n");
+    console_puts("  power [status|mode|sample|store] - Show or control power management & shared mailbox\r\n");
     console_puts("  do-test             - Run full baseline validation test suite\r\n");
 }
 
@@ -173,6 +175,18 @@ static void print_info(void)
     console_puts(", Ticks: ");
     put_dec(lptel.counter_readback);
     console_puts(")\r\n");
+
+    power_telemetry_t pwtel;
+    power_get_telemetry(&pwtel);
+    console_puts(" Power:   Mode: ");
+    if (pwtel.current_mode == PM_STATE_ACTIVE) console_puts("ACTIVE");
+    else if (pwtel.current_mode == PM_STATE_LIGHT_SLEEP) console_puts("LIGHT_SLEEP");
+    else console_puts("DEEP_SLEEP");
+    console_puts(", Mailbox: ");
+    put_hex(pwtel.mailbox_magic);
+    console_puts(", WakeCount: ");
+    put_dec(pwtel.wake_count);
+    console_puts("\r\n");
     console_puts("========================================\r\n");
 }
 
@@ -657,6 +671,116 @@ static void shell_execute(char *input_buffer)
             console_puts("\r\n");
         }
     }
+    else if (strncmp(input_buffer, "power", 5) == 0 && (input_buffer[5] == ' ' || input_buffer[5] == '\0'))
+    {
+        char *subcmd = input_buffer + 5;
+        while (*subcmd == ' ') subcmd++;
+
+        if (strncmp(subcmd, "mode", 4) == 0)
+        {
+            char *mode_str = subcmd + 4;
+            while (*mode_str == ' ') mode_str++;
+            if (strcmp(mode_str, "active") == 0)
+            {
+                power_set_mode(PM_STATE_ACTIVE);
+                console_puts("Power mode transitioned to ACTIVE.\r\n");
+            }
+            else if (strcmp(mode_str, "light") == 0)
+            {
+                power_set_mode(PM_STATE_LIGHT_SLEEP);
+                console_puts("Power mode transitioned to LIGHT_SLEEP.\r\n");
+            }
+            else if (strcmp(mode_str, "deep") == 0)
+            {
+                power_set_mode(PM_STATE_DEEP_SLEEP);
+                console_puts("Power mode transitioned to DEEP_SLEEP.\r\n");
+            }
+            else
+            {
+                console_puts("Usage: power mode <active|light|deep>\r\n");
+            }
+        }
+        else if (strcmp(subcmd, "sample") == 0)
+        {
+            uint32_t telem_val = 0U;
+            console_puts("Requesting telemetry sample from LP core...\r\n");
+            int res = power_sample_telemetry(&telem_val, POWER_HANDSHAKE_TIMEOUT_CYCLES);
+            if (res == POWER_OK)
+            {
+                console_puts("LP Telemetry Sampled: ");
+                put_hex(telem_val);
+                console_puts("\r\n");
+            }
+            else
+            {
+                console_puts("ERROR: Failed to sample telemetry (err: ");
+                put_dec((uint32_t)-res);
+                console_puts(")\r\n");
+            }
+        }
+        else if (strncmp(subcmd, "store", 5) == 0)
+        {
+            char *store_args = subcmd + 5;
+            while (*store_args == ' ') store_args++;
+            uint32_t idx = 0U;
+            if (s_htoi(&store_args, &idx))
+            {
+                uint32_t wval = 0U;
+                if (s_htoi(&store_args, &wval))
+                {
+                    power_write_retained_store(idx, wval);
+                    console_puts("Written LP_AON STORE[");
+                    put_dec(idx);
+                    console_puts("] = ");
+                    put_hex(wval);
+                    console_puts("\r\n");
+                }
+                else
+                {
+                    uint32_t rval = power_read_retained_store(idx);
+                    console_puts("LP_AON STORE[");
+                    put_dec(idx);
+                    console_puts("] = ");
+                    put_hex(rval);
+                    console_puts("\r\n");
+                }
+            }
+            else
+            {
+                console_puts("Usage: power store <index:0-9> [hex_val]\r\n");
+            }
+        }
+        else
+        {
+            power_telemetry_t pt;
+            power_get_telemetry(&pt);
+            console_puts("Power Management & Shared Mailbox Status:\r\n");
+            console_puts("  Mode:             ");
+            if (pt.current_mode == PM_STATE_ACTIVE) console_puts("ACTIVE\r\n");
+            else if (pt.current_mode == PM_STATE_LIGHT_SLEEP) console_puts("LIGHT_SLEEP\r\n");
+            else console_puts("DEEP_SLEEP\r\n");
+            console_puts("  Mailbox Magic:    ");
+            put_hex(pt.mailbox_magic);
+            if (pt.mailbox_magic == LP_MAILBOX_MAGIC) console_puts(" (VALID 'IRON')\r\n");
+            else console_puts(" (INVALID)\r\n");
+            console_puts("  Last Cmd / Ack:   ");
+            put_hex(pt.last_cmd);
+            console_puts(" / ");
+            put_hex(pt.last_ack);
+            console_puts("\r\n");
+            console_puts("  Wake Count:       ");
+            put_dec(pt.wake_count);
+            console_puts("\r\n");
+            console_puts("  Raw Sensor Tele:  ");
+            put_hex(pt.sensor_raw);
+            console_puts("\r\n");
+            console_puts("  Retained STORE0:  ");
+            put_hex(pt.aon_store0_val);
+            console_puts("\r\n");
+            console_puts("  LP Core State:    ");
+            console_puts(pt.lp_running ? "RUNNING\r\n" : "STOPPED\r\n");
+        }
+    }
     else
     {
         console_puts("Unknown command. Type 'help' for available commands.\r\n");
@@ -720,6 +844,9 @@ void main(void)
 
     /* Initialize Low-Power (LP) RISC-V Coprocessor Subsystem */
     lp_core_init();
+
+    /* Initialize Power Management & Retained Shared Mailbox Subsystem */
+    power_init();
 
     console_puts("\r\n");
     print_info();

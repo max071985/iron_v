@@ -19,6 +19,7 @@
 #include "lp_core.h"
 #include "power.h"
 #include "gpio.h"
+#include "gdma.h"
 
 static void print_help(void)
 {
@@ -37,6 +38,7 @@ static void print_help(void)
     console_puts("  lp [status|start|stop] - Show or control LP core coprocessor\r\n");
     console_puts("  power [status|mode|sample|store] - Show or control power management & shared mailbox\r\n");
     console_puts("  gpio [status|set|get|dir|pull] - Show or control GPIO pins & IO_MUX\r\n");
+    console_puts("  dma [status]        - Show GDMA multi-channel engine status\r\n");
     console_puts("  do-test             - Run full baseline validation test suite\r\n");
 }
 
@@ -199,6 +201,16 @@ static void print_info(void)
     console_puts(", In: ");
     put_hex(gptel.in_mask);
     console_puts("\r\n");
+
+    gdma_telemetry_t gdtel;
+    gdma_get_telemetry(&gdtel);
+    console_puts(" GDMA:    HW Version: ");
+    put_hex(gdtel.date_version);
+    console_puts(" (Ch0 In: ");
+    console_puts(gdtel.ch0_in_active ? "RUN" : "IDLE");
+    console_puts(", Out: ");
+    console_puts(gdtel.ch0_out_active ? "RUN" : "IDLE");
+    console_puts(")\r\n");
     console_puts("========================================\r\n");
 }
 
@@ -963,6 +975,39 @@ static void shell_execute(char *input_buffer)
             console_puts("\r\n");
         }
     }
+    else if (strncmp(input_buffer, "dma", 3) == 0 && (input_buffer[3] == ' ' || input_buffer[3] == '\0'))
+    {
+        gdma_telemetry_t gt;
+        gdma_get_telemetry(&gt);
+        console_puts("GDMA Multi-Channel Engine Status:\r\n");
+        console_puts("  Hardware Version (DATE): ");
+        put_hex(gt.date_version);
+        console_puts("\r\n");
+        for (uint32_t ch = 0; ch < GDMA_CHANNEL_COUNT; ch++)
+        {
+            console_puts("  Channel ");
+            put_dec(ch);
+            console_puts(":\r\n");
+            console_puts("    IN:  State=");
+            put_hex(gt.channels[ch].in_state);
+            console_puts(", Dscr=");
+            put_hex(gt.channels[ch].in_dscr_addr);
+            console_puts(", Active=");
+            console_puts(gt.channels[ch].in_active ? "RUN" : "IDLE");
+            console_puts(", IntRaw=");
+            put_hex(gt.channels[ch].in_int_raw);
+            console_puts("\r\n");
+            console_puts("    OUT: State=");
+            put_hex(gt.channels[ch].out_state);
+            console_puts(", Dscr=");
+            put_hex(gt.channels[ch].out_dscr_addr);
+            console_puts(", Active=");
+            console_puts(gt.channels[ch].out_active ? "RUN" : "IDLE");
+            console_puts(", IntRaw=");
+            put_hex(gt.channels[ch].out_int_raw);
+            console_puts("\r\n");
+        }
+    }
     else
     {
         console_puts("Unknown command. Type 'help' for available commands.\r\n");
@@ -1032,6 +1077,9 @@ void main(void)
 
     /* Initialize GPIO Matrix & IO_MUX Multi-Function Pin Subsystem */
     gpio_init();
+
+    /* Initialize GDMA Multi-Channel Engine & Circular Buffer Descriptor Rings */
+    gdma_init();
 
     console_puts("\r\n");
     print_info();

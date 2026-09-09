@@ -107,6 +107,14 @@ typedef struct {
 #define HP_APM_M_EXCEPTION_INFO1_REG(m)   ((volatile uint32_t *)(uintptr_t)(HP_APM_BASE_ADDR + 0xD4U + ((uint32_t)(m) * 0x10U)))
 #define HP_APM_CLK_GATE_REG               ((volatile uint32_t *)(uintptr_t)(HP_APM_BASE_ADDR + 0x10CU))
 
+/* High-Performance Trusted Execution Environment (HP_TEE) Register Accessors */
+#define HP_TEE_BASE_ADDR                  0x60097000U
+#define HP_TEE_M_MODE_CTRL_REG(m)         ((volatile uint32_t *)(uintptr_t)(HP_TEE_BASE_ADDR + ((uint32_t)(m) * 4U)))
+#define HP_TEE_CLOCK_GATE_REG             ((volatile uint32_t *)(uintptr_t)(HP_TEE_BASE_ADDR + 0x80U))
+#define HP_TEE_MODE_TEE                   0U
+#define HP_TEE_MAX_MASTERS                32U
+#define APM_REGION_ATTR_ALL_PERM          0xFFFFFFFFU
+
 /* Concrete HP_APM Region Configuration */
 typedef struct {
     uint32_t region_idx;

@@ -322,7 +322,7 @@ def run_suite():
     native_desc = ""
     if not os.path.exists(native_test_bin):
         comp = subprocess.run(
-            ["gcc", "-O2", "-fno-tree-loop-distribute-patterns", "-Wall", "-Wextra", "-Werror", "-Isrc", "tests/test_freestanding.c", "src/string.c", "src/dpc.c", "src/arena.c", "src/pmp.c", "src/lp_core.c", "src/power.c", "src/gpio.c", "-o", native_test_bin],
+            ["gcc", "-O2", "-fno-tree-loop-distribute-patterns", "-Wall", "-Wextra", "-Werror", "-Isrc", "tests/test_freestanding.c", "src/string.c", "src/dpc.c", "src/arena.c", "src/pmp.c", "src/lp_core.c", "src/power.c", "src/gpio.c", "src/gdma.c", "-o", native_test_bin],
             capture_output=True, text=True
         )
         if comp.returncode != 0:
@@ -842,6 +842,43 @@ def run_suite():
         f"All {len(gpio_syms)} GPIO driver symbols present in IRAM text section [0x40800000, 0x40820000)",
         t26_actual,
         t26_pass
+    )
+
+    # TEST 27: GDMA Multi-Channel Engine & Circular Buffer Descriptor Rings Linkage (Task 4.4)
+    total += 1
+    gdma_syms = [
+        "gdma_init",
+        "gdma_channel_init",
+        "gdma_channel_reset",
+        "gdma_inlink_set",
+        "gdma_inlink_start",
+        "gdma_inlink_stop",
+        "gdma_inlink_restart",
+        "gdma_outlink_set",
+        "gdma_outlink_start",
+        "gdma_outlink_stop",
+        "gdma_outlink_restart",
+        "gdma_desc_init",
+        "gdma_desc_link_circular",
+        "gdma_get_date_version",
+        "gdma_get_channel_telemetry",
+        "gdma_get_telemetry"
+    ]
+    found_gdma_syms = [s for s in gdma_syms if s in symbols]
+    all_gdma_found = len(found_gdma_syms) == len(gdma_syms)
+    all_gdma_in_text = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40820000)
+        for s in found_gdma_syms
+    )
+    t27_pass = all_gdma_found and all_gdma_in_text
+    t27_actual = f"Found {len(found_gdma_syms)}/{len(gdma_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    passed += print_result_line(
+        total,
+        "GDMA Multi-Channel Engine & Circular Buffer Rings Linkage",
+        "Verify gdma_init, inlink/outlink controls, desc_init, circular linking, and telemetry symbols exist in IRAM",
+        f"All {len(gdma_syms)} GDMA driver symbols present in IRAM text section [0x40800000, 0x40820000)",
+        t27_actual,
+        t27_pass
     )
 
     print("\n" + "=" * 70)

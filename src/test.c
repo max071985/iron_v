@@ -18,10 +18,17 @@
 #include "lp_core.h"
 #include "power.h"
 #include "gpio.h"
+#include "gdma.h"
 
 /* Route all test output to unified dual-console multiplexer */
 #define uart_puts console_puts
 #define uart_putc console_putc
+
+/* TEST 28 Static Allocation in HP SRAM DRAM */
+static dma_descriptor_t s_test_desc0 __attribute__((aligned(4)));
+static dma_descriptor_t s_test_desc1 __attribute__((aligned(4)));
+static uint8_t s_test_dma_buf0[64] __attribute__((aligned(4)));
+static uint8_t s_test_dma_buf1[64] __attribute__((aligned(4)));
 
 static volatile uint32_t s_test_task_a_counter = 0;
 static volatile uint32_t s_test_task_b_counter = 0;
@@ -145,6 +152,7 @@ static void print_banner_line(void)
 
 static void print_test_header(int num, const char *title, const char *desc)
 {
+    wdt_feed();
     uart_puts("\r\n[TEST ");
     if (num < 10) uart_putc('0');
     put_dec(num);
@@ -1606,6 +1614,179 @@ void run_validation_suite(void)
                    (read_pull_up == 1) && pull_down_ok && (read_pull_down == 0);
     if (t27_pass) passed_tests++;
     print_result(t27_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 28: GDMA Multi-Channel Engine & Circular Descriptor Ring */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(28, "GDMA Engine & Circular Buffer Descriptor Rings",
+                      "Statically link 2 descriptors in circular ring in DRAM, verify 4-byte alignment, INLINK load & start");
+
+    /* 1. Initialize GDMA peripheral clocks and channels */
+    int gdma_init_ok = (gdma_init() == GDMA_OK);
+
+    /* 2. Format Descriptor 0 and Descriptor 1 pointing to 64-byte DRAM buffers */
+    int desc0_init_ok = (gdma_desc_init(&s_test_desc0, s_test_dma_buf0, 64U, 0U, DMA_OWNER_DMA) == GDMA_OK);
+    int desc1_init_ok = (gdma_desc_init(&s_test_desc1, s_test_dma_buf1, 64U, 0U, DMA_OWNER_DMA) == GDMA_OK);
+
+    /* 3. Statically link descriptors into closed circular ring */
+    int ring_link_ok = (gdma_desc_link_circular(&s_test_desc0, &s_test_desc1) == GDMA_OK);
+
+    /* 4. Verify strict 4-byte alignment of descriptors and DRAM buffers */
+    int align_desc0 = (((uintptr_t)&s_test_desc0 & DMA_DESC_ALIGN_MASK) == 0U);
+    int align_desc1 = (((uintptr_t)&s_test_desc1 & DMA_DESC_ALIGN_MASK) == 0U);
+    int align_buf0 = (((uintptr_t)s_test_dma_buf0 & DMA_DESC_ALIGN_MASK) == 0U);
+    int align_buf1 = (((uintptr_t)s_test_dma_buf1 & DMA_DESC_ALIGN_MASK) == 0U);
+    int align_pass = align_desc0 && align_desc1 && align_buf0 && align_buf1;
+
+    /* 5. Verify circular ring traversal (desc0 -> desc1 -> desc0) */
+    int circular_traversal = (s_test_desc0.next_descriptor == &s_test_desc1) &&
+                             (s_test_desc1.next_descriptor == &s_test_desc0);
+
+    /* 6. Verify DRAM boundary placement (0x40800000 <= addr < 0x40880000) */
+    int dram_window_ok = ((uintptr_t)&s_test_desc0 >= DMA_DRAM_START_ADDR) &&
+                         ((uintptr_t)&s_test_desc0 < DMA_DRAM_END_ADDR) &&
+                         ((uintptr_t)&s_test_desc1 >= DMA_DRAM_START_ADDR) &&
+                         ((uintptr_t)&s_test_desc1 < DMA_DRAM_END_ADDR);
+
+    /* 7. M2M Transfer Test: Channel 1 OUT -> Channel 1 IN with MEM_TRANS_EN
+     *
+     * The GDMA IN channel generates IN_DSCR_ERR immediately when started without
+     * a valid peripheral (PERI_SEL=0 and MEM_TRANS_EN=0). For standalone testing,
+     * we use Memory-to-Memory (M2M) mode by enabling MEM_TRANS_EN on Channel 1 IN.
+     * In M2M mode the IN channel receives data from the paired Channel 1 OUT.
+     * This bypasses the peripheral dependency and validates the descriptor engine.
+     */
+
+    /* Source buffer filled with pattern for M2M transfer */
+    static uint8_t s_m2m_src[16] __attribute__((aligned(16)));
+    static uint8_t s_m2m_dst[16] __attribute__((aligned(16)));
+
+    for (int i = 0; i < 16; i++) { s_m2m_src[i] = (uint8_t)(0xA0 + i); s_m2m_dst[i] = 0U; }
+
+    /* TX descriptor (OUT) and RX descriptor (IN) */
+    static dma_descriptor_t s_out_desc __attribute__((aligned(16)));
+    static dma_descriptor_t s_in_desc  __attribute__((aligned(16)));
+
+    /* Initialize OUT (TX) descriptor: source buffer, length=16, owner=DMA */
+    gdma_desc_init(&s_out_desc, s_m2m_src, 16U, 16U, DMA_OWNER_DMA);
+    s_out_desc.suc_eof = 1U;
+    s_out_desc.next_descriptor = NULL;
+
+    /* Initialize IN (RX) descriptor: destination buffer, size=16, length=0, owner=DMA */
+    gdma_desc_init(&s_in_desc, s_m2m_dst, 16U, 0U, DMA_OWNER_DMA);
+    s_in_desc.suc_eof = 0U;
+    s_in_desc.next_descriptor = NULL;
+
+    /* Reset both directions of Channel 1 and clear any pending interrupts */
+    gdma_channel_reset(GDMA_CHANNEL_1);
+    *GDMA_IN_INT_CLR_REG(GDMA_CHANNEL_1)  = 0xFFFFFFFFU;
+    *GDMA_OUT_INT_CLR_REG(GDMA_CHANNEL_1) = 0xFFFFFFFFU;
+    asm volatile("fence rw, rw" ::: "memory");
+
+    /* Connect both directions to M2M trigger ID (1) */
+    *GDMA_IN_PERI_SEL_REG(GDMA_CHANNEL_1)  = GDMA_PERI_SEL_M2M;
+    *GDMA_OUT_PERI_SEL_REG(GDMA_CHANNEL_1) = GDMA_PERI_SEL_M2M;
+
+    /* Enable MEM_TRANS_EN on Channel 1 IN (bit 4 of IN_CONF0) */
+    *GDMA_IN_CONF0_REG(GDMA_CHANNEL_1) |= GDMA_IN_CONF0_MEM_TRANS_EN_BIT;
+    *GDMA_OUT_CONF0_REG(GDMA_CHANNEL_1) |= GDMA_OUT_CONF0_OUT_AUTO_WRBACK_B;
+    asm volatile("fence rw, rw" ::: "memory");
+
+    /* Load descriptor addresses */
+    int inlink_set_ok  = (gdma_inlink_set(GDMA_CHANNEL_1, &s_in_desc) == GDMA_OK);
+    int outlink_set_ok = (gdma_outlink_set(GDMA_CHANNEL_1, &s_out_desc) == GDMA_OK);
+
+    /* Read back INLINK address for verification */
+    uint32_t inlink_reg_val  = *GDMA_IN_LINK_REG(GDMA_CHANNEL_1);
+    uint32_t readback_addr   = inlink_reg_val & GDMA_IN_LINK_ADDR_MASK;
+    uint32_t expected_addr   = ((uint32_t)(uintptr_t)&s_in_desc) & GDMA_IN_LINK_ADDR_MASK;
+    int addr_readback_match  = (readback_addr == expected_addr);
+
+    /* 8. Start IN first, then OUT (IN must be ready before data arrives) */
+    int reset_ok = 1; /* reset already done above */
+    int inlink_rearm_ok = inlink_set_ok; /* already set */
+    int start_ok = (gdma_inlink_start(GDMA_CHANNEL_1) == GDMA_OK) &&
+                   (gdma_outlink_start(GDMA_CHANNEL_1) == GDMA_OK);
+
+    /* 9. Poll for IN_DONE interrupt (max ~50000 cycles at 160 MHz = ~312 us) */
+    uint32_t in_int_raw = 0U;
+    for (volatile int t = 0; t < 50000; t++)
+    {
+        in_int_raw = *GDMA_IN_INT_RAW_REG(GDMA_CHANNEL_1);
+        if (in_int_raw & (GDMA_IN_INT_DONE_BIT | GDMA_IN_INT_DSCR_ERR_BIT | GDMA_IN_INT_SUC_EOF_BIT))
+        {
+            break;
+        }
+        asm volatile("nop");
+    }
+
+    /* 10. Assert no descriptor error and verify transfer completed */
+    int no_dscr_err = ((in_int_raw & GDMA_IN_INT_DSCR_ERR_BIT) == 0U);
+    int transfer_done = ((in_int_raw & (GDMA_IN_INT_DONE_BIT | GDMA_IN_INT_SUC_EOF_BIT)) != 0U);
+
+    /* 11. Verify data actually arrived in destination buffer */
+    int data_match = 1;
+    for (int i = 0; i < 16; i++)
+    {
+        if (s_m2m_dst[i] != s_m2m_src[i]) { data_match = 0; break; }
+    }
+
+    /* 12. Clean stop of channel */
+    int stop_ok = (gdma_inlink_stop(GDMA_CHANNEL_1) == GDMA_OK) &&
+                  (gdma_outlink_stop(GDMA_CHANNEL_1) == GDMA_OK);
+
+    uart_puts("  Expected:    Init=1, Align=1, Circular=1, DRAM=1, Match=1, NoDscrErr=1, Done=1, DataOK=1, Stop=1\r\n");
+    uart_puts("  Actual:      Init=");
+    put_dec(gdma_init_ok && desc0_init_ok && desc1_init_ok && ring_link_ok);
+    uart_puts(", Align=");
+    put_dec(align_pass);
+    uart_puts(", Circular=");
+    put_dec(circular_traversal);
+    uart_puts(", DRAM=");
+    put_dec(dram_window_ok);
+    uart_puts(", Match=");
+    put_dec(addr_readback_match);
+    uart_puts(", NoDscrErr=");
+    put_dec(no_dscr_err);
+    uart_puts(", Done=");
+    put_dec(transfer_done);
+    uart_puts(", DataOK=");
+    put_dec(data_match);
+    uart_puts(", Stop=");
+    put_dec(stop_ok);
+    uart_puts("\r\n");
+    uart_puts("  Diag: InIntRaw=");
+    put_hex(in_int_raw);
+    uart_puts(", InLinkReg=");
+    put_hex(inlink_reg_val);
+    uart_puts(", InConf0_Ch1=");
+    put_hex(*GDMA_IN_CONF0_REG(GDMA_CHANNEL_1));
+    uart_puts("\r\n");
+    uart_puts("  Diag: InDscDw0=");
+    put_hex(s_in_desc.dw0);
+    uart_puts(", OutDscDw0=");
+    put_hex(s_out_desc.dw0);
+    uart_puts(", InDscAddr=");
+    put_hex((uint32_t)(uintptr_t)&s_in_desc);
+    uart_puts(", OutDscAddr=");
+    put_hex((uint32_t)(uintptr_t)&s_out_desc);
+    uart_puts("\r\n");
+    uart_puts("  Diag: InState_Ch1=");
+    put_hex(*GDMA_IN_STATE_REG(GDMA_CHANNEL_1));
+    uart_puts(", InDscr_Ch1=");
+    put_hex(*GDMA_IN_DSCR_REG(GDMA_CHANNEL_1));
+    uart_puts(", OutIntRaw=");
+    put_hex(*GDMA_OUT_INT_RAW_REG(GDMA_CHANNEL_1));
+    uart_puts("\r\n");
+
+    int t28_pass = gdma_init_ok && desc0_init_ok && desc1_init_ok && ring_link_ok &&
+                   align_pass && circular_traversal && dram_window_ok &&
+                   inlink_set_ok && outlink_set_ok && addr_readback_match &&
+                   reset_ok && inlink_rearm_ok &&
+                   start_ok && no_dscr_err && transfer_done && data_match && stop_ok;
+    if (t28_pass) passed_tests++;
+    print_result(t28_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

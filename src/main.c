@@ -20,6 +20,7 @@
 #include "power.h"
 #include "gpio.h"
 #include "gdma.h"
+#include "modem.h"
 
 static void print_help(void)
 {
@@ -39,6 +40,7 @@ static void print_help(void)
     console_puts("  power [status|mode|sample|store] - Show or control power management & shared mailbox\r\n");
     console_puts("  gpio [status|set|get|dir|pull] - Show or control GPIO pins & IO_MUX\r\n");
     console_puts("  dma [status]        - Show GDMA multi-channel engine status\r\n");
+    console_puts("  modem [status|all|wifi|ble|15.4] - Show or control wireless modem clocks and power\r\n");
     console_puts("  do-test             - Run full baseline validation test suite\r\n");
 }
 
@@ -210,6 +212,20 @@ static void print_info(void)
     console_puts(gdtel.ch0_in_active ? "RUN" : "IDLE");
     console_puts(", Out: ");
     console_puts(gdtel.ch0_out_active ? "RUN" : "IDLE");
+    console_puts(")\r\n");
+
+    modem_clock_state_t mstate;
+    modem_get_clock_state(&mstate);
+    console_puts(" Modem:   WiFi: ");
+    console_puts(mstate.wifi_clk_enabled ? "ON" : "OFF");
+    console_puts(", BLE: ");
+    console_puts(mstate.ble_clk_enabled ? "ON" : "OFF");
+    console_puts(", 15.4: ");
+    console_puts(mstate.ieee802154_clk_enabled ? "ON" : "OFF");
+    console_puts(", Coex: ");
+    console_puts(mstate.coexistence_enabled ? "ON" : "OFF");
+    console_puts(" (Date: ");
+    put_hex(modem_get_syscon_date());
     console_puts(")\r\n");
     console_puts("========================================\r\n");
 }
@@ -1008,6 +1024,98 @@ static void shell_execute(char *input_buffer)
             console_puts("\r\n");
         }
     }
+    else if (strncmp(input_buffer, "modem", 5) == 0 && (input_buffer[5] == ' ' || input_buffer[5] == '\0'))
+    {
+        char *subcmd = input_buffer + 5;
+        while (*subcmd == ' ') subcmd++;
+
+        if (strncmp(subcmd, "all", 3) == 0)
+        {
+            modem_enable_all_clocks();
+            console_puts("All wireless modem clocks enabled and resets released.\r\n");
+        }
+        else if (strncmp(subcmd, "wifi", 4) == 0)
+        {
+            char *sub2 = subcmd + 4;
+            while (*sub2 == ' ') sub2++;
+            if (strcmp(sub2, "off") == 0)
+            {
+                modem_disable_wifi_clocks();
+                console_puts("Wi-Fi baseband clocks disabled.\r\n");
+            }
+            else
+            {
+                modem_enable_wifi_clocks();
+                console_puts("Wi-Fi baseband clocks enabled.\r\n");
+            }
+        }
+        else if (strncmp(subcmd, "ble", 3) == 0)
+        {
+            char *sub2 = subcmd + 3;
+            while (*sub2 == ' ') sub2++;
+            if (strcmp(sub2, "off") == 0)
+            {
+                modem_disable_ble_clocks();
+                console_puts("Bluetooth clocks disabled.\r\n");
+            }
+            else
+            {
+                modem_enable_ble_clocks();
+                console_puts("Bluetooth clocks enabled.\r\n");
+            }
+        }
+        else if (strncmp(subcmd, "15.4", 4) == 0)
+        {
+            char *sub2 = subcmd + 4;
+            while (*sub2 == ' ') sub2++;
+            if (strcmp(sub2, "off") == 0)
+            {
+                modem_disable_ieee802154_clocks();
+                console_puts("IEEE 802.15.4 clocks disabled.\r\n");
+            }
+            else
+            {
+                modem_enable_ieee802154_clocks();
+                console_puts("IEEE 802.15.4 clocks enabled.\r\n");
+            }
+        }
+        else
+        {
+            modem_clock_state_t ms;
+            modem_get_clock_state(&ms);
+            console_puts("Modem Clock & Power Control (MODEM_SYSCON / MODEM_LPCON) Status:\r\n");
+            console_puts("  MODEM_SYSCON Date: ");
+            put_hex(modem_get_syscon_date());
+            console_puts("\r\n");
+            console_puts("  MODEM_LPCON Date:  ");
+            put_hex(modem_get_lpcon_date());
+            console_puts("\r\n");
+            console_puts("  Wi-Fi Clocks:      ");
+            console_puts(ms.wifi_clk_enabled ? "ENABLED" : "DISABLED");
+            console_puts("\r\n");
+            console_puts("  Bluetooth Clocks:  ");
+            console_puts(ms.ble_clk_enabled ? "ENABLED" : "DISABLED");
+            console_puts("\r\n");
+            console_puts("  IEEE 802.15.4:     ");
+            console_puts(ms.ieee802154_clk_enabled ? "ENABLED" : "DISABLED");
+            console_puts("\r\n");
+            console_puts("  RF Coexistence:    ");
+            console_puts(ms.coexistence_enabled ? "ENABLED" : "DISABLED");
+            console_puts("\r\n");
+            console_puts("  SYSCON_CLK_CONF:   ");
+            put_hex(*MODEM_SYSCON_CLK_CONF_REG);
+            console_puts("\r\n");
+            console_puts("  SYSCON_CLK_CONF1:  ");
+            put_hex(*MODEM_SYSCON_CLK_CONF1_REG);
+            console_puts("\r\n");
+            console_puts("  SYSCON_RST_CONF:   ");
+            put_hex(*MODEM_SYSCON_MODEM_RST_CONF_REG);
+            console_puts("\r\n");
+            console_puts("  LPCON_COEX_CLK:    ");
+            put_hex(*MODEM_LPCON_COEX_LP_CLK_CONF_REG);
+            console_puts("\r\n");
+        }
+    }
     else
     {
         console_puts("Unknown command. Type 'help' for available commands.\r\n");
@@ -1080,6 +1188,9 @@ void main(void)
 
     /* Initialize GDMA Multi-Channel Engine & Circular Buffer Descriptor Rings */
     gdma_init();
+
+    /* Initialize Modem Clock & Power Control (MODEM_SYSCON / MODEM_LPCON) */
+    modem_init();
 
     console_puts("\r\n");
     print_info();

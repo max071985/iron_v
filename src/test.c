@@ -19,6 +19,7 @@
 #include "power.h"
 #include "gpio.h"
 #include "gdma.h"
+#include "modem.h"
 
 /* Route all test output to unified dual-console multiplexer */
 #define uart_puts console_puts
@@ -1787,6 +1788,115 @@ void run_validation_suite(void)
                    start_ok && no_dscr_err && transfer_done && data_match && stop_ok;
     if (t28_pass) passed_tests++;
     print_result(t28_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 29: Modem Clock & Power Control (MODEM_SYSCON / LPCON)   */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(29, "Modem Clock & Power Control (MODEM_SYSCON / MODEM_LPCON)",
+                      "Enable wireless clocks, release subsystem resets, verify readback & baseband access");
+
+    /* Feed supervisor watchdog prior to multi-step RF clock orchestration */
+    wdt_feed();
+
+    /* 1. Initialize modem subsystem and execute orchestrated clock enable */
+    int modem_init_ok = (modem_init() == MODEM_OK);
+    int modem_enable_all_ok = (modem_enable_all_clocks() == MODEM_OK);
+
+    /* 2. Read back MODEM_SYSCON_CLK_CONF_REG and verify clock enable bits */
+    uint32_t clk_conf = *MODEM_SYSCON_CLK_CONF_REG;
+    int clk_ble_timer_ok = ((clk_conf & MODEM_CLK_BLE_TIMER_EN_BIT) != 0U);
+    int clk_modem_sec_ok = ((clk_conf & MODEM_CLK_MODEM_SEC_EN_BIT) != 0U);
+    int clk_modem_sec_apb_ok = ((clk_conf & MODEM_CLK_MODEM_SEC_APB_EN_BIT) != 0U);
+    int clk_zb_mac_ok = ((clk_conf & MODEM_CLK_ZB_MAC_EN_BIT) != 0U);
+    int syscon_clk_ok = clk_ble_timer_ok && clk_modem_sec_ok && clk_modem_sec_apb_ok && clk_zb_mac_ok;
+
+    /* 3. Read back MODEM_SYSCON_CLK_CONF1_REG and verify baseband clocks */
+    uint32_t clk_conf1 = *MODEM_SYSCON_CLK_CONF1_REG;
+    int clk_bt_apb_ok = ((clk_conf1 & MODEM_CLK_BT_APB_EN_BIT) != 0U);
+    int clk_wifi_apb_ok = ((clk_conf1 & MODEM_CLK_WIFI_APB_EN_BIT) != 0U);
+    int clk_wifimac_ok = ((clk_conf1 & MODEM_CLK_WIFIMAC_EN_BIT) != 0U);
+    int syscon_clk1_ok = clk_bt_apb_ok && clk_wifi_apb_ok && clk_wifimac_ok;
+
+    /* 4. Read back MODEM_SYSCON_MODEM_RST_CONF_REG and verify resets are released (0) */
+    uint32_t rst_conf = *MODEM_SYSCON_MODEM_RST_CONF_REG;
+    int rst_ble_timer_cleared = ((rst_conf & MODEM_RST_BLE_TIMER_BIT) == 0U);
+    int rst_zbmac_cleared = ((rst_conf & MODEM_RST_ZBMAC_BIT) == 0U);
+    int rst_wifimac_cleared = ((rst_conf & MODEM_RST_WIFIMAC_BIT) == 0U);
+    int rst_wifibb_cleared = ((rst_conf & MODEM_RST_WIFIBB_BIT) == 0U);
+    int syscon_rst_ok = rst_ble_timer_cleared && rst_zbmac_cleared && rst_wifimac_cleared && rst_wifibb_cleared;
+
+    /* 5. Read back MODEM_LPCON_COEX_LP_CLK_CONF_REG and verify XTAL clock source */
+    uint32_t coex_conf = *MODEM_LPCON_COEX_LP_CLK_CONF_REG;
+    int coex_lp_xtal_ok = ((coex_conf & MODEM_LPCON_CLK_COEX_LP_SEL_XTAL_BIT) != 0U);
+
+    /* 6. Verify driver state tracking */
+    modem_clock_state_t mstate;
+    int state_query_ok = (modem_get_clock_state(&mstate) == MODEM_OK);
+    int state_flags_ok = (mstate.wifi_clk_enabled == 1U) &&
+                         (mstate.ble_clk_enabled == 1U) &&
+                         (mstate.ieee802154_clk_enabled == 1U) &&
+                         (mstate.coexistence_enabled == 1U);
+
+    /* 7. Verify hardware date version readbacks */
+    uint32_t syscon_date = modem_get_syscon_date();
+    uint32_t lpcon_date  = modem_get_lpcon_date();
+    int date_match = (syscon_date == MODEM_SYSCON_DATE_EXPECTED) &&
+                     (lpcon_date == MODEM_LPCON_DATE_EXPECTED);
+
+    /* 8. Non-faulting bus access to IEEE 802.15.4 baseband register block */
+    uint32_t zb_cmd_val = *IEEE802154_COMMAND_REG;
+    uint32_t zb_ctrl_val = *IEEE802154_CTRL_CFG_REG;
+    (void)zb_cmd_val;
+    (void)zb_ctrl_val;
+    int baseband_bus_ok = 1;
+
+    wdt_feed();
+
+    uart_puts("  Expected:    Init=1, SysClks=1, BBClks=1, RstClear=1, CoexXTAL=1, State=1, Date=1, BusOK=1\r\n");
+    uart_puts("  Actual:      Init=");
+    put_dec(modem_init_ok && modem_enable_all_ok);
+    uart_puts(", SysClks=");
+    put_dec(syscon_clk_ok);
+    uart_puts(", BBClks=");
+    put_dec(syscon_clk1_ok);
+    uart_puts(", RstClear=");
+    put_dec(syscon_rst_ok);
+    uart_puts(", CoexXTAL=");
+    put_dec(coex_lp_xtal_ok);
+    uart_puts(", State=");
+    put_dec(state_query_ok && state_flags_ok);
+    uart_puts(", Date=");
+    put_dec(date_match);
+    uart_puts(", BusOK=");
+    put_dec(baseband_bus_ok);
+    uart_puts("\r\n");
+
+    uart_puts("  Diag: ClkConf=");
+    put_hex(clk_conf);
+    uart_puts(", ClkConf1=");
+    put_hex(clk_conf1);
+    uart_puts(", RstConf=");
+    put_hex(rst_conf);
+    uart_puts(", CoexConf=");
+    put_hex(coex_conf);
+    uart_puts("\r\n");
+    uart_puts("  Diag: SysconDate=");
+    put_hex(syscon_date);
+    uart_puts(", LpconDate=");
+    put_hex(lpcon_date);
+    uart_puts(", ZbCmd=");
+    put_hex(zb_cmd_val);
+    uart_puts(", ZbCtrl=");
+    put_hex(zb_ctrl_val);
+    uart_puts("\r\n");
+
+    int t29_pass = modem_init_ok && modem_enable_all_ok &&
+                   syscon_clk_ok && syscon_clk1_ok && syscon_rst_ok &&
+                   coex_lp_xtal_ok && state_query_ok && state_flags_ok &&
+                   date_match && baseband_bus_ok;
+    if (t29_pass) passed_tests++;
+    print_result(t29_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

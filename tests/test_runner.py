@@ -322,7 +322,7 @@ def run_suite():
     native_desc = ""
     if not os.path.exists(native_test_bin):
         comp = subprocess.run(
-            ["gcc", "-O2", "-fno-tree-loop-distribute-patterns", "-Wall", "-Wextra", "-Werror", "-Isrc", "tests/test_freestanding.c", "src/string.c", "src/dpc.c", "src/arena.c", "src/pmp.c", "src/lp_core.c", "src/power.c", "src/gpio.c", "src/gdma.c", "-o", native_test_bin],
+            ["gcc", "-O2", "-fno-tree-loop-distribute-patterns", "-Wall", "-Wextra", "-Werror", "-Isrc", "tests/test_freestanding.c", "src/string.c", "src/dpc.c", "src/arena.c", "src/pmp.c", "src/lp_core.c", "src/power.c", "src/gpio.c", "src/gdma.c", "src/modem.c", "-o", native_test_bin],
             capture_output=True, text=True
         )
         if comp.returncode != 0:
@@ -879,6 +879,44 @@ def run_suite():
         f"All {len(gdma_syms)} GDMA driver symbols present in IRAM text section [0x40800000, 0x40820000)",
         t27_actual,
         t27_pass
+    )
+
+    # TEST 28: Modem Clock & Power Control Linkage & Symbols Validation (Task 5.1)
+    total += 1
+    modem_syms = [
+        "modem_init",
+        "modem_enable_wifi_clocks",
+        "modem_disable_wifi_clocks",
+        "modem_enable_ble_clocks",
+        "modem_disable_ble_clocks",
+        "modem_enable_ieee802154_clocks",
+        "modem_disable_ieee802154_clocks",
+        "modem_enable_all_clocks",
+        "modem_enable_coexistence",
+        "modem_disable_coexistence",
+        "modem_get_clock_state",
+        "modem_get_syscon_date",
+        "modem_get_lpcon_date",
+        "modem_is_wifi_enabled",
+        "modem_is_ble_enabled",
+        "modem_is_ieee802154_enabled",
+        "modem_is_coex_enabled"
+    ]
+    found_modem_syms = [s for s in modem_syms if s in symbols]
+    all_modem_found = len(found_modem_syms) == len(modem_syms)
+    all_modem_in_text = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40820000)
+        for s in found_modem_syms
+    )
+    t28_pass = all_modem_found and all_modem_in_text
+    t28_actual = f"Found {len(found_modem_syms)}/{len(modem_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    passed += print_result_line(
+        total,
+        "Modem Clock & Power Control Subsystem Linkage",
+        "Verify modem_init, clock gating, reset release, and telemetry symbols exist in IRAM",
+        f"All {len(modem_syms)} modem driver symbols present in IRAM text section [0x40800000, 0x40820000)",
+        t28_actual,
+        t28_pass
     )
 
     print("\n" + "=" * 70)

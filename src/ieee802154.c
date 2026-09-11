@@ -23,8 +23,8 @@ static ieee802154_telemetry_t s_ieee802154_telemetry = {
     .pan_id         = IEEE802154_DEFAULT_PAN_ID,
     .ext_addr       = {0x40U, 0x4CU, 0xCAU, 0xFFU, 0xFEU, 0x45U, 0x1EU, 0x14U},
     .tx_power       = IEEE802154_TX_POWER_DEFAULT,
-    .auto_ack_tx    = true,
-    .auto_ack_rx    = true,
+    .auto_ack_tx    = (CONFIG_IEEE802154_AUTO_ACK_TX != 0U),
+    .auto_ack_rx    = (CONFIG_IEEE802154_AUTO_ACK_RX != 0U),
     .promiscuous    = false,
     .date_version   = IEEE802154_MAC_DATE_EXPECTED,
     .tx_count       = 0U,
@@ -185,9 +185,16 @@ ieee802154_status_t ieee802154_init(void)
     reg_write(IEEE802154_CHANNEL_REG, (uint32_t)IEEE802154_CHANNEL_DEFAULT);
 
     /* 4. Configure hardware auto-ACK TX and RX */
-    reg_write(IEEE802154_CTRL_CFG_REG,
-              IEEE802154_CTRL_AUTO_ACK_TX_BIT |
-              IEEE802154_CTRL_AUTO_ACK_RX_BIT);
+    uint32_t ctrl_cfg = 0U;
+    if (CONFIG_IEEE802154_AUTO_ACK_TX)
+    {
+        ctrl_cfg |= IEEE802154_CTRL_AUTO_ACK_TX_BIT;
+    }
+    if (CONFIG_IEEE802154_AUTO_ACK_RX)
+    {
+        ctrl_cfg |= IEEE802154_CTRL_AUTO_ACK_RX_BIT;
+    }
+    reg_write(IEEE802154_CTRL_CFG_REG, ctrl_cfg);
 
     /* 5. Set default short address (0x1234) and PAN ID (0x1A2B) */
     reg_write(IEEE802154_INF0_SHORT_ADDR_REG, (uint32_t)IEEE802154_DEFAULT_SHORT_ADDR);
@@ -221,8 +228,9 @@ ieee802154_status_t ieee802154_init(void)
     s_ieee802154_telemetry.freq_mhz    = ieee802154_get_freq_mhz(IEEE802154_CHANNEL_DEFAULT);
     s_ieee802154_telemetry.short_addr  = IEEE802154_DEFAULT_SHORT_ADDR;
     s_ieee802154_telemetry.pan_id      = IEEE802154_DEFAULT_PAN_ID;
-    s_ieee802154_telemetry.auto_ack_tx = true;
-    s_ieee802154_telemetry.auto_ack_rx = true;
+    s_ieee802154_telemetry.tx_power    = IEEE802154_TX_POWER_DEFAULT;
+    s_ieee802154_telemetry.auto_ack_tx = (CONFIG_IEEE802154_AUTO_ACK_TX != 0U);
+    s_ieee802154_telemetry.auto_ack_rx = (CONFIG_IEEE802154_AUTO_ACK_RX != 0U);
     s_ieee802154_telemetry.promiscuous = false;
 
     s_ieee802154_initialized = true;

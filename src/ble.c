@@ -45,11 +45,11 @@ static uint8_t s_active_adv_len = 0U;
 /* ========================================================================= */
 /* Static Storage: GATT Database                                             */
 /* ========================================================================= */
-static uint8_t s_val_dev_name[]        = "IRON-V-C6";
+static uint8_t s_val_dev_name[]        = CONFIG_BLE_DEVICE_NAME;
 static uint8_t s_val_appearance[2]     = {0x00U, 0x00U};
-static uint8_t s_val_mfr_name[]        = "Iron-V RISC-V Team";
-static uint8_t s_val_model_num[]       = "ESP32-C6-BareMetal";
-static uint8_t s_val_fw_rev[]          = "1.0.0";
+static uint8_t s_val_mfr_name[]        = CONFIG_DEVICE_MANUFACTURER;
+static uint8_t s_val_model_num[]       = CONFIG_DEVICE_MODEL_NUMBER;
+static uint8_t s_val_fw_rev[]          = CONFIG_FIRMWARE_REVISION;
 static uint8_t s_val_custom_data[32]   = {0U};
 static uint8_t s_val_cccd[2]           = {0x00U, 0x00U};
 
@@ -466,7 +466,7 @@ ble_status_t ble_gap_start_advertising(void)
     param_pkt[9] = 0x00U; /* Own address type: Public */
     param_pkt[10] = 0x00U; /* Peer address type: Public */
     memset(&param_pkt[11], 0, 6); /* Peer address */
-    param_pkt[17] = 0x07U; /* Channel map: 37, 38, 39 */
+    param_pkt[17] = CONFIG_BLE_ADV_CHANNEL_MAP;
     param_pkt[18] = BLE_ADV_FILTER_ALLOW_ALL;
 
     uint8_t evt_resp[16];
@@ -482,11 +482,15 @@ ble_status_t ble_gap_start_advertising(void)
     adv.flags[1] = BLE_ADV_FLAGS_TYPE;
     adv.flags[2] = BLE_ADV_FLAGS_VAL;
 
-    adv.complete_name_hdr[0] = 10U; /* 1 (type) + 9 ("IRON-V-C6") */
+    size_t dev_name_len = strlen(CONFIG_BLE_DEVICE_NAME);
+    if (dev_name_len > sizeof(adv.name) - 1U)
+    {
+        dev_name_len = sizeof(adv.name) - 1U;
+    }
+    adv.complete_name_hdr[0] = (uint8_t)(1U + dev_name_len);
     adv.complete_name_hdr[1] = BLE_ADV_NAME_TYPE;
-    memcpy(adv.name, "IRON-V-C6", 10);
-    adv.name[10] = '\0';
-    adv.name[11] = '\0';
+    memset(adv.name, 0, sizeof(adv.name));
+    memcpy(adv.name, CONFIG_BLE_DEVICE_NAME, dev_name_len);
 
     adv.service_uuid_hdr[0] = 3U;
     adv.service_uuid_hdr[1] = BLE_ADV_UUID16_TYPE;

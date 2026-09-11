@@ -14,6 +14,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include "config.h"
 
 /* ========================================================================= */
 /* Hardware Register Block Base & Offsets (TRM §30.4)                         */
@@ -67,19 +68,19 @@
 #define IEEE802154_CHANNEL_MIN               11U
 #define IEEE802154_CHANNEL_MAX               26U
 #define IEEE802154_CHANNEL_COUNT             16U
-#define IEEE802154_CHANNEL_DEFAULT           15U
+#define IEEE802154_CHANNEL_DEFAULT           CONFIG_IEEE802154_DEFAULT_CHANNEL
 
 #define IEEE802154_FREQ_BASE_MHZ             2405U
 #define IEEE802154_FREQ_STEP_MHZ             5U
 
 /* Addressing & Geometry Constants */
-#define IEEE802154_DEFAULT_SHORT_ADDR        0x1234U
-#define IEEE802154_DEFAULT_PAN_ID            0x1A2BU
+#define IEEE802154_DEFAULT_SHORT_ADDR        CONFIG_IEEE802154_DEFAULT_SHORT_ADDR
+#define IEEE802154_DEFAULT_PAN_ID            CONFIG_IEEE802154_DEFAULT_PAN_ID
 #define IEEE802154_BROADCAST_ADDR            0xFFFFU
 #define IEEE802154_EXT_ADDR_LEN              8U
 
 /* Transmit Power */
-#define IEEE802154_TX_POWER_DEFAULT          0x0FU
+#define IEEE802154_TX_POWER_DEFAULT          CONFIG_IEEE802154_DEFAULT_TX_POWER
 #define IEEE802154_TX_POWER_MAX              0x1FU
 
 /* eFuse Memory Base for Extended Address Generation */

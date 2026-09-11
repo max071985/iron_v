@@ -6,6 +6,7 @@
  */
 
 #include "console.h"
+#include "config.h"
 #include "uart.h"
 #include "usb_serial.h"
 #include "wdt.h"
@@ -69,7 +70,7 @@ static console_manager_t g_console_manager = {
         .getc_nonblocking = usb_backend_getc_nonblocking,
         .flush = usb_backend_flush
     },
-    .echo_enabled = 1U,
+    .echo_enabled = CONFIG_CONSOLE_DEFAULT_ECHO,
     .active_mask = CONSOLE_MASK_UART0 | CONSOLE_MASK_USB
 };
 
@@ -93,7 +94,7 @@ void console_init(void)
     g_console_manager.usb.getc_nonblocking = usb_backend_getc_nonblocking;
     g_console_manager.usb.flush = usb_backend_flush;
 
-    g_console_manager.echo_enabled = 1U;
+    g_console_manager.echo_enabled = CONFIG_CONSOLE_DEFAULT_ECHO;
     g_console_manager.active_mask = CONSOLE_MASK_UART0 | CONSOLE_MASK_USB;
 }
 
@@ -296,7 +297,7 @@ void console_reprint_prompt_and_buffer(void)
         return;
     }
 
-    console_puts("iron_v> ");
+    console_puts(CONFIG_CONSOLE_PROMPT);
     for (size_t i = 0; i < s_line_idx; i++)
     {
         console_putc(s_line_buf[i]);

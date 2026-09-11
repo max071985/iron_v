@@ -14,13 +14,14 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "config.h"
 #include "regs/timg0.h"
 
 /* Hardware Clock & Prescaler Constants */
 #define TIMER_XTAL_FREQ_HZ              40000000U
 #define TIMER_PRESCALER_DIV             40U         /* 40 MHz XTAL / 40 = 1 MHz (1 us per tick) */
 #define TIMER_TICKS_PER_SEC             1000000U    /* 1,000,000 ticks = 1 second */
-#define TIMER_DEFAULT_INTERVAL_SEC      10U         /* 10-second periodic interrupt */
+#define TIMER_DEFAULT_INTERVAL_SEC      CONFIG_SYSTEM_HEARTBEAT_INTERVAL_SEC /* System periodic heartbeat interval */
 #define TIMER_DEFAULT_INTERVAL_TICKS    ((uint64_t)TIMER_DEFAULT_INTERVAL_SEC * TIMER_TICKS_PER_SEC)
 
 /* PCR Timer Clock Selection (TRM §8.4) */

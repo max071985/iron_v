@@ -1,4 +1,5 @@
 #include "test.h"
+#include "config.h"
 #include "utils.h"
 #include "string.h"
 #include "io_constants.h"
@@ -1965,8 +1966,9 @@ void run_validation_suite(void)
     /* Verify attribute reading */
     uint8_t val_buf[32] = {0};
     uint16_t val_len = 0U;
+    size_t expected_name_len = strlen(CONFIG_BLE_DEVICE_NAME);
     int read_ok = (gatt_db_read(0x0003U, val_buf, sizeof(val_buf), &val_len) == GATT_OK) &&
-                  (val_len == 9U) && (strncmp((char *)val_buf, "IRON-V-C6", 9) == 0);
+                  (val_len == (uint16_t)expected_name_len) && (strncmp((char *)val_buf, CONFIG_BLE_DEVICE_NAME, expected_name_len) == 0);
 
     /* Verify attribute write and readback */
     uint8_t test_wr[] = { 0xDEU, 0xADU, 0xBEU, 0xEFU };
@@ -2128,25 +2130,28 @@ void run_validation_suite(void)
     int cmd_off_ok = (ieee802154_cmd(IEEE802154_CMD_FORCE_TRX_OFF) == IEEE802154_OK);
     int state_off_ok = (ieee802154_get_state() == IEEE802154_STATE_TRX_OFF);
 
-    /* 3. Configure RF Channel 15 (2425 MHz) */
-    int set_chan_ok = (ieee802154_set_channel(15U) == IEEE802154_OK);
+    /* 3. Configure RF Channel */
+    int set_chan_ok = (ieee802154_set_channel(IEEE802154_CHANNEL_DEFAULT) == IEEE802154_OK);
     uint8_t chan_readback = ieee802154_get_channel();
-    uint16_t freq_readback = ieee802154_get_freq_mhz(15U);
-    int chan_ok = (set_chan_ok && chan_readback == 15U && freq_readback == 2425U &&
-                   *IEEE802154_CHANNEL_REG == 15U);
+    uint16_t freq_readback = ieee802154_get_freq_mhz(IEEE802154_CHANNEL_DEFAULT);
+    int chan_ok = (set_chan_ok && chan_readback == IEEE802154_CHANNEL_DEFAULT &&
+                   freq_readback == ieee802154_get_freq_mhz(IEEE802154_CHANNEL_DEFAULT) &&
+                   *IEEE802154_CHANNEL_REG == IEEE802154_CHANNEL_DEFAULT);
 
-    /* 4. Configure Hardware Auto-ACK TX & RX (0x09: bit 0 and bit 3) */
-    int set_ack_ok = (ieee802154_set_auto_ack(true, true) == IEEE802154_OK);
+    /* 4. Configure Hardware Auto-ACK TX & RX */
+    int set_ack_ok = (ieee802154_set_auto_ack((CONFIG_IEEE802154_AUTO_ACK_TX != 0U),
+                                              (CONFIG_IEEE802154_AUTO_ACK_RX != 0U)) == IEEE802154_OK);
     uint32_t ctrl_cfg = *IEEE802154_CTRL_CFG_REG;
+    uint32_t expected_ack = (CONFIG_IEEE802154_AUTO_ACK_TX ? IEEE802154_CTRL_AUTO_ACK_TX_BIT : 0U) |
+                            (CONFIG_IEEE802154_AUTO_ACK_RX ? IEEE802154_CTRL_AUTO_ACK_RX_BIT : 0U);
     int ack_ok = (set_ack_ok &&
-                  (ctrl_cfg & (IEEE802154_CTRL_AUTO_ACK_TX_BIT | IEEE802154_CTRL_AUTO_ACK_RX_BIT)) ==
-                  (IEEE802154_CTRL_AUTO_ACK_TX_BIT | IEEE802154_CTRL_AUTO_ACK_RX_BIT));
+                  (ctrl_cfg & (IEEE802154_CTRL_AUTO_ACK_TX_BIT | IEEE802154_CTRL_AUTO_ACK_RX_BIT)) == expected_ack);
 
-    /* 5. Set Short Address (0x1234) and PAN ID (0x1A2B) */
-    int set_addr_ok = (ieee802154_set_short_address(0x1234U) == IEEE802154_OK);
+    /* 5. Set Short Address and PAN ID */
+    int set_addr_ok = (ieee802154_set_short_address(IEEE802154_DEFAULT_SHORT_ADDR) == IEEE802154_OK);
     uint16_t addr_readback = ieee802154_get_short_address();
-    int addr_ok = (set_addr_ok && addr_readback == 0x1234U &&
-                   *IEEE802154_INF0_SHORT_ADDR_REG == 0x1234U);
+    int addr_ok = (set_addr_ok && addr_readback == IEEE802154_DEFAULT_SHORT_ADDR &&
+                   *IEEE802154_INF0_SHORT_ADDR_REG == IEEE802154_DEFAULT_SHORT_ADDR);
 
     /* 6. Verify Hardware Silicon Date Version */
     uint32_t date_ver = ieee802154_get_date_version();
@@ -2156,11 +2161,11 @@ void run_validation_suite(void)
     ieee802154_telemetry_t z_telem;
     int z_telem_ok = (ieee802154_get_telemetry(&z_telem) == IEEE802154_OK) &&
                      (z_telem.state == IEEE802154_STATE_TRX_OFF) &&
-                     (z_telem.channel == 15U) &&
-                     (z_telem.freq_mhz == 2425U) &&
-                     (z_telem.short_addr == 0x1234U) &&
-                     (z_telem.auto_ack_tx == true) &&
-                     (z_telem.auto_ack_rx == true);
+                     (z_telem.channel == IEEE802154_CHANNEL_DEFAULT) &&
+                     (z_telem.freq_mhz == ieee802154_get_freq_mhz(IEEE802154_CHANNEL_DEFAULT)) &&
+                     (z_telem.short_addr == IEEE802154_DEFAULT_SHORT_ADDR) &&
+                     (z_telem.auto_ack_tx == (CONFIG_IEEE802154_AUTO_ACK_TX != 0U)) &&
+                     (z_telem.auto_ack_rx == (CONFIG_IEEE802154_AUTO_ACK_RX != 0U));
 
     wdt_feed();
 
@@ -2297,13 +2302,13 @@ void run_validation_suite(void)
     /* 4. TCP Pseudo-Header Checksum Verification */
     tcp_header_t test_tcp;
     memset(&test_tcp, 0, sizeof(test_tcp));
-    test_tcp.src_port = NET_HTONS(80U);
+    test_tcp.src_port = NET_HTONS(CONFIG_TCP_DEFAULT_HTTP_PORT);
     test_tcp.dest_port = NET_HTONS(12345U);
     test_tcp.seq_num = NET_HTONL(0x1000U);
     test_tcp.ack_num = NET_HTONL(0x2000U);
     test_tcp.data_offset_reserved = (uint8_t)((TCP_MIN_HDR_LEN / 4U) << TCP_DATA_OFFSET_SHIFT);
     test_tcp.flags = TCP_FLAG_SYN | TCP_FLAG_ACK;
-    test_tcp.window = NET_HTONS(1024U);
+    test_tcp.window = NET_HTONS(CONFIG_TCP_DEFAULT_WINDOW);
     test_tcp.checksum = 0U;
 
     uint32_t t_src_ip = t_cfg.ip;
@@ -2316,7 +2321,7 @@ void run_validation_suite(void)
     /* 5. TCP PCB Allocation, Listening & State Machine */
     tcp_pcb_t *pcb = tcp_new();
     int pcb_alloc_ok = (pcb != NULL) && (pcb->state == TCP_STATE_CLOSED);
-    int pcb_listen_ok = (tcp_bind(pcb, 80U) == TCP_OK) &&
+    int pcb_listen_ok = (tcp_bind(pcb, CONFIG_TCP_DEFAULT_HTTP_PORT) == TCP_OK) &&
                         (tcp_listen(pcb, NULL) == TCP_OK) &&
                         (pcb->state == TCP_STATE_LISTEN);
     int pcb_close_ok = (tcp_close(pcb) == TCP_OK) && (pcb->state == TCP_STATE_CLOSED);

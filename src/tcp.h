@@ -24,10 +24,10 @@
 #define TCP_RX_BUF_SIZE                  512U
 #define TCP_TX_BUF_SIZE                  512U
 
-#define TCP_DEFAULT_WINDOW_BYTES         1024U
-#define TCP_DEFAULT_SEGMENT_MSS          1460U
-#define TCP_RETRANSMIT_TIMEOUT_MS        1000U
-#define TCP_MAX_RETRIES                  3U
+#define TCP_DEFAULT_WINDOW_BYTES         CONFIG_TCP_DEFAULT_WINDOW
+#define TCP_DEFAULT_SEGMENT_MSS          CONFIG_TCP_DEFAULT_MSS
+#define TCP_RETRANSMIT_TIMEOUT_MS        CONFIG_TCP_RETRANSMIT_TIMEOUT_MS
+#define TCP_MAX_RETRIES                  CONFIG_TCP_MAX_RETRIES
 #define TCP_INITIAL_SEQ_NUM              0x10000000U
 
 /* ========================================================================= */

@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include "config.h"
 #include "io_constants.h"
 #include "utils.h"
 #include "string.h"
@@ -61,6 +62,9 @@ static void print_info(void)
 
     console_puts("========================================\r\n");
     console_puts(" Iron V Bare-Metal RISC-V Runtime\r\n");
+    console_puts(" Hostname: ");
+    console_puts(CONFIG_DEVICE_HOSTNAME);
+    console_puts("\r\n");
     console_puts(" Target:  ESP32-C6 (RV32IMAC)\r\n");
     console_puts(" Mode:    Bare Metal / No ESP-IDF\r\n");
     console_puts(" CPU:     ");
@@ -1805,14 +1809,14 @@ void shell_tick(void)
     if (console_read_line_nonblocking(input_buffer, MAX_CMD_LEN))
     {
         shell_execute(input_buffer);
-        console_puts("iron_v> ");
+        console_puts(CONFIG_CONSOLE_PROMPT);
         console_flush();
     }
 }
 
 void shell(char *input_buffer)
 {
-    console_puts("iron_v> ");
+    console_puts(CONFIG_CONSOLE_PROMPT);
     console_flush();
     read_line(input_buffer, MAX_CMD_LEN);
     shell_execute(input_buffer);
@@ -1888,7 +1892,7 @@ void main(void)
     print_info();
 
     console_puts("Ready. Type 'do-test' for validation suite or 'help' for command list.\r\n");
-    console_puts("iron_v> ");
+    console_puts(CONFIG_CONSOLE_PROMPT);
     console_flush();
 
     while (1)

@@ -14,6 +14,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include "config.h"
 #include "ble_gatt.h"
 
 /* ========================================================================= */
@@ -114,8 +115,9 @@
 
 #define BLE_ADV_TYPE_IND                0x00U /* Connectable undirected advertising */
 #define BLE_ADV_FILTER_ALLOW_ALL        0x00U
-#define BLE_ADV_INT_MIN_DEFAULT         0x00A0U /* 100 ms (units of 0.625 ms: 160 * 0.625 = 100 ms) */
-#define BLE_ADV_INT_MAX_DEFAULT         0x00A0U
+#define BLE_ADV_INT_MIN_DEFAULT         CONFIG_BLE_ADV_INTERVAL_MIN
+#define BLE_ADV_INT_MAX_DEFAULT         CONFIG_BLE_ADV_INTERVAL_MAX
+#define BLE_ADV_CHANNEL_MAP_DEFAULT     CONFIG_BLE_ADV_CHANNEL_MAP
 
 /* ========================================================================= */
 /* Concrete Data Structures (docs/development-roadmap.md:642-664)            */

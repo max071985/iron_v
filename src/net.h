@@ -64,7 +64,7 @@
 #define IPV4_VER_IHL_DEFAULT             ((IPV4_VERSION_4 << 4U) | IPV4_IHL_MIN_WORDS)
 #define IPV4_TOS_DEFAULT                 0x00U
 #define IPV4_FLAGS_DF                    0x4000U
-#define IPV4_TTL_DEFAULT                 64U
+#define IPV4_TTL_DEFAULT                 CONFIG_NET_DEFAULT_TTL
 
 #define IPV4_PROTO_ICMP                  1U
 #define IPV4_PROTO_TCP                   6U

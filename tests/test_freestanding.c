@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <assert.h>
+#include "config.h"
 #include "string.h"
 #include "dpc.h"
 #include "console.h"
@@ -1396,10 +1397,10 @@ static void test_ble_gatt_subsystem(void)
     uint8_t read_buf[64];
     uint16_t read_len = 0U;
     TEST_ASSERT(gatt_db_read(0x0003U, read_buf, sizeof(read_buf), &read_len) == GATT_OK, "Read Device Name succeeds");
-    TEST_ASSERT(read_len == 9U && s_strncmp((char *)read_buf, "IRON-V-C6", 9) == 0, "Device Name is 'IRON-V-C6'");
+    TEST_ASSERT(read_len == (uint16_t)s_strlen(CONFIG_BLE_DEVICE_NAME) && s_strncmp((char *)read_buf, CONFIG_BLE_DEVICE_NAME, s_strlen(CONFIG_BLE_DEVICE_NAME)) == 0, "Device Name matches CONFIG_BLE_DEVICE_NAME");
 
     TEST_ASSERT(gatt_db_read(0x000CU, read_buf, sizeof(read_buf), &read_len) == GATT_OK, "Read Firmware Revision succeeds");
-    TEST_ASSERT(read_len == 5U && s_strncmp((char *)read_buf, "1.0.0", 5) == 0, "Firmware Revision is '1.0.0'");
+    TEST_ASSERT(read_len == (uint16_t)s_strlen(CONFIG_FIRMWARE_REVISION) && s_strncmp((char *)read_buf, CONFIG_FIRMWARE_REVISION, s_strlen(CONFIG_FIRMWARE_REVISION)) == 0, "Firmware Revision matches CONFIG_FIRMWARE_REVISION");
 
     /* Write attribute values and verify readback */
     uint8_t write_data[] = "IRON-V-BLE-GATT-TEST-PAYLOAD";
@@ -1515,12 +1516,12 @@ static void test_ieee802154_subsystem(void)
     ieee802154_telemetry_t telem;
     TEST_ASSERT(ieee802154_get_telemetry(NULL) == IEEE802154_ERR_INVALID_ARG, "get_telemetry rejects NULL");
     TEST_ASSERT(ieee802154_get_telemetry(&telem) == IEEE802154_OK, "get_telemetry succeeds");
-    TEST_ASSERT(telem.channel == IEEE802154_CHANNEL_DEFAULT, "Default channel is 15");
-    TEST_ASSERT(telem.freq_mhz == 2425U, "Default channel 15 frequency is 2425 MHz");
-    TEST_ASSERT(telem.short_addr == IEEE802154_DEFAULT_SHORT_ADDR, "Default short address is 0x1234");
-    TEST_ASSERT(telem.pan_id == IEEE802154_DEFAULT_PAN_ID, "Default PAN ID is 0x1A2B");
-    TEST_ASSERT(telem.auto_ack_tx == true, "Auto-ACK TX enabled by default");
-    TEST_ASSERT(telem.auto_ack_rx == true, "Auto-ACK RX enabled by default");
+    TEST_ASSERT(telem.channel == IEEE802154_CHANNEL_DEFAULT, "Default channel matches configuration");
+    TEST_ASSERT(telem.freq_mhz == ieee802154_get_freq_mhz(IEEE802154_CHANNEL_DEFAULT), "Default channel frequency matches default");
+    TEST_ASSERT(telem.short_addr == IEEE802154_DEFAULT_SHORT_ADDR, "Default short address matches configuration");
+    TEST_ASSERT(telem.pan_id == IEEE802154_DEFAULT_PAN_ID, "Default PAN ID matches configuration");
+    TEST_ASSERT(telem.auto_ack_tx == (CONFIG_IEEE802154_AUTO_ACK_TX != 0U), "Auto-ACK TX matches configuration");
+    TEST_ASSERT(telem.auto_ack_rx == (CONFIG_IEEE802154_AUTO_ACK_RX != 0U), "Auto-ACK RX matches configuration");
 
     /* 3. RF Channel & Frequency Range Validation */
     TEST_ASSERT(ieee802154_set_channel(10U) == IEEE802154_ERR_INVALID_ARG, "Channel 10 below range rejected");
@@ -1530,16 +1531,16 @@ static void test_ieee802154_subsystem(void)
     TEST_ASSERT(ieee802154_get_freq_mhz(11U) == 2405U, "Channel 11 frequency is 2405 MHz");
     TEST_ASSERT(ieee802154_set_channel(26U) == IEEE802154_OK, "Channel 26 accepted");
     TEST_ASSERT(ieee802154_get_freq_mhz(26U) == 2480U, "Channel 26 frequency is 2480 MHz");
-    TEST_ASSERT(ieee802154_set_channel(15U) == IEEE802154_OK, "Channel 15 restored");
+    TEST_ASSERT(ieee802154_set_channel(IEEE802154_CHANNEL_DEFAULT) == IEEE802154_OK, "Default channel restored");
 
     /* 4. Addressing Controls (Short, PAN ID, EUI-64) */
     TEST_ASSERT(ieee802154_set_short_address(0xABCDU) == IEEE802154_OK, "Set short address succeeds");
     TEST_ASSERT(ieee802154_get_short_address() == 0xABCDU, "Short address readback matches 0xABCD");
-    TEST_ASSERT(ieee802154_set_short_address(0x1234U) == IEEE802154_OK, "Short address 0x1234 restored");
+    TEST_ASSERT(ieee802154_set_short_address(IEEE802154_DEFAULT_SHORT_ADDR) == IEEE802154_OK, "Default short address restored");
 
     TEST_ASSERT(ieee802154_set_pan_id(0xCAFEU) == IEEE802154_OK, "Set PAN ID succeeds");
     TEST_ASSERT(ieee802154_get_pan_id() == 0xCAFEU, "PAN ID readback matches 0xCAFE");
-    TEST_ASSERT(ieee802154_set_pan_id(0x1A2BU) == IEEE802154_OK, "PAN ID 0x1A2B restored");
+    TEST_ASSERT(ieee802154_set_pan_id(IEEE802154_DEFAULT_PAN_ID) == IEEE802154_OK, "Default PAN ID restored");
 
     uint8_t ext_addr[IEEE802154_EXT_ADDR_LEN] = {0};
     TEST_ASSERT(ieee802154_get_extended_address(NULL) == IEEE802154_ERR_INVALID_ARG, "get_extended_address rejects NULL");
@@ -1674,7 +1675,7 @@ static void test_tcpip_subsystem(void)
     ip_req->ver_ihl = IPV4_VER_IHL_DEFAULT;
     ip_req->total_len = NET_HTONS(IPV4_MIN_HDR_LEN + ICMP_MIN_HDR_LEN + 4U);
     ip_req->protocol = IPV4_PROTO_ICMP;
-    ip_req->ttl = 64U;
+    ip_req->ttl = IPV4_TTL_DEFAULT;
     ip_req->src_ip = NET_HTONL(peer_ip);
     ip_req->dest_ip = NET_HTONL(cfg.ip);
     ip_req->checksum = net_ipv4_checksum(ip_req);
@@ -1702,7 +1703,7 @@ static void test_tcpip_subsystem(void)
     tcp_pcb_t *pcb = tcp_new();
     TEST_ASSERT(pcb != NULL, "tcp_new allocates PCB");
     TEST_ASSERT(pcb->state == TCP_STATE_CLOSED, "Initial PCB state is CLOSED");
-    TEST_ASSERT(tcp_bind(pcb, 80U) == TCP_OK, "tcp_bind to port 80 succeeds");
+    TEST_ASSERT(tcp_bind(pcb, CONFIG_TCP_DEFAULT_HTTP_PORT) == TCP_OK, "tcp_bind to configured HTTP port succeeds");
     TEST_ASSERT(tcp_listen(pcb, NULL) == TCP_OK, "tcp_listen succeeds");
     TEST_ASSERT(pcb->state == TCP_STATE_LISTEN, "State transitions to LISTEN");
     TEST_ASSERT(tcp_close(pcb) == TCP_OK, "tcp_close succeeds");

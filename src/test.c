@@ -24,6 +24,8 @@
 #include "ble_gatt.h"
 #include "wifi.h"
 #include "ieee802154.h"
+#include "net.h"
+#include "tcp.h"
 
 /* Route all test output to unified dual-console multiplexer */
 #define uart_puts console_puts
@@ -2198,6 +2200,153 @@ void run_validation_suite(void)
 
     if (t32_pass) passed_tests++;
     print_result(t32_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 33: Bare-Metal Zero-Copy IPv4, ARP & TCP Stack (Task 5.5)*/
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(33, "Bare-Metal Zero-Copy IPv4, ARP, ICMP & TCP Stack",
+                      "Verify synthetic ARP resolution, RFC 1071 IP checksum, TCP pseudo-header checksum & PCB state");
+
+    wdt_feed();
+
+    uint64_t t_net_start = systimer_get_us();
+
+    /* 1. Subsystem Lifecycle & Identity */
+    int net_init_ok = (net_init() == NET_OK) && (tcp_init() == TCP_OK);
+    net_config_t t_cfg;
+    net_get_config(&t_cfg);
+    int cfg_ok = (t_cfg.ip == NET_DEFAULT_IP) &&
+                 (t_cfg.mac[0] == 0x40U && t_cfg.mac[1] == 0x4CU && t_cfg.mac[2] == 0xCAU &&
+                  t_cfg.mac[3] == 0x45U && t_cfg.mac[4] == 0x1EU && t_cfg.mac[5] == 0x14U);
+
+    /* 2. Synthetic ARP Request & Reply Generation (RFC 826) */
+    arp_frame_t synth_arp_req;
+    memset(&synth_arp_req, 0, sizeof(synth_arp_req));
+    /* Ethernet Header */
+    memset(synth_arp_req.eth.dest_mac, 0xFF, ETH_ADDR_LEN); /* Broadcast */
+    synth_arp_req.eth.src_mac[0] = 0x00U;
+    synth_arp_req.eth.src_mac[1] = 0x11U;
+    synth_arp_req.eth.src_mac[2] = 0x22U;
+    synth_arp_req.eth.src_mac[3] = 0x33U;
+    synth_arp_req.eth.src_mac[4] = 0x44U;
+    synth_arp_req.eth.src_mac[5] = 0x55U;
+    synth_arp_req.eth.ethertype = NET_HTONS(ETHERTYPE_ARP);
+
+    /* ARP Payload */
+    synth_arp_req.arp.hw_type    = NET_HTONS(ARP_HW_TYPE_ETHERNET);
+    synth_arp_req.arp.proto_type = NET_HTONS(ARP_PROTO_IPV4);
+    synth_arp_req.arp.hw_size    = ETH_ADDR_LEN;
+    synth_arp_req.arp.proto_size = IPV4_ADDR_LEN;
+    synth_arp_req.arp.opcode     = NET_HTONS(ARP_OPCODE_REQUEST);
+    memcpy(synth_arp_req.arp.sender_mac, synth_arp_req.eth.src_mac, ETH_ADDR_LEN);
+    synth_arp_req.arp.sender_ip  = NET_HTONL(NET_IP4_ADDR(192U, 168U, 1U, 1U));
+    memset(synth_arp_req.arp.target_mac, 0x00, ETH_ADDR_LEN);
+    synth_arp_req.arp.target_ip  = NET_HTONL(NET_DEFAULT_IP);
+
+    uint8_t arp_reply_buf[64] = {0};
+    uint16_t arp_reply_len = 0U;
+    net_status_t arp_st = arp_process_packet((const uint8_t *)&synth_arp_req, sizeof(synth_arp_req),
+                                             arp_reply_buf, sizeof(arp_reply_buf), &arp_reply_len);
+
+    const arp_frame_t *reply_frame = (const arp_frame_t *)arp_reply_buf;
+    int arp_reply_ok = (arp_st == NET_OK) && (arp_reply_len == sizeof(arp_frame_t)) &&
+                       (reply_frame->eth.ethertype == NET_HTONS(ETHERTYPE_ARP)) &&
+                       (reply_frame->arp.hw_type == NET_HTONS(ARP_HW_TYPE_ETHERNET)) &&
+                       (reply_frame->arp.proto_type == NET_HTONS(ARP_PROTO_IPV4)) &&
+                       (reply_frame->arp.opcode == NET_HTONS(ARP_OPCODE_REPLY)) &&
+                       (reply_frame->eth.src_mac[0] == 0x40U && reply_frame->eth.src_mac[1] == 0x4CU &&
+                        reply_frame->eth.src_mac[2] == 0xCAU && reply_frame->eth.src_mac[3] == 0x45U &&
+                        reply_frame->eth.src_mac[4] == 0x1EU && reply_frame->eth.src_mac[5] == 0x14U) &&
+                       (reply_frame->arp.sender_ip == NET_HTONL(NET_DEFAULT_IP));
+
+    /* 3. RFC 1071 Standard Checksum Test Vector Calculation */
+    static const uint8_t s_rfc1071_test_header[RFC1071_TEST_HDR_LEN] = {
+        0x45, 0x00, 0x00, 0x3c,
+        0x1c, 0x46, 0x40, 0x00,
+        0x40, 0x06, 0x00, 0x00,
+        0xac, 0x10, 0x0a, 0x63,
+        0xac, 0x10, 0x0a, 0x0c
+    };
+    uint16_t computed_chk = net_checksum(s_rfc1071_test_header, RFC1071_TEST_HDR_LEN);
+    int rfc1071_calc_ok = (computed_chk == RFC1071_TEST_EXPECTED_CHECKSUM);
+
+    /* Verify that checksum over the completed header validates to 0x0000 */
+    uint8_t verified_hdr[RFC1071_TEST_HDR_LEN];
+    memcpy(verified_hdr, s_rfc1071_test_header, RFC1071_TEST_HDR_LEN);
+    verified_hdr[10] = (uint8_t)(computed_chk >> 8U);
+    verified_hdr[11] = (uint8_t)(computed_chk & 0xFFU);
+    uint16_t verify_chk = net_checksum(verified_hdr, RFC1071_TEST_HDR_LEN);
+    int rfc1071_verify_ok = (verify_chk == 0x0000U);
+
+    /* 4. TCP Pseudo-Header Checksum Verification */
+    tcp_header_t test_tcp;
+    memset(&test_tcp, 0, sizeof(test_tcp));
+    test_tcp.src_port = NET_HTONS(80U);
+    test_tcp.dest_port = NET_HTONS(12345U);
+    test_tcp.seq_num = NET_HTONL(0x1000U);
+    test_tcp.ack_num = NET_HTONL(0x2000U);
+    test_tcp.data_offset_reserved = (uint8_t)((TCP_MIN_HDR_LEN / 4U) << TCP_DATA_OFFSET_SHIFT);
+    test_tcp.flags = TCP_FLAG_SYN | TCP_FLAG_ACK;
+    test_tcp.window = NET_HTONS(1024U);
+    test_tcp.checksum = 0U;
+
+    uint32_t t_src_ip = NET_IP4_ADDR(192U, 168U, 1U, 100U);
+    uint32_t t_dst_ip = NET_IP4_ADDR(192U, 168U, 1U, 1U);
+    uint16_t tcp_chk = net_tcp_checksum(t_src_ip, t_dst_ip, &test_tcp, TCP_MIN_HDR_LEN, NULL, 0U);
+    test_tcp.checksum = NET_HTONS(tcp_chk);
+    uint16_t tcp_verify = net_tcp_checksum(t_src_ip, t_dst_ip, &test_tcp, TCP_MIN_HDR_LEN, NULL, 0U);
+    int tcp_chk_ok = (tcp_chk != 0U) && (tcp_verify == 0x0000U);
+
+    /* 5. TCP PCB Allocation, Listening & State Machine */
+    tcp_pcb_t *pcb = tcp_new();
+    int pcb_alloc_ok = (pcb != NULL) && (pcb->state == TCP_STATE_CLOSED);
+    int pcb_listen_ok = (tcp_bind(pcb, 80U) == TCP_OK) &&
+                        (tcp_listen(pcb, NULL) == TCP_OK) &&
+                        (pcb->state == TCP_STATE_LISTEN);
+    int pcb_close_ok = (tcp_close(pcb) == TCP_OK) && (pcb->state == TCP_STATE_CLOSED);
+
+    uint64_t t_net_end = systimer_get_us();
+    uint64_t elapsed_us = t_net_end - t_net_start;
+    int bounded_time_ok = (elapsed_us < 1000U);
+
+    wdt_feed();
+
+    int t33_pass = net_init_ok && cfg_ok && arp_reply_ok &&
+                   rfc1071_calc_ok && rfc1071_verify_ok &&
+                   tcp_chk_ok && pcb_alloc_ok && pcb_listen_ok && pcb_close_ok && bounded_time_ok;
+
+    uart_puts("  Expected:    Init=1, Config=1, ARPReply=1, RFC1071=1, Verify=1, TCPChk=1, PCB=1, BoundTime=1\r\n");
+    uart_puts("  Actual:      Init=");
+    put_dec(net_init_ok);
+    uart_puts(", Config=");
+    put_dec(cfg_ok);
+    uart_puts(", ARPReply=");
+    put_dec(arp_reply_ok);
+    uart_puts(", RFC1071=");
+    put_dec(rfc1071_calc_ok);
+    uart_puts(", Verify=");
+    put_dec(rfc1071_verify_ok);
+    uart_puts(", TCPChk=");
+    put_dec(tcp_chk_ok);
+    uart_puts(", PCB=");
+    put_dec(pcb_alloc_ok && pcb_listen_ok && pcb_close_ok);
+    uart_puts(", BoundTime=");
+    put_dec(bounded_time_ok);
+    uart_puts("\r\n");
+
+    uart_puts("  Diag: RFC1071_Sum=");
+    put_hex(computed_chk);
+    uart_puts(", VerifyZero=");
+    put_hex(verify_chk);
+    uart_puts(", TCP_Chk=");
+    put_hex(tcp_chk);
+    uart_puts(", ElapsedUs=");
+    put_dec((uint32_t)elapsed_us);
+    uart_puts("\r\n");
+
+    if (t33_pass) passed_tests++;
+    print_result(t33_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

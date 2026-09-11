@@ -322,7 +322,7 @@ def run_suite():
     native_desc = ""
     if not os.path.exists(native_test_bin):
         comp = subprocess.run(
-            ["gcc", "-O2", "-fno-tree-loop-distribute-patterns", "-Wall", "-Wextra", "-Werror", "-Isrc", "tests/test_freestanding.c", "src/string.c", "src/dpc.c", "src/arena.c", "src/pmp.c", "src/lp_core.c", "src/power.c", "src/gpio.c", "src/gdma.c", "src/modem.c", "src/ble.c", "src/wifi.c", "src/ieee802154.c", "-o", native_test_bin],
+            ["gcc", "-O2", "-fno-tree-loop-distribute-patterns", "-Wall", "-Wextra", "-Werror", "-Isrc", "tests/test_freestanding.c", "src/string.c", "src/dpc.c", "src/arena.c", "src/pmp.c", "src/lp_core.c", "src/power.c", "src/gpio.c", "src/gdma.c", "src/modem.c", "src/ble.c", "src/wifi.c", "src/ieee802154.c", "src/net.c", "src/tcp.c", "-o", native_test_bin],
             capture_output=True, text=True
         )
         if comp.returncode != 0:
@@ -1025,6 +1025,54 @@ def run_suite():
         f"All {len(ieee_syms)} IEEE 802.15.4 driver symbols present in IRAM text section [0x40800000, 0x40820000)",
         t31_actual,
         t31_pass
+    )
+
+    # TEST 32: Bare-Metal TCP/IP Stack & Lightweight Protocol Engine Linkage (Task 5.5)
+    total += 1
+    net_syms = [
+        "net_init",
+        "net_set_ip",
+        "net_get_config",
+        "net_get_telemetry",
+        "net_checksum",
+        "net_ipv4_checksum",
+        "net_tcp_checksum",
+        "net_udp_checksum",
+        "arp_lookup",
+        "arp_insert",
+        "arp_process_packet",
+        "net_input",
+        "icmp_process_packet",
+        "net_send_udp",
+        "net_ip_to_str",
+        "net_str_to_ip",
+        "tcp_init",
+        "tcp_new",
+        "tcp_bind",
+        "tcp_listen",
+        "tcp_connect",
+        "tcp_write",
+        "tcp_close",
+        "tcp_abort",
+        "tcp_input",
+        "tcp_tick",
+        "tcp_get_telemetry"
+    ]
+    found_net_syms = [s for s in net_syms if s in symbols]
+    all_net_found = len(found_net_syms) == len(net_syms)
+    all_net_in_text = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40820000)
+        for s in found_net_syms
+    )
+    t32_pass = all_net_found and all_net_in_text
+    t32_actual = f"Found {len(found_net_syms)}/{len(net_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    passed += print_result_line(
+        total,
+        "Bare-Metal TCP/IP Stack & Lightweight Protocol Engine Linkage",
+        "Verify IPv4, ARP, ICMP, UDP and TCP state machine symbols exist in IRAM executable section",
+        f"All {len(net_syms)} TCP/IP driver symbols present in IRAM text section [0x40800000, 0x40820000)",
+        t32_actual,
+        t32_pass
     )
 
     print("\n" + "=" * 70)

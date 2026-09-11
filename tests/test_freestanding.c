@@ -24,6 +24,7 @@
 #include "modem.h"
 #include "ble.h"
 #include "ble_gatt.h"
+#include "wifi.h"
 
 /* Freestanding function aliases matching runtime naming conventions */
 static inline size_t s_strlen(const char *s)
@@ -1411,6 +1412,80 @@ static void test_ble_gatt_subsystem(void)
     TEST_ASSERT(gatt_db_write(0x000FU, NULL, 10U) == GATT_ERR_INVALID_ARG, "Write with NULL data rejected");
 }
 
+static void test_wifi_mac_subsystem(void)
+{
+    printf("  [TEST] 802.11ax Wi-Fi 6 MAC Driver & Zero-Copy Packet Ring (Task 5.3)...\n");
+
+    /* 1. Register Address & Offset Calculation Validation (AGENTS.md rule) */
+    TEST_ASSERT((uintptr_t)EFUSE_MAC_SYS_0_REG == 0x600B0844U, "EFUSE_MAC_SYS_0_REG address calculation");
+    TEST_ASSERT((uintptr_t)EFUSE_MAC_SYS_1_REG == 0x600B0848U, "EFUSE_MAC_SYS_1_REG address calculation");
+    TEST_ASSERT(WIFI_GDMA_CHANNEL == GDMA_CHANNEL_1, "Wi-Fi bound to GDMA Channel 1");
+
+    /* 2. Concrete Data Structure Geometry & Memory Sizing */
+    TEST_ASSERT(PACKET_BUFFER_SIZE == 1536U, "PACKET_BUFFER_SIZE must be exactly 1536 bytes");
+    TEST_ASSERT(PACKET_RING_COUNT == 32U, "PACKET_RING_COUNT must be exactly 32 descriptors");
+    TEST_ASSERT(sizeof(net_packet_t) == (sizeof(dma_descriptor_t) + PACKET_BUFFER_SIZE), "net_packet_t layout packed with descriptor and buffer");
+    TEST_ASSERT((sizeof(net_packet_t) % 4U) == 0U, "net_packet_t must be 4-byte aligned");
+
+    /* 3. Subsystem Lifecycle & MAC Address Retrieval */
+    TEST_ASSERT(wifi_init() == WIFI_OK, "wifi_init succeeds");
+    TEST_ASSERT(wifi_get_state() == WIFI_STATE_IDLE, "Wi-Fi initial state is WIFI_STATE_IDLE");
+
+    uint8_t mac[WIFI_MAC_ADDR_LEN] = {0};
+    TEST_ASSERT(wifi_get_mac_addr(NULL) == WIFI_ERR_INVALID_ARG, "wifi_get_mac_addr rejects NULL");
+    TEST_ASSERT(wifi_get_mac_addr(mac) == WIFI_OK, "wifi_get_mac_addr succeeds");
+    TEST_ASSERT(mac[0] == 0x40U && mac[1] == 0x4CU && mac[2] == 0xCAU &&
+                mac[3] == 0x45U && mac[4] == 0x1EU && mac[5] == 0x14U,
+                "Authentic Wi-Fi Station MAC matches hardware 40:4C:CA:45:1E:14");
+
+    wifi_telemetry_t telem;
+    TEST_ASSERT(wifi_get_telemetry(NULL) == WIFI_ERR_INVALID_ARG, "wifi_get_telemetry rejects NULL");
+    TEST_ASSERT(wifi_get_telemetry(&telem) == WIFI_OK, "wifi_get_telemetry succeeds");
+    TEST_ASSERT(telem.rx_ring_capacity == PACKET_RING_COUNT, "RX ring capacity is 32");
+    TEST_ASSERT(telem.tx_ring_capacity == WIFI_TX_RING_COUNT, "TX ring capacity is 8");
+
+    /* 4. Circular Packet Ring Integrity & Boundary Traversal (TEST 31) */
+    uint32_t visited_count = 0U;
+    TEST_ASSERT(wifi_verify_rx_ring(NULL) == WIFI_ERR_INVALID_ARG, "wifi_verify_rx_ring rejects NULL");
+    TEST_ASSERT(wifi_verify_rx_ring(&visited_count) == WIFI_OK, "wifi_verify_rx_ring succeeds");
+    TEST_ASSERT(visited_count == PACKET_RING_COUNT, "Circular traversal visits all 32 descriptors and loops back");
+
+    /* 5. Zero-Copy Packet Reception Polling & Buffer Release */
+    net_packet_t *rx_pkt = NULL;
+    uint16_t rx_len = 0U;
+    TEST_ASSERT(wifi_rx_poll(&rx_pkt, &rx_len) == WIFI_ERR_RING_EMPTY, "wifi_rx_poll returns RING_EMPTY when no frames arrived");
+
+    /* Simulate hardware DMA completing reception of a 64-byte 802.11 frame */
+    net_packet_t *active_pkt = (net_packet_t *)wifi_get_rx_packet(0U);
+    TEST_ASSERT(active_pkt != NULL, "Get active packet pointer");
+    active_pkt->dma_desc.length = 64U;
+    active_pkt->dma_desc.owner = DMA_OWNER_CPU; /* Hardware transfers ownership to CPU */
+    memcpy(active_pkt->payload, "WIFI_80211_FRAME_TEST_PAYLOAD_ABCDEF", 36);
+
+    TEST_ASSERT(wifi_rx_poll(&rx_pkt, &rx_len) == WIFI_OK, "wifi_rx_poll succeeds when DMA_OWNER_CPU");
+    TEST_ASSERT(rx_pkt == active_pkt, "Zero-copy: returned buffer pointer matches static ring entry");
+    TEST_ASSERT(rx_len == 64U, "Reported packet length matches 64 bytes");
+    TEST_ASSERT(s_strncmp((char *)rx_pkt->payload, "WIFI_80211_FRAME_TEST_PAYLOAD", 29) == 0, "Packet payload matches without copy");
+
+    /* Release packet buffer back to DMA */
+    TEST_ASSERT(wifi_rx_release(rx_pkt) == WIFI_OK, "wifi_rx_release succeeds");
+    TEST_ASSERT(active_pkt->dma_desc.owner == DMA_OWNER_DMA, "Ownership restored to DMA");
+    TEST_ASSERT(active_pkt->dma_desc.length == 0U, "Descriptor length reset to 0");
+    TEST_ASSERT(wifi_rx_poll(&rx_pkt, &rx_len) == WIFI_ERR_RING_EMPTY, "Ring empty after packet released");
+
+    /* 6. Packet Transmission Routine */
+    uint8_t tx_frame[128];
+    memset(tx_frame, 0x5AU, sizeof(tx_frame));
+    TEST_ASSERT(wifi_tx_packet(NULL, sizeof(tx_frame)) == WIFI_ERR_INVALID_ARG, "wifi_tx_packet rejects NULL payload");
+    TEST_ASSERT(wifi_tx_packet(tx_frame, 0U) == WIFI_ERR_INVALID_ARG, "wifi_tx_packet rejects length 0");
+    TEST_ASSERT(wifi_tx_packet(tx_frame, 2048U) == WIFI_ERR_INVALID_ARG, "wifi_tx_packet rejects length > 1536");
+    TEST_ASSERT(wifi_tx_packet(tx_frame, sizeof(tx_frame)) == WIFI_OK, "wifi_tx_packet succeeds");
+
+    TEST_ASSERT(wifi_get_telemetry(&telem) == WIFI_OK, "wifi_get_telemetry succeeds");
+    TEST_ASSERT(telem.tx_packets >= 1U, "tx_packets telemetry incremented");
+    TEST_ASSERT(telem.tx_bytes >= sizeof(tx_frame), "tx_bytes telemetry incremented");
+}
+
 /* ========================================================================= */
 /* Phase 0-3 Host Test Hardening: Cross-Module Integration & Edge Case Tests */
 /* ========================================================================= */
@@ -2411,6 +2486,7 @@ int main(void)
     test_gdma_subsystem();
     test_modem_subsystem();
     test_ble_gatt_subsystem();
+    test_wifi_mac_subsystem();
 
     /* Hardened cross-module integration and edge case tests */
     test_coroutine_systimer_dpc_integration();

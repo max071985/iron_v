@@ -23,6 +23,7 @@
 #include "modem.h"
 #include "ble.h"
 #include "ble_gatt.h"
+#include "wifi.h"
 
 static void print_help(void)
 {
@@ -44,6 +45,7 @@ static void print_help(void)
     console_puts("  dma [status]        - Show GDMA multi-channel engine status\r\n");
     console_puts("  modem [status|all|wifi|ble|15.4] - Show or control wireless modem clocks and power\r\n");
     console_puts("  ble [status|adv|stop|read|info] - Show or control BLE controller, advertising & GATT\r\n");
+    console_puts("  wifi [status|mac|ring|init] - Show or control 802.11ax Wi-Fi 6 MAC driver & packet ring\r\n");
     console_puts("  do-test             - Run full baseline validation test suite\r\n");
 }
 
@@ -250,6 +252,29 @@ static void print_info(void)
     console_puts(", GATT: ");
     put_dec(gatt_db_get_count());
     console_puts(" attrs\r\n");
+
+    wifi_telemetry_t wtel;
+    wifi_get_telemetry(&wtel);
+    console_puts(" WiFi:    State: ");
+    if (wtel.state == WIFI_STATE_OFF) console_puts("OFF");
+    else if (wtel.state == WIFI_STATE_INIT) console_puts("INIT");
+    else if (wtel.state == WIFI_STATE_IDLE) console_puts("IDLE");
+    else if (wtel.state == WIFI_STATE_ACTIVE) console_puts("ACTIVE");
+    else if (wtel.state == WIFI_STATE_SCANNING) console_puts("SCANNING");
+    else if (wtel.state == WIFI_STATE_CONNECTED) console_puts("CONNECTED");
+    else console_puts("DISCONNECTED");
+    console_puts(", MAC: ");
+    for (int i = 0; i < 6; i++)
+    {
+        uint8_t byte = wtel.mac_addr[i];
+        const char hex_chars[] = "0123456789abcdef";
+        console_putc(hex_chars[(byte >> 4) & 0x0F]);
+        console_putc(hex_chars[byte & 0x0F]);
+        if (i < 5) console_putc(':');
+    }
+    console_puts(", Ring: ");
+    put_dec(wtel.rx_ring_capacity);
+    console_puts(" buffers (1536B each)\r\n");
     console_puts("========================================\r\n");
 }
 
@@ -1260,6 +1285,105 @@ static void shell_execute(char *input_buffer)
             console_puts(" attributes (0x1800 GAP, 0x180A DevInfo, 0xFFE0 Custom)\r\n");
         }
     }
+    else if (strncmp(input_buffer, "wifi", 4) == 0 && (input_buffer[4] == ' ' || input_buffer[4] == '\0'))
+    {
+        char *subcmd = input_buffer + 4;
+        while (*subcmd == ' ') subcmd++;
+
+        if (strncmp(subcmd, "mac", 3) == 0)
+        {
+            uint8_t mac[WIFI_MAC_ADDR_LEN] = {0};
+            wifi_get_mac_addr(mac);
+            console_puts("Wi-Fi Station MAC Address (eFuse): ");
+            for (int i = 0; i < 6; i++)
+            {
+                const char hex_chars[] = "0123456789abcdef";
+                console_putc(hex_chars[(mac[i] >> 4) & 0x0F]);
+                console_putc(hex_chars[mac[i] & 0x0F]);
+                if (i < 5) console_putc(':');
+            }
+            console_puts("\r\n");
+        }
+        else if (strncmp(subcmd, "ring", 4) == 0)
+        {
+            uint32_t visited = 0;
+            wifi_status_t vst = wifi_verify_rx_ring(&visited);
+            console_puts("Wi-Fi 6 Zero-Copy RX Packet Ring Status:\r\n");
+            console_puts("  Ring Verification: ");
+            console_puts((vst == WIFI_OK) ? "PASSED (Integrity OK)" : "FAILED");
+            console_puts("\r\n");
+            console_puts("  Descriptors Visited: ");
+            put_dec(visited);
+            console_puts(" / ");
+            put_dec(PACKET_RING_COUNT);
+            console_puts("\r\n");
+            console_puts("  Buffer Size:       ");
+            put_dec(PACKET_BUFFER_SIZE);
+            console_puts(" bytes per buffer (Static DRAM)\r\n");
+            console_puts("  GDMA Channel:      GDMA Channel 1 (Inlink & Outlink)\r\n");
+        }
+        else if (strncmp(subcmd, "init", 4) == 0)
+        {
+            wifi_status_t ist = wifi_init();
+            if (ist == WIFI_OK)
+            {
+                console_puts("Wi-Fi MAC Subsystem & Packet Rings initialized successfully.\r\n");
+            }
+            else
+            {
+                console_puts("Failed to initialize Wi-Fi MAC Subsystem. Status: ");
+                put_dec((uint32_t)-ist);
+                console_puts("\r\n");
+            }
+        }
+        else
+        {
+            wifi_telemetry_t wt;
+            wifi_get_telemetry(&wt);
+            console_puts("802.11ax Wi-Fi 6 MAC Driver & Zero-Copy Packet Ring Status:\r\n");
+            console_puts("  Driver State:      ");
+            if (wt.state == WIFI_STATE_OFF) console_puts("OFF");
+            else if (wt.state == WIFI_STATE_INIT) console_puts("INIT");
+            else if (wt.state == WIFI_STATE_IDLE) console_puts("IDLE");
+            else if (wt.state == WIFI_STATE_ACTIVE) console_puts("ACTIVE");
+            else if (wt.state == WIFI_STATE_SCANNING) console_puts("SCANNING");
+            else if (wt.state == WIFI_STATE_CONNECTED) console_puts("CONNECTED");
+            else console_puts("DISCONNECTED");
+            console_puts("\r\n");
+            console_puts("  Station MAC:       ");
+            for (int i = 0; i < 6; i++)
+            {
+                uint8_t byte = wt.mac_addr[i];
+                const char hex_chars[] = "0123456789abcdef";
+                console_putc(hex_chars[(byte >> 4) & 0x0F]);
+                console_putc(hex_chars[byte & 0x0F]);
+                if (i < 5) console_putc(':');
+            }
+            console_puts("\r\n");
+            console_puts("  RX Ring Capacity:  ");
+            put_dec(wt.rx_ring_capacity);
+            console_puts(" buffers (1536B each in DRAM)\r\n");
+            console_puts("  TX Ring Capacity:  ");
+            put_dec(wt.tx_ring_capacity);
+            console_puts(" buffers (1536B each in DRAM)\r\n");
+            console_puts("  Packets TX / RX:   ");
+            put_dec(wt.tx_packets);
+            console_puts(" / ");
+            put_dec(wt.rx_packets);
+            console_puts("\r\n");
+            console_puts("  Bytes TX / RX:     ");
+            put_dec(wt.tx_bytes);
+            console_puts(" / ");
+            put_dec(wt.rx_bytes);
+            console_puts("\r\n");
+            console_puts("  Ring Full Drops:   ");
+            put_dec(wt.ring_full_drops);
+            console_puts("\r\n");
+            console_puts("  GDMA Fault Errors: ");
+            put_dec(wt.dma_err_count);
+            console_puts("\r\n");
+        }
+    }
     else
     {
         console_puts("Unknown command. Type 'help' for available commands.\r\n");
@@ -1338,6 +1462,9 @@ void main(void)
 
     /* Initialize Bluetooth 5 (LE) Controller Driver & Minimal GATT Server */
     ble_init();
+
+    /* Initialize 802.11ax Wi-Fi 6 MAC Driver & Zero-Copy Packet Ring */
+    wifi_init();
 
     console_puts("\r\n");
     print_info();

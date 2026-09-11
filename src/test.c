@@ -22,6 +22,7 @@
 #include "modem.h"
 #include "ble.h"
 #include "ble_gatt.h"
+#include "wifi.h"
 
 /* Route all test output to unified dual-console multiplexer */
 #define uart_puts console_puts
@@ -2016,6 +2017,97 @@ void run_validation_suite(void)
     int t30_pass = ble_init_ok && mac_ok && hci_reset_pass && latency_bounded && gatt_pass && gap_pass;
     if (t30_pass) passed_tests++;
     print_result(t30_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 31: 802.11ax Wi-Fi 6 MAC Driver & Zero-Copy Packet Ring  */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(31, "802.11ax Wi-Fi 6 MAC Driver & Zero-Copy Packet Ring",
+                      "Verify static DRAM descriptor ring, circular linkage, DMA ownership, and zero-copy packet buffering");
+
+    wdt_feed();
+
+    /* 1. Subsystem Lifecycle & GDMA Channel 1 Binding */
+    int wifi_init_ok = (wifi_init() == WIFI_OK);
+    int wifi_state_idle_ok = (wifi_get_state() == WIFI_STATE_IDLE);
+
+    /* 2. Retrieve authentic silicon Station MAC from eFuse */
+    uint8_t sta_mac[WIFI_MAC_ADDR_LEN] = {0};
+    int wifi_mac_ok = (wifi_get_mac_addr(sta_mac) == WIFI_OK) &&
+                      (sta_mac[0] == 0x40U && sta_mac[1] == 0x4CU && sta_mac[2] == 0xCAU &&
+                       sta_mac[3] == 0x45U && sta_mac[4] == 0x1EU && sta_mac[5] == 0x14U);
+
+    /* 3. Circular RX Packet Ring Traversal & Boundary Verification */
+    uint32_t ring_visited = 0U;
+    wifi_status_t ring_stat = wifi_verify_rx_ring(&ring_visited);
+    int ring_verify_ok = (ring_stat == WIFI_OK) && (ring_visited == PACKET_RING_COUNT);
+
+    /* 4. Zero-Copy Reception Initial State (Must report RING_EMPTY) */
+    net_packet_t *rx_poll_pkt = NULL;
+    uint16_t rx_poll_len = 0U;
+    int ring_empty_ok = (wifi_rx_poll(&rx_poll_pkt, &rx_poll_len) == WIFI_ERR_RING_EMPTY);
+
+    /* 5. Packet Transmission via GDMA Channel 1 */
+    uint8_t test_tx_frame[64];
+    for (uint32_t i = 0; i < sizeof(test_tx_frame); i++)
+    {
+        test_tx_frame[i] = (uint8_t)(i ^ 0xA5U);
+    }
+    int tx_ok = (wifi_tx_packet(test_tx_frame, sizeof(test_tx_frame)) == WIFI_OK);
+
+    /* 6. Verify Hardware Register Binding: GDMA Channel 1 Inlink */
+    volatile uint32_t *gdma_inlink_reg = GDMA_IN_LINK_REG(WIFI_GDMA_CHANNEL);
+    uint32_t inlink_val = *gdma_inlink_reg;
+    int gdma_bound_ok = (inlink_val != 0U);
+
+    /* 7. Verify Subsystem Telemetry */
+    wifi_telemetry_t w_telem;
+    int telem_ok = (wifi_get_telemetry(&w_telem) == WIFI_OK) &&
+                   (w_telem.rx_ring_capacity == PACKET_RING_COUNT) &&
+                   (w_telem.tx_ring_capacity == WIFI_TX_RING_COUNT) &&
+                   (w_telem.tx_packets >= 1U) &&
+                   (w_telem.tx_bytes >= sizeof(test_tx_frame));
+
+    wdt_feed();
+
+    int t31_pass = wifi_init_ok && wifi_state_idle_ok && wifi_mac_ok &&
+                   ring_verify_ok && ring_empty_ok && tx_ok && gdma_bound_ok && telem_ok;
+
+    uart_puts("  Expected:    Init=1, StateIdle=1, MAC=1, RingVerify=1, EmptyPoll=1, Tx=1, Telem=1\r\n");
+    uart_puts("  Actual:      Init=");
+    put_dec(wifi_init_ok);
+    uart_puts(", StateIdle=");
+    put_dec(wifi_state_idle_ok);
+    uart_puts(", MAC=");
+    put_dec(wifi_mac_ok);
+    uart_puts(", RingVerify=");
+    put_dec(ring_verify_ok);
+    uart_puts(", EmptyPoll=");
+    put_dec(ring_empty_ok);
+    uart_puts(", Tx=");
+    put_dec(tx_ok);
+    uart_puts(", Telem=");
+    put_dec(telem_ok);
+    uart_puts("\r\n");
+
+    uart_puts("  Diag: MAC=");
+    for (int i = 0; i < 6; i++)
+    {
+        put_hex(sta_mac[i]);
+        if (i < 5) uart_puts(":");
+    }
+    uart_puts(", Visited=");
+    put_dec(ring_visited);
+    uart_puts(", TxPkts=");
+    put_dec(w_telem.tx_packets);
+    uart_puts(", TxBytes=");
+    put_dec(w_telem.tx_bytes);
+    uart_puts(", GDMA_Inlink=");
+    put_hex(inlink_val);
+    uart_puts("\r\n");
+
+    if (t31_pass) passed_tests++;
+    print_result(t31_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

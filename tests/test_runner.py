@@ -322,7 +322,7 @@ def run_suite():
     native_desc = ""
     if not os.path.exists(native_test_bin):
         comp = subprocess.run(
-            ["gcc", "-O2", "-fno-tree-loop-distribute-patterns", "-Wall", "-Wextra", "-Werror", "-Isrc", "tests/test_freestanding.c", "src/string.c", "src/dpc.c", "src/arena.c", "src/pmp.c", "src/lp_core.c", "src/power.c", "src/gpio.c", "src/gdma.c", "src/modem.c", "src/ble.c", "-o", native_test_bin],
+            ["gcc", "-O2", "-fno-tree-loop-distribute-patterns", "-Wall", "-Wextra", "-Werror", "-Isrc", "tests/test_freestanding.c", "src/string.c", "src/dpc.c", "src/arena.c", "src/pmp.c", "src/lp_core.c", "src/power.c", "src/gpio.c", "src/gdma.c", "src/modem.c", "src/ble.c", "src/wifi.c", "-o", native_test_bin],
             capture_output=True, text=True
         )
         if comp.returncode != 0:
@@ -954,6 +954,38 @@ def run_suite():
         f"All {len(ble_syms)} BLE and GATT driver symbols present in IRAM text section [0x40800000, 0x40820000)",
         t29_actual,
         t29_pass
+    )
+
+    # TEST 30: 802.11ax Wi-Fi 6 MAC Driver & Zero-Copy Packet Ring Linkage (Task 5.3)
+    total += 1
+    wifi_syms = [
+        "wifi_init",
+        "wifi_rx_ring_init",
+        "wifi_tx_ring_init",
+        "wifi_verify_rx_ring",
+        "wifi_rx_poll",
+        "wifi_rx_release",
+        "wifi_tx_packet",
+        "wifi_get_state",
+        "wifi_get_mac_addr",
+        "wifi_get_telemetry",
+        "wifi_get_rx_packet"
+    ]
+    found_wifi_syms = [s for s in wifi_syms if s in symbols]
+    all_wifi_found = len(found_wifi_syms) == len(wifi_syms)
+    all_wifi_in_text = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40820000)
+        for s in found_wifi_syms
+    )
+    t30_pass = all_wifi_found and all_wifi_in_text
+    t30_actual = f"Found {len(found_wifi_syms)}/{len(wifi_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    passed += print_result_line(
+        total,
+        "802.11ax Wi-Fi 6 MAC Driver & Zero-Copy Packet Ring Linkage",
+        "Verify wifi_init, ring initialization, verification, zero-copy poll/release, and telemetry symbols exist in IRAM",
+        f"All {len(wifi_syms)} Wi-Fi driver symbols present in IRAM text section [0x40800000, 0x40820000)",
+        t30_actual,
+        t30_pass
     )
 
     print("\n" + "=" * 70)

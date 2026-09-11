@@ -25,6 +25,7 @@
 #include "ble.h"
 #include "ble_gatt.h"
 #include "wifi.h"
+#include "ieee802154.h"
 
 /* Freestanding function aliases matching runtime naming conventions */
 static inline size_t s_strlen(const char *s)
@@ -1486,6 +1487,87 @@ static void test_wifi_mac_subsystem(void)
     TEST_ASSERT(telem.tx_bytes >= sizeof(tx_frame), "tx_bytes telemetry incremented");
 }
 
+static void test_ieee802154_subsystem(void)
+{
+    printf("  [TEST] IEEE 802.15.4 Radio Transceiver Driver (Task 5.4)...\n");
+
+    /* 1. Register Address & Offset Calculation Validation (AGENTS.md rule) */
+    TEST_ASSERT((uintptr_t)IEEE802154_COMMAND_REG == 0x600A3000U, "IEEE802154_COMMAND_REG address calculation");
+    TEST_ASSERT((uintptr_t)IEEE802154_CTRL_CFG_REG == 0x600A3004U, "IEEE802154_CTRL_CFG_REG address calculation");
+    TEST_ASSERT((uintptr_t)IEEE802154_INF0_SHORT_ADDR_REG == 0x600A3008U, "IEEE802154_INF0_SHORT_ADDR_REG address calculation");
+    TEST_ASSERT((uintptr_t)IEEE802154_INF0_PAN_ID_REG == 0x600A300CU, "IEEE802154_INF0_PAN_ID_REG address calculation");
+    TEST_ASSERT((uintptr_t)IEEE802154_INF0_EXTEND_ADDR0_REG == 0x600A3010U, "IEEE802154_INF0_EXTEND_ADDR0_REG address calculation");
+    TEST_ASSERT((uintptr_t)IEEE802154_INF0_EXTEND_ADDR1_REG == 0x600A3014U, "IEEE802154_INF0_EXTEND_ADDR1_REG address calculation");
+    TEST_ASSERT((uintptr_t)IEEE802154_CHANNEL_REG == 0x600A3048U, "IEEE802154_CHANNEL_REG address calculation");
+    TEST_ASSERT((uintptr_t)IEEE802154_TX_POWER_REG == 0x600A304CU, "IEEE802154_TX_POWER_REG address calculation");
+    TEST_ASSERT((uintptr_t)IEEE802154_RX_STATUS_REG == 0x600A3080U, "IEEE802154_RX_STATUS_REG address calculation");
+    TEST_ASSERT((uintptr_t)IEEE802154_TX_STATUS_REG == 0x600A3084U, "IEEE802154_TX_STATUS_REG address calculation");
+    TEST_ASSERT((uintptr_t)IEEE802154_TXRX_STATUS_REG == 0x600A3088U, "IEEE802154_TXRX_STATUS_REG address calculation");
+    TEST_ASSERT((uintptr_t)IEEE802154_MAC_DATE_REG == 0x600A3184U, "IEEE802154_MAC_DATE_REG address calculation");
+
+    /* 2. Subsystem Lifecycle & Default Configuration */
+    TEST_ASSERT(ieee802154_init() == IEEE802154_OK, "ieee802154_init succeeds");
+    TEST_ASSERT(ieee802154_get_state() == IEEE802154_STATE_TRX_OFF, "Initial radio state is TRX_OFF");
+    TEST_ASSERT(ieee802154_get_date_version() == IEEE802154_MAC_DATE_EXPECTED, "Silicon date version matches expected");
+
+    ieee802154_telemetry_t telem;
+    TEST_ASSERT(ieee802154_get_telemetry(NULL) == IEEE802154_ERR_INVALID_ARG, "get_telemetry rejects NULL");
+    TEST_ASSERT(ieee802154_get_telemetry(&telem) == IEEE802154_OK, "get_telemetry succeeds");
+    TEST_ASSERT(telem.channel == IEEE802154_CHANNEL_DEFAULT, "Default channel is 15");
+    TEST_ASSERT(telem.freq_mhz == 2425U, "Default channel 15 frequency is 2425 MHz");
+    TEST_ASSERT(telem.short_addr == IEEE802154_DEFAULT_SHORT_ADDR, "Default short address is 0x1234");
+    TEST_ASSERT(telem.pan_id == IEEE802154_DEFAULT_PAN_ID, "Default PAN ID is 0x1A2B");
+    TEST_ASSERT(telem.auto_ack_tx == true, "Auto-ACK TX enabled by default");
+    TEST_ASSERT(telem.auto_ack_rx == true, "Auto-ACK RX enabled by default");
+
+    /* 3. RF Channel & Frequency Range Validation */
+    TEST_ASSERT(ieee802154_set_channel(10U) == IEEE802154_ERR_INVALID_ARG, "Channel 10 below range rejected");
+    TEST_ASSERT(ieee802154_set_channel(27U) == IEEE802154_ERR_INVALID_ARG, "Channel 27 above range rejected");
+    TEST_ASSERT(ieee802154_set_channel(11U) == IEEE802154_OK, "Channel 11 accepted");
+    TEST_ASSERT(ieee802154_get_channel() == 11U, "Channel readback is 11");
+    TEST_ASSERT(ieee802154_get_freq_mhz(11U) == 2405U, "Channel 11 frequency is 2405 MHz");
+    TEST_ASSERT(ieee802154_set_channel(26U) == IEEE802154_OK, "Channel 26 accepted");
+    TEST_ASSERT(ieee802154_get_freq_mhz(26U) == 2480U, "Channel 26 frequency is 2480 MHz");
+    TEST_ASSERT(ieee802154_set_channel(15U) == IEEE802154_OK, "Channel 15 restored");
+
+    /* 4. Addressing Controls (Short, PAN ID, EUI-64) */
+    TEST_ASSERT(ieee802154_set_short_address(0xABCDU) == IEEE802154_OK, "Set short address succeeds");
+    TEST_ASSERT(ieee802154_get_short_address() == 0xABCDU, "Short address readback matches 0xABCD");
+    TEST_ASSERT(ieee802154_set_short_address(0x1234U) == IEEE802154_OK, "Short address 0x1234 restored");
+
+    TEST_ASSERT(ieee802154_set_pan_id(0xCAFEU) == IEEE802154_OK, "Set PAN ID succeeds");
+    TEST_ASSERT(ieee802154_get_pan_id() == 0xCAFEU, "PAN ID readback matches 0xCAFE");
+    TEST_ASSERT(ieee802154_set_pan_id(0x1A2BU) == IEEE802154_OK, "PAN ID 0x1A2B restored");
+
+    uint8_t ext_addr[IEEE802154_EXT_ADDR_LEN] = {0};
+    TEST_ASSERT(ieee802154_get_extended_address(NULL) == IEEE802154_ERR_INVALID_ARG, "get_extended_address rejects NULL");
+    TEST_ASSERT(ieee802154_get_extended_address(ext_addr) == IEEE802154_OK, "get_extended_address succeeds");
+    TEST_ASSERT(ext_addr[0] == 0x40U && ext_addr[1] == 0x4CU && ext_addr[2] == 0xCAU &&
+                ext_addr[3] == 0xFFU && ext_addr[4] == 0xFEU && ext_addr[5] == 0x45U &&
+                ext_addr[6] == 0x1EU && ext_addr[7] == 0x14U,
+                "Authentic EUI-64 matches eFuse MAC 40:4C:CA:FF:FE:45:1E:14");
+
+    /* 5. Auto-ACK, Promiscuous Mode & TX Power */
+    TEST_ASSERT(ieee802154_set_auto_ack(false, true) == IEEE802154_OK, "Disable TX ACK succeeds");
+    TEST_ASSERT(ieee802154_set_promiscuous(true) == IEEE802154_OK, "Enable promiscuous mode succeeds");
+    TEST_ASSERT(ieee802154_set_auto_ack(true, true) == IEEE802154_OK, "Restore auto-ACK succeeds");
+    TEST_ASSERT(ieee802154_set_promiscuous(false) == IEEE802154_OK, "Disable promiscuous mode succeeds");
+
+    TEST_ASSERT(ieee802154_set_tx_power(0x20U) == IEEE802154_ERR_INVALID_ARG, "TX power > 31 rejected");
+    TEST_ASSERT(ieee802154_set_tx_power(0x15U) == IEEE802154_OK, "Set TX power 0x15 succeeds");
+    TEST_ASSERT(ieee802154_get_tx_power() == 0x15U, "TX power readback matches 0x15");
+    TEST_ASSERT(ieee802154_set_tx_power(IEEE802154_TX_POWER_DEFAULT) == IEEE802154_OK, "Restore default TX power");
+
+    /* 6. Command Dispatcher & State Machine */
+    TEST_ASSERT(ieee802154_cmd((ieee802154_cmd_t)0xFFU) == IEEE802154_ERR_INVALID_ARG, "Invalid command opcode rejected");
+    TEST_ASSERT(ieee802154_cmd(IEEE802154_CMD_RX_START) == IEEE802154_OK, "CMD_RX_START succeeds");
+    TEST_ASSERT(ieee802154_get_state() == IEEE802154_STATE_RX, "State is IEEE802154_STATE_RX");
+    TEST_ASSERT(ieee802154_cmd(IEEE802154_CMD_TX_START) == IEEE802154_OK, "CMD_TX_START succeeds");
+    TEST_ASSERT(ieee802154_get_state() == IEEE802154_STATE_TX, "State is IEEE802154_STATE_TX");
+    TEST_ASSERT(ieee802154_cmd(IEEE802154_CMD_FORCE_TRX_OFF) == IEEE802154_OK, "CMD_FORCE_TRX_OFF succeeds");
+    TEST_ASSERT(ieee802154_get_state() == IEEE802154_STATE_TRX_OFF, "State returns to TRX_OFF");
+}
+
 /* ========================================================================= */
 /* Phase 0-3 Host Test Hardening: Cross-Module Integration & Edge Case Tests */
 /* ========================================================================= */
@@ -2487,6 +2569,7 @@ int main(void)
     test_modem_subsystem();
     test_ble_gatt_subsystem();
     test_wifi_mac_subsystem();
+    test_ieee802154_subsystem();
 
     /* Hardened cross-module integration and edge case tests */
     test_coroutine_systimer_dpc_integration();

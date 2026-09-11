@@ -322,7 +322,7 @@ def run_suite():
     native_desc = ""
     if not os.path.exists(native_test_bin):
         comp = subprocess.run(
-            ["gcc", "-O2", "-fno-tree-loop-distribute-patterns", "-Wall", "-Wextra", "-Werror", "-Isrc", "tests/test_freestanding.c", "src/string.c", "src/dpc.c", "src/arena.c", "src/pmp.c", "src/lp_core.c", "src/power.c", "src/gpio.c", "src/gdma.c", "src/modem.c", "src/ble.c", "src/wifi.c", "-o", native_test_bin],
+            ["gcc", "-O2", "-fno-tree-loop-distribute-patterns", "-Wall", "-Wextra", "-Werror", "-Isrc", "tests/test_freestanding.c", "src/string.c", "src/dpc.c", "src/arena.c", "src/pmp.c", "src/lp_core.c", "src/power.c", "src/gpio.c", "src/gdma.c", "src/modem.c", "src/ble.c", "src/wifi.c", "src/ieee802154.c", "-o", native_test_bin],
             capture_output=True, text=True
         )
         if comp.returncode != 0:
@@ -986,6 +986,45 @@ def run_suite():
         f"All {len(wifi_syms)} Wi-Fi driver symbols present in IRAM text section [0x40800000, 0x40820000)",
         t30_actual,
         t30_pass
+    )
+
+    # TEST 31: IEEE 802.15.4 Radio Transceiver Driver Linkage (Task 5.4)
+    total += 1
+    ieee_syms = [
+        "ieee802154_init",
+        "ieee802154_cmd",
+        "ieee802154_set_channel",
+        "ieee802154_get_channel",
+        "ieee802154_get_freq_mhz",
+        "ieee802154_set_short_address",
+        "ieee802154_get_short_address",
+        "ieee802154_set_pan_id",
+        "ieee802154_get_pan_id",
+        "ieee802154_set_extended_address",
+        "ieee802154_get_extended_address",
+        "ieee802154_set_auto_ack",
+        "ieee802154_set_promiscuous",
+        "ieee802154_set_tx_power",
+        "ieee802154_get_tx_power",
+        "ieee802154_get_state",
+        "ieee802154_get_telemetry",
+        "ieee802154_get_date_version"
+    ]
+    found_ieee_syms = [s for s in ieee_syms if s in symbols]
+    all_ieee_found = len(found_ieee_syms) == len(ieee_syms)
+    all_ieee_in_text = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40820000)
+        for s in found_ieee_syms
+    )
+    t31_pass = all_ieee_found and all_ieee_in_text
+    t31_actual = f"Found {len(found_ieee_syms)}/{len(ieee_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    passed += print_result_line(
+        total,
+        "IEEE 802.15.4 Radio Transceiver Driver Linkage",
+        "Verify ieee802154_init, cmd, channel, addressing, auto-ack, power, and telemetry symbols exist in IRAM",
+        f"All {len(ieee_syms)} IEEE 802.15.4 driver symbols present in IRAM text section [0x40800000, 0x40820000)",
+        t31_actual,
+        t31_pass
     )
 
     print("\n" + "=" * 70)

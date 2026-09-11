@@ -66,6 +66,7 @@ static inline void reg_clear_bits(volatile uint32_t *addr, uint32_t mask)
 /* Host Emulation Environment for Native Verification */
 static uint32_t s_mock_pcr_modem_apb_conf   = 0U;
 static uint32_t s_mock_modem_syscon_clk_conf = MODEM_CLK_DATA_DUMP_MUX_BIT;
+static uint32_t s_mock_modem_syscon_clk_conf_fo = 0U;
 static uint32_t s_mock_modem_syscon_clk_conf1 = 0U;
 static uint32_t s_mock_modem_syscon_rst_conf  = 0U;
 static uint32_t s_mock_modem_lpcon_coex_lp  = 0U;
@@ -90,6 +91,7 @@ static inline uint32_t reg_read(volatile uint32_t *addr)
     uintptr_t a = (uintptr_t)addr;
     if (a == (uintptr_t)PCR_MODEM_APB_CONF_REG) return s_mock_pcr_modem_apb_conf;
     if (a == (uintptr_t)MODEM_SYSCON_CLK_CONF_REG) return s_mock_modem_syscon_clk_conf;
+    if (a == (uintptr_t)MODEM_SYSCON_CLK_CONF_FORCE_ON_REG) return s_mock_modem_syscon_clk_conf_fo;
     if (a == (uintptr_t)MODEM_SYSCON_CLK_CONF1_REG) return s_mock_modem_syscon_clk_conf1;
     if (a == (uintptr_t)MODEM_SYSCON_MODEM_RST_CONF_REG) return s_mock_modem_syscon_rst_conf;
     if (a == (uintptr_t)MODEM_LPCON_COEX_LP_CLK_CONF_REG) return s_mock_modem_lpcon_coex_lp;
@@ -106,6 +108,7 @@ static inline void reg_write(volatile uint32_t *addr, uint32_t val)
     uintptr_t a = (uintptr_t)addr;
     if (a == (uintptr_t)PCR_MODEM_APB_CONF_REG) s_mock_pcr_modem_apb_conf = val;
     else if (a == (uintptr_t)MODEM_SYSCON_CLK_CONF_REG) s_mock_modem_syscon_clk_conf = val;
+    else if (a == (uintptr_t)MODEM_SYSCON_CLK_CONF_FORCE_ON_REG) s_mock_modem_syscon_clk_conf_fo = val;
     else if (a == (uintptr_t)MODEM_SYSCON_CLK_CONF1_REG) s_mock_modem_syscon_clk_conf1 = val;
     else if (a == (uintptr_t)MODEM_SYSCON_MODEM_RST_CONF_REG) s_mock_modem_syscon_rst_conf = val;
     else if (a == (uintptr_t)MODEM_LPCON_COEX_LP_CLK_CONF_REG) s_mock_modem_lpcon_coex_lp = val;
@@ -283,6 +286,10 @@ modem_status_t modem_enable_ieee802154_clocks(void)
                  MODEM_CLK_ZB_MAC_EN_BIT |
                  MODEM_CLK_ZB_APB_EN_BIT);
 
+    reg_set_bits(MODEM_SYSCON_CLK_CONF_FORCE_ON_REG,
+                 MODEM_CLK_ZB_MAC_FO_BIT |
+                 MODEM_CLK_ZB_APB_FO_BIT);
+
     /* 2. Settling delay */
     modem_delay(MODEM_CLOCK_SETTLE_CYCLES);
 
@@ -301,10 +308,14 @@ modem_status_t modem_disable_ieee802154_clocks(void)
     /* 2. Settling delay */
     modem_delay(MODEM_CLOCK_SETTLE_CYCLES);
 
-    /* 3. Gate off clock enable bits */
+    /* 3. Gate off clock enable and force-on bits */
     reg_clear_bits(MODEM_SYSCON_CLK_CONF_REG,
                    MODEM_CLK_ZB_MAC_EN_BIT |
                    MODEM_CLK_ZB_APB_EN_BIT);
+
+    reg_clear_bits(MODEM_SYSCON_CLK_CONF_FORCE_ON_REG,
+                   MODEM_CLK_ZB_MAC_FO_BIT |
+                   MODEM_CLK_ZB_APB_FO_BIT);
 
     s_modem_state.ieee802154_clk_enabled = 0U;
     return MODEM_OK;

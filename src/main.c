@@ -24,6 +24,7 @@
 #include "ble.h"
 #include "ble_gatt.h"
 #include "wifi.h"
+#include "ieee802154.h"
 
 static void print_help(void)
 {
@@ -46,6 +47,7 @@ static void print_help(void)
     console_puts("  modem [status|all|wifi|ble|15.4] - Show or control wireless modem clocks and power\r\n");
     console_puts("  ble [status|adv|stop|read|info] - Show or control BLE controller, advertising & GATT\r\n");
     console_puts("  wifi [status|mac|ring|init] - Show or control 802.11ax Wi-Fi 6 MAC driver & packet ring\r\n");
+    console_puts("  15.4 [status|chan|pan|short|rx|tx|stop] - Show or control IEEE 802.15.4 radio transceiver\r\n");
     console_puts("  do-test             - Run full baseline validation test suite\r\n");
 }
 
@@ -275,6 +277,25 @@ static void print_info(void)
     console_puts(", Ring: ");
     put_dec(wtel.rx_ring_capacity);
     console_puts(" buffers (1536B each)\r\n");
+
+    ieee802154_telemetry_t ztel;
+    ieee802154_get_telemetry(&ztel);
+    console_puts(" 15.4:    State: ");
+    if (ztel.state == IEEE802154_STATE_DISABLE) console_puts("DISABLE");
+    else if (ztel.state == IEEE802154_STATE_IDLE) console_puts("IDLE");
+    else if (ztel.state == IEEE802154_STATE_TRX_OFF) console_puts("TRX_OFF");
+    else if (ztel.state == IEEE802154_STATE_RX) console_puts("RX");
+    else if (ztel.state == IEEE802154_STATE_TX) console_puts("TX");
+    else console_puts("CCA");
+    console_puts(", Channel: ");
+    put_dec(ztel.channel);
+    console_puts(" (");
+    put_dec(ztel.freq_mhz);
+    console_puts(" MHz), PAN: ");
+    put_hex(ztel.pan_id);
+    console_puts(", Short: ");
+    put_hex(ztel.short_addr);
+    console_puts("\r\n");
     console_puts("========================================\r\n");
 }
 
@@ -1384,6 +1405,141 @@ static void shell_execute(char *input_buffer)
             console_puts("\r\n");
         }
     }
+    else if (strncmp(input_buffer, "15.4", 4) == 0 && (input_buffer[4] == ' ' || input_buffer[4] == '\0'))
+    {
+        char *subcmd = input_buffer + 4;
+        while (*subcmd == ' ') subcmd++;
+
+        if (strncmp(subcmd, "chan", 4) == 0)
+        {
+            char *arg = subcmd + 4;
+            while (*arg == ' ') arg++;
+            uint32_t chan = 0;
+            if (parse_uint(&arg, &chan))
+            {
+                ieee802154_status_t cst = ieee802154_set_channel((uint8_t)chan);
+                if (cst == IEEE802154_OK)
+                {
+                    console_puts("IEEE 802.15.4 channel set to ");
+                    put_dec(chan);
+                    console_puts(" (");
+                    put_dec(ieee802154_get_freq_mhz((uint8_t)chan));
+                    console_puts(" MHz).\r\n");
+                }
+                else
+                {
+                    console_puts("Error: Invalid channel (allowed 11-26).\r\n");
+                }
+            }
+            else
+            {
+                console_puts("Usage: 15.4 chan <11-26>\r\n");
+            }
+        }
+        else if (strncmp(subcmd, "pan", 3) == 0)
+        {
+            char *arg = subcmd + 3;
+            while (*arg == ' ') arg++;
+            uint32_t pan = 0;
+            if (parse_uint(&arg, &pan))
+            {
+                ieee802154_set_pan_id((uint16_t)pan);
+                console_puts("IEEE 802.15.4 PAN ID set to ");
+                put_hex(pan);
+                console_puts(".\r\n");
+            }
+            else
+            {
+                console_puts("Usage: 15.4 pan <hex_pan_id>\r\n");
+            }
+        }
+        else if (strncmp(subcmd, "short", 5) == 0)
+        {
+            char *arg = subcmd + 5;
+            while (*arg == ' ') arg++;
+            uint32_t saddr = 0;
+            if (parse_uint(&arg, &saddr))
+            {
+                ieee802154_set_short_address((uint16_t)saddr);
+                console_puts("IEEE 802.15.4 Short Address set to ");
+                put_hex(saddr);
+                console_puts(".\r\n");
+            }
+            else
+            {
+                console_puts("Usage: 15.4 short <hex_short_addr>\r\n");
+            }
+        }
+        else if (strncmp(subcmd, "rx", 2) == 0)
+        {
+            ieee802154_cmd(IEEE802154_CMD_RX_START);
+            console_puts("IEEE 802.15.4 Transceiver entered RX state.\r\n");
+        }
+        else if (strncmp(subcmd, "tx", 2) == 0)
+        {
+            ieee802154_cmd(IEEE802154_CMD_TX_START);
+            console_puts("IEEE 802.15.4 Transceiver entered TX state.\r\n");
+        }
+        else if (strncmp(subcmd, "stop", 4) == 0)
+        {
+            ieee802154_cmd(IEEE802154_CMD_FORCE_TRX_OFF);
+            console_puts("IEEE 802.15.4 Transceiver entered TRX_OFF standby state.\r\n");
+        }
+        else
+        {
+            ieee802154_telemetry_t zt;
+            ieee802154_get_telemetry(&zt);
+            console_puts("IEEE 802.15.4 (Zigbee / Thread) Radio Transceiver Status:\r\n");
+            console_puts("  State:             ");
+            if (zt.state == IEEE802154_STATE_DISABLE) console_puts("DISABLE");
+            else if (zt.state == IEEE802154_STATE_IDLE) console_puts("IDLE");
+            else if (zt.state == IEEE802154_STATE_TRX_OFF) console_puts("TRX_OFF");
+            else if (zt.state == IEEE802154_STATE_RX) console_puts("RX");
+            else if (zt.state == IEEE802154_STATE_TX) console_puts("TX");
+            else console_puts("CCA");
+            console_puts("\r\n");
+            console_puts("  Channel:           ");
+            put_dec(zt.channel);
+            console_puts(" (");
+            put_dec(zt.freq_mhz);
+            console_puts(" MHz, 2.4 GHz ISM)\r\n");
+            console_puts("  PAN ID:            ");
+            put_hex(zt.pan_id);
+            console_puts("\r\n");
+            console_puts("  Short Address:     ");
+            put_hex(zt.short_addr);
+            console_puts("\r\n");
+            console_puts("  Extended EUI-64:   ");
+            for (int i = 0; i < 8; i++)
+            {
+                uint8_t byte = zt.ext_addr[i];
+                const char hex_chars[] = "0123456789abcdef";
+                console_putc(hex_chars[(byte >> 4) & 0x0F]);
+                console_putc(hex_chars[byte & 0x0F]);
+                if (i < 7) console_putc(':');
+            }
+            console_puts("\r\n");
+            console_puts("  TX Power Level:    ");
+            put_dec(zt.tx_power);
+            console_puts(" / 31\r\n");
+            console_puts("  Auto-ACK TX / RX:  ");
+            console_puts(zt.auto_ack_tx ? "ENABLED" : "DISABLED");
+            console_puts(" / ");
+            console_puts(zt.auto_ack_rx ? "ENABLED" : "DISABLED");
+            console_puts("\r\n");
+            console_puts("  Promiscuous Mode:  ");
+            console_puts(zt.promiscuous ? "ENABLED" : "DISABLED");
+            console_puts("\r\n");
+            console_puts("  Hardware Version:  ");
+            put_hex(zt.date_version);
+            console_puts("\r\n");
+            console_puts("  Transceiver Cmds:  TX=");
+            put_dec(zt.tx_count);
+            console_puts(", RX=");
+            put_dec(zt.rx_count);
+            console_puts("\r\n");
+        }
+    }
     else
     {
         console_puts("Unknown command. Type 'help' for available commands.\r\n");
@@ -1465,6 +1621,9 @@ void main(void)
 
     /* Initialize 802.11ax Wi-Fi 6 MAC Driver & Zero-Copy Packet Ring */
     wifi_init();
+
+    /* Initialize IEEE 802.15.4 Radio Transceiver Driver */
+    ieee802154_init();
 
     console_puts("\r\n");
     print_info();

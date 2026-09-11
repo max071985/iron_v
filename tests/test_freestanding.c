@@ -22,6 +22,8 @@
 #include "gpio.h"
 #include "gdma.h"
 #include "modem.h"
+#include "ble.h"
+#include "ble_gatt.h"
 
 /* Freestanding function aliases matching runtime naming conventions */
 static inline size_t s_strlen(const char *s)
@@ -1278,6 +1280,137 @@ static void test_modem_subsystem(void)
     TEST_ASSERT(st.coexistence_enabled == 1U, "Coexistence confirmed enabled");
 }
 
+static void test_ble_gatt_subsystem(void)
+{
+    printf("  [TEST] Bluetooth 5 (LE) Controller Driver & Minimal GATT Server (Task 5.2)...\n");
+
+    /* 1. Register Address & Offset Calculation Validation (AGENTS.md rule) */
+    TEST_ASSERT((uintptr_t)EFUSE_MAC_SYS_0_REG == 0x600B0844U, "EFUSE_MAC_SYS_0_REG address calculation");
+    TEST_ASSERT((uintptr_t)EFUSE_MAC_SYS_1_REG == 0x600B0848U, "EFUSE_MAC_SYS_1_REG address calculation");
+
+    /* 2. Concrete Data Structure Geometry & Packet Sizing */
+    TEST_ASSERT(sizeof(ble_adv_packet_t) == 21U, "sizeof(ble_adv_packet_t) must be 21 bytes packed");
+    TEST_ASSERT(sizeof(ble_telemetry_t) >= 28U, "sizeof(ble_telemetry_t) geometry check");
+    TEST_ASSERT(sizeof(gatt_attribute_t) >= 12U, "sizeof(gatt_attribute_t) geometry check");
+
+    /* 3. Subsystem Lifecycle & BD_ADDR Retrieval */
+    TEST_ASSERT(ble_init() == BLE_OK, "ble_init succeeds");
+    uint8_t mac[BLE_BD_ADDR_LEN] = {0};
+    TEST_ASSERT(ble_get_bd_addr(NULL) == BLE_ERR_INVALID_ARG, "ble_get_bd_addr rejects NULL");
+    TEST_ASSERT(ble_get_bd_addr(mac) == BLE_OK, "ble_get_bd_addr succeeds");
+    TEST_ASSERT(mac[0] == 0x40U && mac[1] == 0x4CU && mac[2] == 0xCAU &&
+                mac[3] == 0x45U && mac[4] == 0x1EU && mac[5] == 0x14U,
+                "Authentic BD_ADDR matches hardware 40:4C:CA:45:1E:14");
+
+    ble_telemetry_t telem;
+    TEST_ASSERT(ble_get_telemetry(NULL) == BLE_ERR_INVALID_ARG, "ble_get_telemetry rejects NULL");
+    TEST_ASSERT(ble_get_telemetry(&telem) == BLE_OK, "ble_get_telemetry succeeds");
+    TEST_ASSERT(telem.state == BLE_STATE_STANDBY, "Initial state is BLE_STATE_STANDBY");
+    TEST_ASSERT(ble_gap_get_state() == BLE_STATE_STANDBY, "ble_gap_get_state matches BLE_STATE_STANDBY");
+
+    /* 4. HCI Reset Command Loopback (TEST 30 Sequence) */
+    /* Command: [0x01, 0x03, 0x0C, 0x00] */
+    uint8_t hci_reset_cmd[] = { HCI_PKT_TYPE_CMD, 0x03U, 0x0CU, 0x00U };
+    uint8_t evt_resp[32];
+
+    TEST_ASSERT(ble_hci_send_cmd(NULL, sizeof(hci_reset_cmd)) == BLE_ERR_INVALID_ARG, "ble_hci_send_cmd rejects NULL");
+    TEST_ASSERT(ble_hci_send_cmd(hci_reset_cmd, 3U) == BLE_ERR_INVALID_ARG, "ble_hci_send_cmd rejects len < 4");
+    uint8_t bad_type_cmd[] = { 0x02U, 0x03U, 0x0CU, 0x00U };
+    TEST_ASSERT(ble_hci_send_cmd(bad_type_cmd, 4U) == BLE_ERR_INVALID_ARG, "ble_hci_send_cmd rejects non-command type");
+
+    TEST_ASSERT(ble_hci_send_cmd(hci_reset_cmd, sizeof(hci_reset_cmd)) == BLE_OK, "HCI_Reset dispatch succeeds");
+    TEST_ASSERT(ble_hci_has_event() == true, "ble_hci_has_event indicates event queued");
+
+    TEST_ASSERT(ble_hci_recv_event(NULL, sizeof(evt_resp), BLE_DEFAULT_TIMEOUT_MS) == BLE_ERR_INVALID_ARG, "ble_hci_recv_event rejects NULL");
+    TEST_ASSERT(ble_hci_recv_event(evt_resp, 0U, BLE_DEFAULT_TIMEOUT_MS) == BLE_ERR_INVALID_ARG, "ble_hci_recv_event rejects max_len 0");
+    TEST_ASSERT(ble_hci_recv_event(evt_resp, sizeof(evt_resp), BLE_DEFAULT_TIMEOUT_MS) == BLE_OK, "HCI_Reset response received");
+
+    /* Expected: [0x04, 0x0E, 0x04, 0x01, 0x03, 0x0C, 0x00] */
+    TEST_ASSERT(evt_resp[0] == HCI_PKT_TYPE_EVT, "Response packet type is EVT (0x04)");
+    TEST_ASSERT(evt_resp[1] == HCI_EVT_COMMAND_COMPLETE, "Event code is COMMAND_COMPLETE (0x0E)");
+    TEST_ASSERT(evt_resp[2] == 0x04U, "Param length is 4");
+    TEST_ASSERT(evt_resp[3] == 0x01U, "Num_HCI_Command_Packets is 1");
+    TEST_ASSERT(evt_resp[4] == 0x03U && evt_resp[5] == 0x0CU, "Opcode is HCI_Reset (0x0C03)");
+    TEST_ASSERT(evt_resp[6] == HCI_STATUS_SUCCESS, "Status is HCI_STATUS_SUCCESS (0x00)");
+
+    /* 5. HCI Read BD_ADDR & Read Local Version Commands */
+    uint8_t read_bd_cmd[] = { HCI_PKT_TYPE_CMD, 0x02U, 0x10U, 0x00U };
+    TEST_ASSERT(ble_hci_execute_cmd(read_bd_cmd, sizeof(read_bd_cmd), evt_resp, sizeof(evt_resp), BLE_DEFAULT_TIMEOUT_MS) == BLE_OK,
+                "ble_hci_execute_cmd HCI_Read_BD_Addr succeeds");
+    TEST_ASSERT(evt_resp[0] == HCI_PKT_TYPE_EVT && evt_resp[1] == HCI_EVT_COMMAND_COMPLETE, "Read_BD_Addr returns Command Complete");
+    TEST_ASSERT(evt_resp[4] == 0x02U && evt_resp[5] == 0x10U, "Opcode matches HCI_Read_BD_Addr (0x1002)");
+    TEST_ASSERT(evt_resp[6] == HCI_STATUS_SUCCESS, "Read_BD_Addr status is success");
+    TEST_ASSERT(evt_resp[7] == 0x14U && evt_resp[8] == 0x1EU && evt_resp[9] == 0x45U &&
+                evt_resp[10] == 0xCAU && evt_resp[11] == 0x4CU && evt_resp[12] == 0x40U,
+                "Read_BD_Addr little-endian address matches hardware BD_ADDR");
+
+    uint8_t read_ver_cmd[] = { HCI_PKT_TYPE_CMD, 0x01U, 0x10U, 0x00U };
+    TEST_ASSERT(ble_hci_execute_cmd(read_ver_cmd, sizeof(read_ver_cmd), evt_resp, sizeof(evt_resp), BLE_DEFAULT_TIMEOUT_MS) == BLE_OK,
+                "ble_hci_execute_cmd HCI_Read_Local_Version succeeds");
+    TEST_ASSERT(evt_resp[6] == HCI_STATUS_SUCCESS, "Read_Local_Version status is success");
+    TEST_ASSERT(evt_resp[7] == 0x0CU, "HCI version is 5.3 (0x0C)");
+    TEST_ASSERT(evt_resp[11] == 0x02U && evt_resp[12] == 0x00U, "Manufacturer is Espressif (0x0002)");
+
+    /* Unknown opcode handling */
+    uint8_t unknown_cmd[] = { HCI_PKT_TYPE_CMD, 0xFEU, 0xFEU, 0x00U };
+    TEST_ASSERT(ble_hci_execute_cmd(unknown_cmd, sizeof(unknown_cmd), evt_resp, sizeof(evt_resp), BLE_DEFAULT_TIMEOUT_MS) == BLE_OK,
+                "Unknown HCI command dispatches cleanly");
+    TEST_ASSERT(evt_resp[6] == HCI_STATUS_UNKNOWN_HCI_CMD, "Unknown command returns HCI_STATUS_UNKNOWN_HCI_CMD");
+
+    /* 6. GAP Advertising State Machine */
+    TEST_ASSERT(ble_gap_start_advertising() == BLE_OK, "ble_gap_start_advertising succeeds");
+    TEST_ASSERT(ble_gap_get_state() == BLE_STATE_ADVERTISING, "State transitions to BLE_STATE_ADVERTISING");
+    TEST_ASSERT(ble_get_telemetry(&telem) == BLE_OK, "ble_get_telemetry succeeds");
+    TEST_ASSERT(telem.adv_start_count >= 1U, "adv_start_count incremented");
+
+    TEST_ASSERT(ble_gap_stop_advertising() == BLE_OK, "ble_gap_stop_advertising succeeds");
+    TEST_ASSERT(ble_gap_get_state() == BLE_STATE_STANDBY, "State returns to BLE_STATE_STANDBY");
+    TEST_ASSERT(ble_get_telemetry(&telem) == BLE_OK, "ble_get_telemetry succeeds");
+    TEST_ASSERT(telem.adv_stop_count >= 1U, "adv_stop_count incremented");
+
+    /* 7. Static Zero-Allocation GATT Database */
+    TEST_ASSERT(gatt_db_init() == GATT_OK, "gatt_db_init succeeds");
+    TEST_ASSERT(gatt_db_get_count() == 16U, "GATT database contains exactly 16 static attributes");
+
+    /* Lookup attributes by handle */
+    const gatt_attribute_t *attr1 = gatt_db_find_by_handle(0x0001U);
+    TEST_ASSERT(attr1 != NULL && attr1->uuid == GATT_UUID_PRIMARY_SERVICE, "Handle 0x0001 is Primary Service");
+    const gatt_attribute_t *attr3 = gatt_db_find_by_handle(0x0003U);
+    TEST_ASSERT(attr3 != NULL && attr3->uuid == GATT_UUID_CHAR_DEVICE_NAME, "Handle 0x0003 is Device Name");
+    const gatt_attribute_t *attr6 = gatt_db_find_by_handle(0x0006U);
+    TEST_ASSERT(attr6 != NULL && attr6->uuid == GATT_UUID_PRIMARY_SERVICE, "Handle 0x0006 is Primary Service (DevInfo)");
+    const gatt_attribute_t *attr13 = gatt_db_find_by_handle(0x000DU);
+    TEST_ASSERT(attr13 != NULL && attr13->uuid == GATT_UUID_PRIMARY_SERVICE, "Handle 0x000D is Primary Service (Custom 0xFFE0)");
+    const gatt_attribute_t *attr15 = gatt_db_find_by_handle(0x000FU);
+    TEST_ASSERT(attr15 != NULL && attr15->uuid == GATT_UUID_CHAR_CUSTOM_DATA, "Handle 0x000F is Custom Data");
+
+    /* Lookup attributes by UUID */
+    TEST_ASSERT(gatt_db_find_by_uuid(GATT_UUID_CHAR_DEVICE_NAME) == attr3, "Find by UUID 0x2A00 matches attr3");
+    TEST_ASSERT(gatt_db_find_by_uuid(0xDEADU) == NULL, "Find by non-existent UUID returns NULL");
+
+    /* Read attribute values */
+    uint8_t read_buf[64];
+    uint16_t read_len = 0U;
+    TEST_ASSERT(gatt_db_read(0x0003U, read_buf, sizeof(read_buf), &read_len) == GATT_OK, "Read Device Name succeeds");
+    TEST_ASSERT(read_len == 9U && s_strncmp((char *)read_buf, "IRON-V-C6", 9) == 0, "Device Name is 'IRON-V-C6'");
+
+    TEST_ASSERT(gatt_db_read(0x000CU, read_buf, sizeof(read_buf), &read_len) == GATT_OK, "Read Firmware Revision succeeds");
+    TEST_ASSERT(read_len == 5U && s_strncmp((char *)read_buf, "1.0.0", 5) == 0, "Firmware Revision is '1.0.0'");
+
+    /* Write attribute values and verify readback */
+    uint8_t write_data[] = "IRON-V-BLE-GATT-TEST-PAYLOAD";
+    TEST_ASSERT(gatt_db_write(0x000FU, write_data, (uint16_t)sizeof(write_data)) == GATT_OK, "Write Custom Data (Handle 0x000F) succeeds");
+    TEST_ASSERT(gatt_db_read(0x000FU, read_buf, sizeof(read_buf), &read_len) == GATT_OK, "Readback Custom Data succeeds");
+    TEST_ASSERT(read_len == sizeof(write_data) && s_strcmp((char *)read_buf, (char *)write_data) == 0, "Readback matches written payload");
+
+    /* Permission enforcement & error checking */
+    TEST_ASSERT(gatt_db_write(0x0003U, write_data, 10U) == GATT_ERR_WRITE_NOT_PERMITTED, "Write to read-only Device Name rejected");
+    TEST_ASSERT(gatt_db_read(0x9999U, read_buf, sizeof(read_buf), &read_len) == GATT_ERR_INVALID_HANDLE, "Read invalid handle rejected");
+    TEST_ASSERT(gatt_db_write(0x9999U, write_data, 10U) == GATT_ERR_INVALID_HANDLE, "Write invalid handle rejected");
+    TEST_ASSERT(gatt_db_read(0x0001U, NULL, sizeof(read_buf), &read_len) == GATT_ERR_INVALID_ARG, "Read with NULL buffer rejected");
+    TEST_ASSERT(gatt_db_write(0x000FU, NULL, 10U) == GATT_ERR_INVALID_ARG, "Write with NULL data rejected");
+}
+
 /* ========================================================================= */
 /* Phase 0-3 Host Test Hardening: Cross-Module Integration & Edge Case Tests */
 /* ========================================================================= */
@@ -2277,6 +2410,7 @@ int main(void)
     test_gpio_subsystem();
     test_gdma_subsystem();
     test_modem_subsystem();
+    test_ble_gatt_subsystem();
 
     /* Hardened cross-module integration and edge case tests */
     test_coroutine_systimer_dpc_integration();

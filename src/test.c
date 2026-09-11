@@ -20,6 +20,8 @@
 #include "gpio.h"
 #include "gdma.h"
 #include "modem.h"
+#include "ble.h"
+#include "ble_gatt.h"
 
 /* Route all test output to unified dual-console multiplexer */
 #define uart_puts console_puts
@@ -1897,6 +1899,123 @@ void run_validation_suite(void)
                    date_match && baseband_bus_ok;
     if (t29_pass) passed_tests++;
     print_result(t29_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 30: Bluetooth 5 (LE) Controller & Minimal GATT Server    */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(30, "Bluetooth 5 (LE) Controller Driver & Minimal GATT Server",
+                      "Execute HCI Reset loopback, verify command complete, and validate static GATT database");
+
+    wdt_feed();
+
+    /* 1. Initialize BLE subsystem */
+    int ble_init_ok = (ble_init() == BLE_OK);
+
+    /* 2. Retrieve authentic silicon BD_ADDR */
+    uint8_t dev_mac[BLE_BD_ADDR_LEN] = {0};
+    int mac_ok = (ble_get_bd_addr(dev_mac) == BLE_OK);
+
+    /* 3. Assemble and dispatch HCI_Reset command [0x01, 0x03, 0x0C, 0x00] */
+    uint8_t hci_reset_pkt[] = {
+        HCI_PKT_TYPE_CMD,
+        (uint8_t)(HCI_OPCODE_RESET & 0xFFU),
+        (uint8_t)(HCI_OPCODE_RESET >> 8U),
+        0x00U
+    };
+
+    uint8_t evt_buf[32] = {0};
+    uint64_t t_start_us = systimer_get_us();
+    ble_status_t hci_stat = ble_hci_execute_cmd(hci_reset_pkt, sizeof(hci_reset_pkt),
+                                                evt_buf, sizeof(evt_buf),
+                                                BLE_DEFAULT_TIMEOUT_MS);
+    uint64_t t_elapsed_us = systimer_get_us() - t_start_us;
+
+    int hci_exec_ok = (hci_stat == BLE_OK);
+    int latency_bounded = (t_elapsed_us <= 100000ULL); /* <= 100 ms */
+
+    /* Verify response: [0x04, 0x0E, 0x04, 0x01, 0x03, 0x0C, 0x00] */
+    int evt_type_ok = (evt_buf[0] == HCI_PKT_TYPE_EVT);
+    int evt_code_ok = (evt_buf[1] == HCI_EVT_COMMAND_COMPLETE);
+    int evt_len_ok  = (evt_buf[2] == 0x04U);
+    int evt_num_ok  = (evt_buf[3] == 0x01U);
+    int evt_op_ok   = (evt_buf[4] == 0x03U && evt_buf[5] == 0x0CU);
+    int evt_stat_ok = (evt_buf[6] == HCI_STATUS_SUCCESS);
+    int hci_reset_pass = hci_exec_ok && latency_bounded &&
+                         evt_type_ok && evt_code_ok && evt_len_ok &&
+                         evt_num_ok && evt_op_ok && evt_stat_ok;
+
+    /* 4. Validate Static GATT Database layout and attributes */
+    int gatt_init_ok = (gatt_db_init() == GATT_OK);
+    uint16_t attr_count = gatt_db_get_count();
+    int attr_count_ok = (attr_count == 16U);
+
+    /* Verify Device Information Service (UUID 0x180A) and Custom Automation (UUID 0xFFE0) */
+    const gatt_attribute_t *attr_devinfo = gatt_db_find_by_uuid(GATT_UUID_SERVICE_DEVICE_INFO);
+    const gatt_attribute_t *attr_custom  = gatt_db_find_by_uuid(GATT_UUID_SERVICE_CUSTOM_AUTO);
+    const gatt_attribute_t *attr_name    = gatt_db_find_by_handle(0x0003U);
+    const gatt_attribute_t *attr_data    = gatt_db_find_by_handle(0x000FU);
+    int gatt_lookup_ok = (attr_devinfo != NULL) && (attr_custom != NULL) &&
+                         (attr_name != NULL) && (attr_data != NULL);
+
+    /* Verify attribute reading */
+    uint8_t val_buf[32] = {0};
+    uint16_t val_len = 0U;
+    int read_ok = (gatt_db_read(0x0003U, val_buf, sizeof(val_buf), &val_len) == GATT_OK) &&
+                  (val_len == 9U) && (strncmp((char *)val_buf, "IRON-V-C6", 9) == 0);
+
+    /* Verify attribute write and readback */
+    uint8_t test_wr[] = { 0xDEU, 0xADU, 0xBEU, 0xEFU };
+    int write_ok = (gatt_db_write(0x000FU, test_wr, sizeof(test_wr)) == GATT_OK);
+    uint8_t rb_data[8] = {0};
+    uint16_t rb_len = 0U;
+    int readback_ok = (gatt_db_read(0x000FU, rb_data, sizeof(rb_data), &rb_len) == GATT_OK) &&
+                      (rb_len == sizeof(test_wr)) &&
+                      (rb_data[0] == 0xDEU && rb_data[1] == 0xADU && rb_data[2] == 0xBEU && rb_data[3] == 0xEFU);
+
+    int gatt_pass = gatt_init_ok && attr_count_ok && gatt_lookup_ok && read_ok && write_ok && readback_ok;
+
+    /* 5. GAP Advertising State Verification */
+    int gap_adv_start_ok = (ble_gap_start_advertising() == BLE_OK);
+    int gap_state_adv_ok = (ble_gap_get_state() == BLE_STATE_ADVERTISING);
+    int gap_adv_stop_ok  = (ble_gap_stop_advertising() == BLE_OK);
+    int gap_state_std_ok = (ble_gap_get_state() == BLE_STATE_STANDBY);
+    int gap_pass = gap_adv_start_ok && gap_state_adv_ok && gap_adv_stop_ok && gap_state_std_ok;
+
+    wdt_feed();
+
+    uart_puts("  Expected:    Init=1, MAC=1, HCIReset=1, BoundedTime=1, GATT=1, GAPAdv=1\r\n");
+    uart_puts("  Actual:      Init=");
+    put_dec(ble_init_ok);
+    uart_puts(", MAC=");
+    put_dec(mac_ok);
+    uart_puts(", HCIReset=");
+    put_dec(hci_reset_pass);
+    uart_puts(", BoundedTime=");
+    put_dec(latency_bounded);
+    uart_puts(", GATT=");
+    put_dec(gatt_pass);
+    uart_puts(", GAPAdv=");
+    put_dec(gap_pass);
+    uart_puts("\r\n");
+
+    uart_puts("  Diag: BD_ADDR=");
+    for (int i = 0; i < 6; i++)
+    {
+        put_hex(dev_mac[i]);
+        if (i < 5) uart_puts(":");
+    }
+    uart_puts(", ElapsedUs=");
+    put_dec((uint32_t)t_elapsed_us);
+    uart_puts(", AttrCount=");
+    put_dec(attr_count);
+    uart_puts(", EvtStat=");
+    put_hex(evt_buf[6]);
+    uart_puts("\r\n");
+
+    int t30_pass = ble_init_ok && mac_ok && hci_reset_pass && latency_bounded && gatt_pass && gap_pass;
+    if (t30_pass) passed_tests++;
+    print_result(t30_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

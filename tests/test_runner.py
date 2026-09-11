@@ -322,7 +322,7 @@ def run_suite():
     native_desc = ""
     if not os.path.exists(native_test_bin):
         comp = subprocess.run(
-            ["gcc", "-O2", "-fno-tree-loop-distribute-patterns", "-Wall", "-Wextra", "-Werror", "-Isrc", "tests/test_freestanding.c", "src/string.c", "src/dpc.c", "src/arena.c", "src/pmp.c", "src/lp_core.c", "src/power.c", "src/gpio.c", "src/gdma.c", "src/modem.c", "-o", native_test_bin],
+            ["gcc", "-O2", "-fno-tree-loop-distribute-patterns", "-Wall", "-Wextra", "-Werror", "-Isrc", "tests/test_freestanding.c", "src/string.c", "src/dpc.c", "src/arena.c", "src/pmp.c", "src/lp_core.c", "src/power.c", "src/gpio.c", "src/gdma.c", "src/modem.c", "src/ble.c", "-o", native_test_bin],
             capture_output=True, text=True
         )
         if comp.returncode != 0:
@@ -917,6 +917,43 @@ def run_suite():
         f"All {len(modem_syms)} modem driver symbols present in IRAM text section [0x40800000, 0x40820000)",
         t28_actual,
         t28_pass
+    )
+
+    # TEST 29: Bluetooth 5 (LE) Controller Driver & Minimal GATT Server Linkage (Task 5.2)
+    total += 1
+    ble_syms = [
+        "ble_init",
+        "ble_hci_send_cmd",
+        "ble_hci_recv_event",
+        "ble_hci_has_event",
+        "ble_hci_execute_cmd",
+        "ble_gap_start_advertising",
+        "ble_gap_stop_advertising",
+        "ble_gap_get_state",
+        "ble_get_bd_addr",
+        "ble_get_telemetry",
+        "gatt_db_init",
+        "gatt_db_get_count",
+        "gatt_db_find_by_handle",
+        "gatt_db_find_by_uuid",
+        "gatt_db_read",
+        "gatt_db_write"
+    ]
+    found_ble_syms = [s for s in ble_syms if s in symbols]
+    all_ble_found = len(found_ble_syms) == len(ble_syms)
+    all_ble_in_text = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40820000)
+        for s in found_ble_syms
+    )
+    t29_pass = all_ble_found and all_ble_in_text
+    t29_actual = f"Found {len(found_ble_syms)}/{len(ble_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    passed += print_result_line(
+        total,
+        "Bluetooth 5 (LE) Controller Driver & Minimal GATT Server Linkage",
+        "Verify ble_init, HCI transport, GAP advertising, and GATT database symbols exist in IRAM",
+        f"All {len(ble_syms)} BLE and GATT driver symbols present in IRAM text section [0x40800000, 0x40820000)",
+        t29_actual,
+        t29_pass
     )
 
     print("\n" + "=" * 70)

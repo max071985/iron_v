@@ -717,7 +717,9 @@
 #define PCR_CACHE_CONF_CACHE_RST_EN_V(v) (((v) << 1) & 0x00000002U)
 
 // MODEM_APB configuration register
+#ifndef PCR_MODEM_APB_CONF_REG
 #define PCR_MODEM_APB_CONF_REG ((volatile uint32_t *)(PCR_BASE + 0x108))
+#endif
 #define PCR_MODEM_APB_CONF_MODEM_APB_CLK_EN_M (0x00000001U)
 #define PCR_MODEM_APB_CONF_MODEM_APB_CLK_EN_S (0)
 #define PCR_MODEM_APB_CONF_MODEM_APB_CLK_EN_V(v) (((v) << 0) & 0x00000001U)

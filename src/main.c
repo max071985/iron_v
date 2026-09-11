@@ -21,6 +21,8 @@
 #include "gpio.h"
 #include "gdma.h"
 #include "modem.h"
+#include "ble.h"
+#include "ble_gatt.h"
 
 static void print_help(void)
 {
@@ -41,6 +43,7 @@ static void print_help(void)
     console_puts("  gpio [status|set|get|dir|pull] - Show or control GPIO pins & IO_MUX\r\n");
     console_puts("  dma [status]        - Show GDMA multi-channel engine status\r\n");
     console_puts("  modem [status|all|wifi|ble|15.4] - Show or control wireless modem clocks and power\r\n");
+    console_puts("  ble [status|adv|stop|read|info] - Show or control BLE controller, advertising & GATT\r\n");
     console_puts("  do-test             - Run full baseline validation test suite\r\n");
 }
 
@@ -227,6 +230,26 @@ static void print_info(void)
     console_puts(" (Date: ");
     put_hex(modem_get_syscon_date());
     console_puts(")\r\n");
+
+    ble_telemetry_t btel;
+    ble_get_telemetry(&btel);
+    console_puts(" BLE:     State: ");
+    if (btel.state == BLE_STATE_STANDBY) console_puts("STANDBY");
+    else if (btel.state == BLE_STATE_ADVERTISING) console_puts("ADVERTISING");
+    else if (btel.state == BLE_STATE_CONNECTED) console_puts("CONNECTED");
+    else console_puts("DISCONNECTING");
+    console_puts(", MAC: ");
+    for (int i = 0; i < 6; i++)
+    {
+        uint8_t byte = btel.bd_addr[i];
+        const char hex_chars[] = "0123456789abcdef";
+        console_putc(hex_chars[(byte >> 4) & 0x0F]);
+        console_putc(hex_chars[byte & 0x0F]);
+        if (i < 5) console_putc(':');
+    }
+    console_puts(", GATT: ");
+    put_dec(gatt_db_get_count());
+    console_puts(" attrs\r\n");
     console_puts("========================================\r\n");
 }
 
@@ -1116,6 +1139,127 @@ static void shell_execute(char *input_buffer)
             console_puts("\r\n");
         }
     }
+    else if (strncmp(input_buffer, "ble", 3) == 0 && (input_buffer[3] == ' ' || input_buffer[3] == '\0'))
+    {
+        char *subcmd = input_buffer + 3;
+        while (*subcmd == ' ') subcmd++;
+
+        if (strncmp(subcmd, "adv", 3) == 0)
+        {
+            ble_status_t st = ble_gap_start_advertising();
+            if (st == BLE_OK)
+            {
+                console_puts("BLE GAP Advertising started successfully (Connectable undirected, interval 100ms).\r\n");
+            }
+            else
+            {
+                console_puts("Failed to start BLE GAP Advertising. Status: ");
+                put_dec((uint32_t)-st);
+                console_puts("\r\n");
+            }
+        }
+        else if (strncmp(subcmd, "stop", 4) == 0)
+        {
+            ble_status_t st = ble_gap_stop_advertising();
+            if (st == BLE_OK)
+            {
+                console_puts("BLE GAP Advertising stopped (State: STANDBY).\r\n");
+            }
+            else
+            {
+                console_puts("Failed to stop BLE GAP Advertising. Status: ");
+                put_dec((uint32_t)-st);
+                console_puts("\r\n");
+            }
+        }
+        else if (strncmp(subcmd, "read", 4) == 0)
+        {
+            char *arg = subcmd + 4;
+            while (*arg == ' ') arg++;
+            uint32_t handle = 0;
+            if (parse_uint(&arg, &handle))
+            {
+                uint8_t r_buf[64] = {0};
+                uint16_t r_len = 0;
+                gatt_status_t gst = gatt_db_read((uint16_t)handle, r_buf, sizeof(r_buf) - 1, &r_len);
+                if (gst == GATT_OK)
+                {
+                    console_puts("GATT Handle 0x");
+                    put_hex(handle);
+                    console_puts(" [Len=");
+                    put_dec(r_len);
+                    console_puts("]: \"");
+                    for (uint16_t i = 0; i < r_len; i++)
+                    {
+                        char c = (char)r_buf[i];
+                        if (c >= 32 && c <= 126) console_putc(c);
+                        else console_putc('.');
+                    }
+                    console_puts("\" (Hex: ");
+                    for (uint16_t i = 0; i < r_len; i++)
+                    {
+                        uint8_t b = r_buf[i];
+                        const char h[] = "0123456789abcdef";
+                        console_putc(h[(b >> 4) & 0x0F]);
+                        console_putc(h[b & 0x0F]);
+                        if (i + 1 < r_len) console_putc(' ');
+                    }
+                    console_puts(")\r\n");
+                }
+                else
+                {
+                    console_puts("GATT read error on handle 0x");
+                    put_hex(handle);
+                    console_puts(". Status: ");
+                    put_dec((uint32_t)-gst);
+                    console_puts("\r\n");
+                }
+            }
+            else
+            {
+                console_puts("Usage: ble read <handle_hex>\r\n");
+            }
+        }
+        else
+        {
+            ble_telemetry_t bt;
+            ble_get_telemetry(&bt);
+            console_puts("Bluetooth 5 (LE) Controller & Minimal GATT Server Status:\r\n");
+            console_puts("  GAP State:         ");
+            if (bt.state == BLE_STATE_STANDBY) console_puts("STANDBY");
+            else if (bt.state == BLE_STATE_ADVERTISING) console_puts("ADVERTISING");
+            else if (bt.state == BLE_STATE_CONNECTED) console_puts("CONNECTED");
+            else console_puts("DISCONNECTING");
+            console_puts("\r\n");
+            console_puts("  BD_ADDR (eFuse):   ");
+            for (int i = 0; i < 6; i++)
+            {
+                uint8_t byte = bt.bd_addr[i];
+                const char hex_chars[] = "0123456789abcdef";
+                console_putc(hex_chars[(byte >> 4) & 0x0F]);
+                console_putc(hex_chars[byte & 0x0F]);
+                if (i < 5) console_putc(':');
+            }
+            console_puts("\r\n");
+            console_puts("  HCI Packets TX:    ");
+            put_dec(bt.tx_packets);
+            console_puts("\r\n");
+            console_puts("  HCI Packets RX:    ");
+            put_dec(bt.rx_packets);
+            console_puts("\r\n");
+            console_puts("  Cmd Complete Evts: ");
+            put_dec(bt.cmd_complete_count);
+            console_puts("\r\n");
+            console_puts("  Adv Starts / Stops: ");
+            put_dec(bt.adv_start_count);
+            console_puts(" / ");
+            put_dec(bt.adv_stop_count);
+            console_puts("\r\n");
+            console_puts("  GATT Database:     ");
+            put_dec(gatt_db_get_count());
+            console_puts(" attributes (0x1800 GAP, 0x180A DevInfo, 0xFFE0 Custom)\r\n");
+        }
+    }
     else
     {
         console_puts("Unknown command. Type 'help' for available commands.\r\n");
@@ -1191,6 +1335,9 @@ void main(void)
 
     /* Initialize Modem Clock & Power Control (MODEM_SYSCON / MODEM_LPCON) */
     modem_init();
+
+    /* Initialize Bluetooth 5 (LE) Controller Driver & Minimal GATT Server */
+    ble_init();
 
     console_puts("\r\n");
     print_info();

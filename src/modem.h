@@ -72,6 +72,8 @@
 #define MODEM_CLK_MODEM_SEC_ECB_EN_BIT       (1U << 25)
 #define MODEM_CLK_ZB_MAC_EN_BIT              (1U << 24)
 #define MODEM_CLK_ZB_APB_EN_BIT              (1U << 23)
+#define MODEM_CLK_ZB_MAC_FO_BIT              (1U << 24)
+#define MODEM_CLK_ZB_APB_FO_BIT              (1U << 23)
 #define MODEM_CLK_ETM_EN_BIT                 (1U << 22)
 #define MODEM_CLK_DATA_DUMP_MUX_BIT          (1U << 21)
 

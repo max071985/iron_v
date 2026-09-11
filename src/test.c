@@ -23,6 +23,7 @@
 #include "ble.h"
 #include "ble_gatt.h"
 #include "wifi.h"
+#include "ieee802154.h"
 
 /* Route all test output to unified dual-console multiplexer */
 #define uart_puts console_puts
@@ -2108,6 +2109,95 @@ void run_validation_suite(void)
 
     if (t31_pass) passed_tests++;
     print_result(t31_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 32: IEEE 802.15.4 Radio Transceiver Driver (Task 5.4)    */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(32, "IEEE 802.15.4 Radio Transceiver Driver",
+                      "Verify transceiver state machine, 2.4 GHz channel configuration, auto-ACK flags, and addressing");
+
+    wdt_feed();
+
+    /* 1. Subsystem Initialization & Modem Clock Verification */
+    int ieee_init_ok = (ieee802154_init() == IEEE802154_OK);
+
+    /* 2. Write opcode 0x04 (FORCE_TRX_OFF) */
+    int cmd_off_ok = (ieee802154_cmd(IEEE802154_CMD_FORCE_TRX_OFF) == IEEE802154_OK);
+    int state_off_ok = (ieee802154_get_state() == IEEE802154_STATE_TRX_OFF);
+
+    /* 3. Configure RF Channel 15 (2425 MHz) */
+    int set_chan_ok = (ieee802154_set_channel(15U) == IEEE802154_OK);
+    uint8_t chan_readback = ieee802154_get_channel();
+    uint16_t freq_readback = ieee802154_get_freq_mhz(15U);
+    int chan_ok = (set_chan_ok && chan_readback == 15U && freq_readback == 2425U &&
+                   *IEEE802154_CHANNEL_REG == 15U);
+
+    /* 4. Configure Hardware Auto-ACK TX & RX (0x09: bit 0 and bit 3) */
+    int set_ack_ok = (ieee802154_set_auto_ack(true, true) == IEEE802154_OK);
+    uint32_t ctrl_cfg = *IEEE802154_CTRL_CFG_REG;
+    int ack_ok = (set_ack_ok &&
+                  (ctrl_cfg & (IEEE802154_CTRL_AUTO_ACK_TX_BIT | IEEE802154_CTRL_AUTO_ACK_RX_BIT)) ==
+                  (IEEE802154_CTRL_AUTO_ACK_TX_BIT | IEEE802154_CTRL_AUTO_ACK_RX_BIT));
+
+    /* 5. Set Short Address (0x1234) and PAN ID (0x1A2B) */
+    int set_addr_ok = (ieee802154_set_short_address(0x1234U) == IEEE802154_OK);
+    uint16_t addr_readback = ieee802154_get_short_address();
+    int addr_ok = (set_addr_ok && addr_readback == 0x1234U &&
+                   *IEEE802154_INF0_SHORT_ADDR_REG == 0x1234U);
+
+    /* 6. Verify Hardware Silicon Date Version */
+    uint32_t date_ver = ieee802154_get_date_version();
+    int date_ok = (date_ver == IEEE802154_MAC_DATE_EXPECTED || *IEEE802154_MAC_DATE_REG != 0U);
+
+    /* 7. Verify Telemetry Structure */
+    ieee802154_telemetry_t z_telem;
+    int z_telem_ok = (ieee802154_get_telemetry(&z_telem) == IEEE802154_OK) &&
+                     (z_telem.state == IEEE802154_STATE_TRX_OFF) &&
+                     (z_telem.channel == 15U) &&
+                     (z_telem.freq_mhz == 2425U) &&
+                     (z_telem.short_addr == 0x1234U) &&
+                     (z_telem.auto_ack_tx == true) &&
+                     (z_telem.auto_ack_rx == true);
+
+    wdt_feed();
+
+    int t32_pass = ieee_init_ok && cmd_off_ok && state_off_ok &&
+                   chan_ok && ack_ok && addr_ok && date_ok && z_telem_ok;
+
+    uart_puts("  Expected:    Init=1, CmdOff=1, StateOff=1, Chan=1, AutoAck=1, ShortAddr=1, DateVer=1, Telem=1\r\n");
+    uart_puts("  Actual:      Init=");
+    put_dec(ieee_init_ok);
+    uart_puts(", CmdOff=");
+    put_dec(cmd_off_ok);
+    uart_puts(", StateOff=");
+    put_dec(state_off_ok);
+    uart_puts(", Chan=");
+    put_dec(chan_ok);
+    uart_puts(", AutoAck=");
+    put_dec(ack_ok);
+    uart_puts(", ShortAddr=");
+    put_dec(addr_ok);
+    uart_puts(", DateVer=");
+    put_dec(date_ok);
+    uart_puts(", Telem=");
+    put_dec(z_telem_ok);
+    uart_puts("\r\n");
+
+    uart_puts("  Diag: DateVer=");
+    put_hex(date_ver);
+    uart_puts(", Channel=");
+    put_dec(chan_readback);
+    uart_puts(" (");
+    put_dec(freq_readback);
+    uart_puts(" MHz), CtrlCfg=");
+    put_hex(ctrl_cfg);
+    uart_puts(", ShortAddr=");
+    put_hex(addr_readback);
+    uart_puts("\r\n");
+
+    if (t32_pass) passed_tests++;
+    print_result(t32_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

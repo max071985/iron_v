@@ -1580,18 +1580,32 @@ static void test_tcpip_subsystem(void)
     net_config_t cfg;
     TEST_ASSERT(net_get_config(NULL) == NET_ERR_INVALID_ARG, "get_config rejects NULL");
     TEST_ASSERT(net_get_config(&cfg) == NET_OK, "get_config succeeds");
-    TEST_ASSERT(cfg.ip == NET_DEFAULT_IP, "Default IP is 192.168.1.100");
-    TEST_ASSERT(cfg.netmask == NET_DEFAULT_NETMASK, "Default netmask is 255.255.255.0");
-    TEST_ASSERT(cfg.gateway == NET_DEFAULT_GATEWAY, "Default gateway is 192.168.1.1");
+    TEST_ASSERT(cfg.ip != 0U, "Active IP is non-zero");
+    TEST_ASSERT(cfg.netmask != 0U, "Active netmask is non-zero");
+    TEST_ASSERT(cfg.gateway != 0U, "Active gateway is non-zero");
 
-    /* IP String Conversions */
+    /* Dynamically derive peer IP within active subnet */
+    uint32_t peer_ip;
+    if (cfg.gateway != 0U && cfg.gateway != cfg.ip)
+    {
+        peer_ip = cfg.gateway;
+    }
+    else
+    {
+        uint32_t subnet = cfg.ip & cfg.netmask;
+        uint32_t host_part = cfg.ip & ~cfg.netmask;
+        uint32_t peer_host = (host_part == 1U) ? 2U : 1U;
+        peer_ip = subnet | (peer_host & ~cfg.netmask);
+    }
+
+    /* IP String Conversions Round-Trip */
     char ip_str[NET_IP_STR_BUF_LEN];
     net_ip_to_str(cfg.ip, ip_str, sizeof(ip_str));
-    TEST_ASSERT(strcmp(ip_str, "192.168.1.100") == 0, "net_ip_to_str produces 192.168.1.100");
+    TEST_ASSERT(net_str_to_ip(ip_str) == cfg.ip, "net_ip_to_str and net_str_to_ip round-trip on active IP");
     uint32_t parsed_ip = net_str_to_ip("192.168.1.55");
     TEST_ASSERT(parsed_ip == NET_IP4_ADDR(192U, 168U, 1U, 55U), "net_str_to_ip parses 192.168.1.55");
     TEST_ASSERT(net_set_ip(parsed_ip, cfg.netmask, cfg.gateway) == NET_OK, "net_set_ip succeeds");
-    TEST_ASSERT(net_set_ip(NET_DEFAULT_IP, cfg.netmask, cfg.gateway) == NET_OK, "restore default IP");
+    TEST_ASSERT(net_set_ip(cfg.ip, cfg.netmask, cfg.gateway) == NET_OK, "restore active IP");
 
     /* 2. RFC 1071 Internet Checksum Calculations */
     static const uint8_t s_rfc1071_test_header[RFC1071_TEST_HDR_LEN] = {
@@ -1613,10 +1627,10 @@ static void test_tcpip_subsystem(void)
 
     /* 3. ARP Cache Operations */
     uint8_t found_mac[ETH_ADDR_LEN] = {0};
-    TEST_ASSERT(arp_lookup(NET_IP4_ADDR(10U, 0U, 0U, 1U), found_mac) == NET_ERR_NOT_FOUND, "Lookup unmapped IP returns NOT_FOUND");
+    TEST_ASSERT(arp_lookup(peer_ip, found_mac) == NET_ERR_NOT_FOUND, "Lookup unmapped IP returns NOT_FOUND");
     uint8_t test_mac[ETH_ADDR_LEN] = { 0x00U, 0x11U, 0x22U, 0x33U, 0x44U, 0x55U };
-    TEST_ASSERT(arp_insert(NET_IP4_ADDR(10U, 0U, 0U, 1U), test_mac) == NET_OK, "arp_insert succeeds");
-    TEST_ASSERT(arp_lookup(NET_IP4_ADDR(10U, 0U, 0U, 1U), found_mac) == NET_OK, "Lookup mapped IP succeeds");
+    TEST_ASSERT(arp_insert(peer_ip, test_mac) == NET_OK, "arp_insert succeeds");
+    TEST_ASSERT(arp_lookup(peer_ip, found_mac) == NET_OK, "Lookup mapped IP succeeds");
     TEST_ASSERT(found_mac[0] == test_mac[0] && found_mac[1] == test_mac[1] &&
                 found_mac[2] == test_mac[2] && found_mac[3] == test_mac[3] &&
                 found_mac[4] == test_mac[4] && found_mac[5] == test_mac[5],
@@ -1634,8 +1648,8 @@ static void test_tcpip_subsystem(void)
     arp_req.arp.proto_size = IPV4_ADDR_LEN;
     arp_req.arp.opcode = NET_HTONS(ARP_OPCODE_REQUEST);
     memcpy(arp_req.arp.sender_mac, test_mac, ETH_ADDR_LEN);
-    arp_req.arp.sender_ip = NET_HTONL(NET_IP4_ADDR(10U, 0U, 0U, 1U));
-    arp_req.arp.target_ip = NET_HTONL(NET_DEFAULT_IP);
+    arp_req.arp.sender_ip = NET_HTONL(peer_ip);
+    arp_req.arp.target_ip = NET_HTONL(cfg.ip);
 
     uint8_t reply_buf[64] = {0};
     uint16_t reply_len = 0U;
@@ -1643,8 +1657,8 @@ static void test_tcpip_subsystem(void)
     TEST_ASSERT(reply_len == sizeof(arp_frame_t), "Reply length is 42 bytes");
     const arp_frame_t *reply_f = (const arp_frame_t *)reply_buf;
     TEST_ASSERT(reply_f->arp.opcode == NET_HTONS(ARP_OPCODE_REPLY), "Opcode is ARP_OPCODE_REPLY");
-    TEST_ASSERT(reply_f->arp.sender_ip == NET_HTONL(NET_DEFAULT_IP), "Sender IP in reply is our IP");
-    TEST_ASSERT(reply_f->arp.target_ip == NET_HTONL(NET_IP4_ADDR(10U, 0U, 0U, 1U)), "Target IP in reply is requester IP");
+    TEST_ASSERT(reply_f->arp.sender_ip == NET_HTONL(cfg.ip), "Sender IP in reply is our IP");
+    TEST_ASSERT(reply_f->arp.target_ip == NET_HTONL(peer_ip), "Target IP in reply is requester IP");
 
     /* 5. Synthetic ICMP Echo Request -> Echo Reply Generation */
     uint8_t icmp_frame_buf[128] = {0};
@@ -1661,8 +1675,8 @@ static void test_tcpip_subsystem(void)
     ip_req->total_len = NET_HTONS(IPV4_MIN_HDR_LEN + ICMP_MIN_HDR_LEN + 4U);
     ip_req->protocol = IPV4_PROTO_ICMP;
     ip_req->ttl = 64U;
-    ip_req->src_ip = NET_HTONL(NET_IP4_ADDR(10U, 0U, 0U, 1U));
-    ip_req->dest_ip = NET_HTONL(NET_DEFAULT_IP);
+    ip_req->src_ip = NET_HTONL(peer_ip);
+    ip_req->dest_ip = NET_HTONL(cfg.ip);
     ip_req->checksum = net_ipv4_checksum(ip_req);
 
     icmp_req->type = ICMP_TYPE_ECHO_REQUEST;
@@ -1678,6 +1692,9 @@ static void test_tcpip_subsystem(void)
     TEST_ASSERT(icmp_process_packet(icmp_frame_buf, req_len, icmp_rep_buf, sizeof(icmp_rep_buf), &icmp_rep_len) == NET_OK, "icmp_process_packet succeeds");
     TEST_ASSERT(icmp_rep_len == req_len, "ICMP reply length matches request length");
     const icmp_header_t *rep_icmp = (const icmp_header_t *)(icmp_rep_buf + ETH_HDR_LEN + IPV4_MIN_HDR_LEN);
+    const ipv4_header_t *rep_ip = (const ipv4_header_t *)(icmp_rep_buf + ETH_HDR_LEN);
+    TEST_ASSERT(rep_ip->src_ip == NET_HTONL(cfg.ip), "Echo reply src is our IP");
+    TEST_ASSERT(rep_ip->dest_ip == NET_HTONL(peer_ip), "Echo reply dest is peer IP");
     TEST_ASSERT(rep_icmp->type == ICMP_TYPE_ECHO_REPLY, "Echo reply type is 0");
     TEST_ASSERT(rep_icmp->code == ICMP_CODE_ECHO, "Echo reply code is 0");
 
@@ -1690,6 +1707,9 @@ static void test_tcpip_subsystem(void)
     TEST_ASSERT(pcb->state == TCP_STATE_LISTEN, "State transitions to LISTEN");
     TEST_ASSERT(tcp_close(pcb) == TCP_OK, "tcp_close succeeds");
     TEST_ASSERT(pcb->state == TCP_STATE_CLOSED, "State returns to CLOSED");
+
+    /* 7. Reset to Defaults */
+    TEST_ASSERT(net_reset_defaults() == NET_OK, "net_reset_defaults succeeds");
 }
 
 /* ========================================================================= */

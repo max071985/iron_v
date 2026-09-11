@@ -64,7 +64,7 @@ erase_flash:
 monitor:
 	picocom $(MONITOR_FLAGS) $(PORT)
 
-tests/test_freestanding: tests/test_freestanding.c src/string.c src/string.h src/dpc.c src/dpc.h src/arena.c src/arena.h src/pmp.c src/pmp.h src/lp_core.c src/lp_core.h src/lp_firmware_image.h src/power.c src/power.h src/gpio.c src/gpio.h src/gdma.c src/gdma.h src/modem.c src/modem.h src/ble.c src/ble.h src/ble_gatt.h src/wifi.c src/wifi.h src/ieee802154.c src/ieee802154.h src/net.c src/net.h src/tcp.c src/tcp.h
+tests/test_freestanding: tests/test_freestanding.c src/string.c src/string.h src/dpc.c src/dpc.h src/arena.c src/arena.h src/pmp.c src/pmp.h src/lp_core.c src/lp_core.h src/lp_firmware_image.h src/power.c src/power.h src/gpio.c src/gpio.h src/gdma.c src/gdma.h src/modem.c src/modem.h src/ble.c src/ble.h src/ble_gatt.h src/wifi.c src/wifi.h src/ieee802154.c src/ieee802154.h src/config.h src/net.c src/net.h src/tcp.c src/tcp.h
 	gcc -O2 -fno-tree-loop-distribute-patterns -Wall -Wextra -Werror -Isrc tests/test_freestanding.c src/string.c src/dpc.c src/arena.c src/pmp.c src/lp_core.c src/power.c src/gpio.c src/gdma.c src/modem.c src/ble.c src/wifi.c src/ieee802154.c src/net.c src/tcp.c -o $@
 
 do-test: firmware.elf firmware.bin tests/test_freestanding

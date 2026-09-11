@@ -2212,13 +2212,27 @@ void run_validation_suite(void)
 
     uint64_t t_net_start = systimer_get_us();
 
-    /* 1. Subsystem Lifecycle & Identity */
+    /* 1. Subsystem Lifecycle & Dynamic Network Identity */
     int net_init_ok = (net_init() == NET_OK) && (tcp_init() == TCP_OK);
     net_config_t t_cfg;
     net_get_config(&t_cfg);
-    int cfg_ok = (t_cfg.ip == NET_DEFAULT_IP) &&
+    int cfg_ok = (t_cfg.ip != 0U) && (t_cfg.netmask != 0U) &&
                  (t_cfg.mac[0] == 0x40U && t_cfg.mac[1] == 0x4CU && t_cfg.mac[2] == 0xCAU &&
                   t_cfg.mac[3] == 0x45U && t_cfg.mac[4] == 0x1EU && t_cfg.mac[5] == 0x14U);
+
+    /* Dynamically derive peer IP within the active local subnet */
+    uint32_t peer_ip;
+    if (t_cfg.gateway != 0U && t_cfg.gateway != t_cfg.ip)
+    {
+        peer_ip = t_cfg.gateway;
+    }
+    else
+    {
+        uint32_t subnet = t_cfg.ip & t_cfg.netmask;
+        uint32_t host_part = t_cfg.ip & ~t_cfg.netmask;
+        uint32_t peer_host = (host_part == 1U) ? 2U : 1U;
+        peer_ip = subnet | (peer_host & ~t_cfg.netmask);
+    }
 
     /* 2. Synthetic ARP Request & Reply Generation (RFC 826) */
     arp_frame_t synth_arp_req;
@@ -2240,9 +2254,9 @@ void run_validation_suite(void)
     synth_arp_req.arp.proto_size = IPV4_ADDR_LEN;
     synth_arp_req.arp.opcode     = NET_HTONS(ARP_OPCODE_REQUEST);
     memcpy(synth_arp_req.arp.sender_mac, synth_arp_req.eth.src_mac, ETH_ADDR_LEN);
-    synth_arp_req.arp.sender_ip  = NET_HTONL(NET_IP4_ADDR(192U, 168U, 1U, 1U));
+    synth_arp_req.arp.sender_ip  = NET_HTONL(peer_ip);
     memset(synth_arp_req.arp.target_mac, 0x00, ETH_ADDR_LEN);
-    synth_arp_req.arp.target_ip  = NET_HTONL(NET_DEFAULT_IP);
+    synth_arp_req.arp.target_ip  = NET_HTONL(t_cfg.ip);
 
     uint8_t arp_reply_buf[64] = {0};
     uint16_t arp_reply_len = 0U;
@@ -2258,7 +2272,8 @@ void run_validation_suite(void)
                        (reply_frame->eth.src_mac[0] == 0x40U && reply_frame->eth.src_mac[1] == 0x4CU &&
                         reply_frame->eth.src_mac[2] == 0xCAU && reply_frame->eth.src_mac[3] == 0x45U &&
                         reply_frame->eth.src_mac[4] == 0x1EU && reply_frame->eth.src_mac[5] == 0x14U) &&
-                       (reply_frame->arp.sender_ip == NET_HTONL(NET_DEFAULT_IP));
+                       (reply_frame->arp.sender_ip == NET_HTONL(t_cfg.ip)) &&
+                       (reply_frame->arp.target_ip == NET_HTONL(peer_ip));
 
     /* 3. RFC 1071 Standard Checksum Test Vector Calculation */
     static const uint8_t s_rfc1071_test_header[RFC1071_TEST_HDR_LEN] = {
@@ -2291,8 +2306,8 @@ void run_validation_suite(void)
     test_tcp.window = NET_HTONS(1024U);
     test_tcp.checksum = 0U;
 
-    uint32_t t_src_ip = NET_IP4_ADDR(192U, 168U, 1U, 100U);
-    uint32_t t_dst_ip = NET_IP4_ADDR(192U, 168U, 1U, 1U);
+    uint32_t t_src_ip = t_cfg.ip;
+    uint32_t t_dst_ip = peer_ip;
     uint16_t tcp_chk = net_tcp_checksum(t_src_ip, t_dst_ip, &test_tcp, TCP_MIN_HDR_LEN, NULL, 0U);
     test_tcp.checksum = NET_HTONS(tcp_chk);
     uint16_t tcp_verify = net_tcp_checksum(t_src_ip, t_dst_ip, &test_tcp, TCP_MIN_HDR_LEN, NULL, 0U);

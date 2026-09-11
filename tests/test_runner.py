@@ -1032,6 +1032,7 @@ def run_suite():
     net_syms = [
         "net_init",
         "net_set_ip",
+        "net_reset_defaults",
         "net_get_config",
         "net_get_telemetry",
         "net_checksum",

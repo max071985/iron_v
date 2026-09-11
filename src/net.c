@@ -59,28 +59,40 @@ net_status_t net_init(void)
     /* Clear telemetry */
     memset(&s_net_telemetry, 0, sizeof(s_net_telemetry));
 
-    /* Initialize default configuration */
+    /* Initialize default configuration only on first initialization */
+    if (!s_net_initialized)
+    {
+        s_net_config.ip      = NET_DEFAULT_IP;
+        s_net_config.netmask = NET_DEFAULT_NETMASK;
+        s_net_config.gateway = NET_DEFAULT_GATEWAY;
+
+        /* Extract authentic Station MAC from Wi-Fi subsystem if available */
+        uint8_t mac_buf[ETH_ADDR_LEN] = {0};
+        if (wifi_get_mac_addr(mac_buf) == WIFI_OK)
+        {
+            memcpy(s_net_config.mac, mac_buf, ETH_ADDR_LEN);
+        }
+        else
+        {
+            s_net_config.mac[0] = 0x40U;
+            s_net_config.mac[1] = 0x4CU;
+            s_net_config.mac[2] = 0xCAU;
+            s_net_config.mac[3] = 0x45U;
+            s_net_config.mac[4] = 0x1EU;
+            s_net_config.mac[5] = 0x14U;
+        }
+
+        s_net_initialized = true;
+    }
+
+    return NET_OK;
+}
+
+net_status_t net_reset_defaults(void)
+{
     s_net_config.ip      = NET_DEFAULT_IP;
     s_net_config.netmask = NET_DEFAULT_NETMASK;
     s_net_config.gateway = NET_DEFAULT_GATEWAY;
-
-    /* Extract authentic Station MAC from Wi-Fi subsystem if available */
-    uint8_t mac_buf[ETH_ADDR_LEN] = {0};
-    if (wifi_get_mac_addr(mac_buf) == WIFI_OK)
-    {
-        memcpy(s_net_config.mac, mac_buf, ETH_ADDR_LEN);
-    }
-    else
-    {
-        s_net_config.mac[0] = 0x40U;
-        s_net_config.mac[1] = 0x4CU;
-        s_net_config.mac[2] = 0xCAU;
-        s_net_config.mac[3] = 0x45U;
-        s_net_config.mac[4] = 0x1EU;
-        s_net_config.mac[5] = 0x14U;
-    }
-
-    s_net_initialized = true;
     return NET_OK;
 }
 

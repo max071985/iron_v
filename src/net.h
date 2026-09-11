@@ -14,6 +14,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include "config.h"
 
 /* ========================================================================= */
 /* Endianness Conversion Macros (Big-Endian Network Byte Order <-> Host)     */
@@ -91,10 +92,10 @@
 #define NET_MAX_FRAME_SIZE               1536U
 #define NET_IP_STR_BUF_LEN               16U
 
-/* Default Network Interface IP Configuration (192.168.1.100 / 24) */
-#define NET_DEFAULT_IP                   NET_IP4_ADDR(192U, 168U, 1U, 100U)
-#define NET_DEFAULT_NETMASK              NET_IP4_ADDR(255U, 255U, 255U, 0U)
-#define NET_DEFAULT_GATEWAY              NET_IP4_ADDR(192U, 168U, 1U, 1U)
+/* Default Network Interface IP Configuration (sourced from centralized config.h) */
+#define NET_DEFAULT_IP                   CONFIG_NET_DEFAULT_IP
+#define NET_DEFAULT_NETMASK              CONFIG_NET_DEFAULT_NETMASK
+#define NET_DEFAULT_GATEWAY              CONFIG_NET_DEFAULT_GATEWAY
 
 /* RFC 1071 Standard Checksum Test Vector Constants */
 #define RFC1071_TEST_HDR_LEN             20U
@@ -259,6 +260,7 @@ net_status_t net_init(void);
 
 /* Interface Configuration & Telemetry */
 net_status_t net_set_ip(uint32_t ip, uint32_t netmask, uint32_t gateway);
+net_status_t net_reset_defaults(void);
 net_status_t net_get_config(net_config_t *out_config);
 net_status_t net_get_telemetry(net_telemetry_t *out_telemetry);
 

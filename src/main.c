@@ -50,7 +50,7 @@ static void print_help(void)
     console_puts("  ble [status|adv|stop|read|info] - Show or control BLE controller, advertising & GATT\r\n");
     console_puts("  wifi [status|mac|ring|init] - Show or control 802.11ax Wi-Fi 6 MAC driver & packet ring\r\n");
     console_puts("  15.4 [status|chan|pan|short|rx|tx|stop] - Show or control IEEE 802.15.4 radio transceiver\r\n");
-    console_puts("  net [status|ip|arp|tcp] - Show or control IPv4 network interface & TCP state machine\r\n");
+    console_puts("  net [status|ip|mask|gw|arp|tcp|reset] - Show or control IPv4 network interface & TCP state machine\r\n");
     console_puts("  do-test             - Run full baseline validation test suite\r\n");
 }
 
@@ -1593,6 +1593,75 @@ static void shell_execute(char *input_buffer)
                 console_puts(s);
                 console_puts("\r\n");
             }
+        }
+        else if (strncmp(subcmd, "mask", 4) == 0)
+        {
+            char *arg = subcmd + 4;
+            while (*arg == ' ') arg++;
+            if (*arg != '\0')
+            {
+                uint32_t new_mask = net_str_to_ip(arg);
+                if (new_mask != 0U)
+                {
+                    net_config_t cur_cfg;
+                    net_get_config(&cur_cfg);
+                    net_set_ip(cur_cfg.ip, new_mask, cur_cfg.gateway);
+                    console_puts("Network Subnet Mask updated to: ");
+                    console_puts(arg);
+                    console_puts("\r\n");
+                }
+                else
+                {
+                    console_puts("Error: Invalid subnet mask format (e.g. 255.255.255.0).\r\n");
+                }
+            }
+            else
+            {
+                net_config_t cur_cfg;
+                net_get_config(&cur_cfg);
+                char s[NET_IP_STR_BUF_LEN];
+                net_ip_to_str(cur_cfg.netmask, s, sizeof(s));
+                console_puts("Current Subnet Mask: ");
+                console_puts(s);
+                console_puts("\r\n");
+            }
+        }
+        else if (strncmp(subcmd, "gw", 2) == 0)
+        {
+            char *arg = subcmd + 2;
+            while (*arg == ' ') arg++;
+            if (*arg != '\0')
+            {
+                uint32_t new_gw = net_str_to_ip(arg);
+                if (new_gw != 0U)
+                {
+                    net_config_t cur_cfg;
+                    net_get_config(&cur_cfg);
+                    net_set_ip(cur_cfg.ip, cur_cfg.netmask, new_gw);
+                    console_puts("Network Default Gateway updated to: ");
+                    console_puts(arg);
+                    console_puts("\r\n");
+                }
+                else
+                {
+                    console_puts("Error: Invalid gateway format (e.g. 192.168.1.1).\r\n");
+                }
+            }
+            else
+            {
+                net_config_t cur_cfg;
+                net_get_config(&cur_cfg);
+                char s[NET_IP_STR_BUF_LEN];
+                net_ip_to_str(cur_cfg.gateway, s, sizeof(s));
+                console_puts("Current Gateway: ");
+                console_puts(s);
+                console_puts("\r\n");
+            }
+        }
+        else if (strncmp(subcmd, "reset", 5) == 0)
+        {
+            net_reset_defaults();
+            console_puts("Network configuration reset to defaults from config.h.\r\n");
         }
         else if (strncmp(subcmd, "arp", 3) == 0)
         {

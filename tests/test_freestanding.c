@@ -26,6 +26,8 @@
 #include "ble_gatt.h"
 #include "wifi.h"
 #include "ieee802154.h"
+#include "net.h"
+#include "tcp.h"
 
 /* Freestanding function aliases matching runtime naming conventions */
 static inline size_t s_strlen(const char *s)
@@ -1568,6 +1570,148 @@ static void test_ieee802154_subsystem(void)
     TEST_ASSERT(ieee802154_get_state() == IEEE802154_STATE_TRX_OFF, "State returns to TRX_OFF");
 }
 
+static void test_tcpip_subsystem(void)
+{
+    printf("  [TEST] Bare-Metal TCP/IP Stack & Lightweight Protocol Engine (Task 5.5)...\n");
+    /* 1. Subsystem Initialization & IP Configuration */
+    TEST_ASSERT(net_init() == NET_OK, "net_init succeeds");
+    TEST_ASSERT(tcp_init() == TCP_OK, "tcp_init succeeds");
+
+    net_config_t cfg;
+    TEST_ASSERT(net_get_config(NULL) == NET_ERR_INVALID_ARG, "get_config rejects NULL");
+    TEST_ASSERT(net_get_config(&cfg) == NET_OK, "get_config succeeds");
+    TEST_ASSERT(cfg.ip != 0U, "Active IP is non-zero");
+    TEST_ASSERT(cfg.netmask != 0U, "Active netmask is non-zero");
+    TEST_ASSERT(cfg.gateway != 0U, "Active gateway is non-zero");
+
+    /* Dynamically derive peer IP within active subnet */
+    uint32_t peer_ip;
+    if (cfg.gateway != 0U && cfg.gateway != cfg.ip)
+    {
+        peer_ip = cfg.gateway;
+    }
+    else
+    {
+        uint32_t subnet = cfg.ip & cfg.netmask;
+        uint32_t host_part = cfg.ip & ~cfg.netmask;
+        uint32_t peer_host = (host_part == 1U) ? 2U : 1U;
+        peer_ip = subnet | (peer_host & ~cfg.netmask);
+    }
+
+    /* IP String Conversions Round-Trip */
+    char ip_str[NET_IP_STR_BUF_LEN];
+    net_ip_to_str(cfg.ip, ip_str, sizeof(ip_str));
+    TEST_ASSERT(net_str_to_ip(ip_str) == cfg.ip, "net_ip_to_str and net_str_to_ip round-trip on active IP");
+    uint32_t parsed_ip = net_str_to_ip("192.168.1.55");
+    TEST_ASSERT(parsed_ip == NET_IP4_ADDR(192U, 168U, 1U, 55U), "net_str_to_ip parses 192.168.1.55");
+    TEST_ASSERT(net_set_ip(parsed_ip, cfg.netmask, cfg.gateway) == NET_OK, "net_set_ip succeeds");
+    TEST_ASSERT(net_set_ip(cfg.ip, cfg.netmask, cfg.gateway) == NET_OK, "restore active IP");
+
+    /* 2. RFC 1071 Internet Checksum Calculations */
+    static const uint8_t s_rfc1071_test_header[RFC1071_TEST_HDR_LEN] = {
+        0x45, 0x00, 0x00, 0x3c,
+        0x1c, 0x46, 0x40, 0x00,
+        0x40, 0x06, 0x00, 0x00,
+        0xac, 0x10, 0x0a, 0x63,
+        0xac, 0x10, 0x0a, 0x0c
+    };
+    uint16_t computed_chk = net_checksum(s_rfc1071_test_header, RFC1071_TEST_HDR_LEN);
+    TEST_ASSERT(computed_chk == RFC1071_TEST_EXPECTED_CHECKSUM, "RFC 1071 checksum is 0xB1E6");
+
+    uint8_t verified_hdr[RFC1071_TEST_HDR_LEN];
+    memcpy(verified_hdr, s_rfc1071_test_header, RFC1071_TEST_HDR_LEN);
+    verified_hdr[10] = (uint8_t)(computed_chk >> 8U);
+    verified_hdr[11] = (uint8_t)(computed_chk & 0xFFU);
+    uint16_t verify_chk = net_checksum(verified_hdr, RFC1071_TEST_HDR_LEN);
+    TEST_ASSERT(verify_chk == 0x0000U, "Completed header checksum validates to 0x0000");
+
+    /* 3. ARP Cache Operations */
+    uint8_t found_mac[ETH_ADDR_LEN] = {0};
+    TEST_ASSERT(arp_lookup(peer_ip, found_mac) == NET_ERR_NOT_FOUND, "Lookup unmapped IP returns NOT_FOUND");
+    uint8_t test_mac[ETH_ADDR_LEN] = { 0x00U, 0x11U, 0x22U, 0x33U, 0x44U, 0x55U };
+    TEST_ASSERT(arp_insert(peer_ip, test_mac) == NET_OK, "arp_insert succeeds");
+    TEST_ASSERT(arp_lookup(peer_ip, found_mac) == NET_OK, "Lookup mapped IP succeeds");
+    TEST_ASSERT(found_mac[0] == test_mac[0] && found_mac[1] == test_mac[1] &&
+                found_mac[2] == test_mac[2] && found_mac[3] == test_mac[3] &&
+                found_mac[4] == test_mac[4] && found_mac[5] == test_mac[5],
+                "MAC readback matches inserted MAC");
+
+    /* 4. Synthetic ARP Request -> Reply Generation */
+    arp_frame_t arp_req;
+    memset(&arp_req, 0, sizeof(arp_req));
+    memset(arp_req.eth.dest_mac, 0xFF, ETH_ADDR_LEN);
+    memcpy(arp_req.eth.src_mac, test_mac, ETH_ADDR_LEN);
+    arp_req.eth.ethertype = NET_HTONS(ETHERTYPE_ARP);
+    arp_req.arp.hw_type = NET_HTONS(ARP_HW_TYPE_ETHERNET);
+    arp_req.arp.proto_type = NET_HTONS(ARP_PROTO_IPV4);
+    arp_req.arp.hw_size = ETH_ADDR_LEN;
+    arp_req.arp.proto_size = IPV4_ADDR_LEN;
+    arp_req.arp.opcode = NET_HTONS(ARP_OPCODE_REQUEST);
+    memcpy(arp_req.arp.sender_mac, test_mac, ETH_ADDR_LEN);
+    arp_req.arp.sender_ip = NET_HTONL(peer_ip);
+    arp_req.arp.target_ip = NET_HTONL(cfg.ip);
+
+    uint8_t reply_buf[64] = {0};
+    uint16_t reply_len = 0U;
+    TEST_ASSERT(arp_process_packet((const uint8_t *)&arp_req, sizeof(arp_req), reply_buf, sizeof(reply_buf), &reply_len) == NET_OK, "arp_process_packet succeeds");
+    TEST_ASSERT(reply_len == sizeof(arp_frame_t), "Reply length is 42 bytes");
+    const arp_frame_t *reply_f = (const arp_frame_t *)reply_buf;
+    TEST_ASSERT(reply_f->arp.opcode == NET_HTONS(ARP_OPCODE_REPLY), "Opcode is ARP_OPCODE_REPLY");
+    TEST_ASSERT(reply_f->arp.sender_ip == NET_HTONL(cfg.ip), "Sender IP in reply is our IP");
+    TEST_ASSERT(reply_f->arp.target_ip == NET_HTONL(peer_ip), "Target IP in reply is requester IP");
+
+    /* 5. Synthetic ICMP Echo Request -> Echo Reply Generation */
+    uint8_t icmp_frame_buf[128] = {0};
+    ethernet_header_t *eth_req = (ethernet_header_t *)icmp_frame_buf;
+    ipv4_header_t *ip_req = (ipv4_header_t *)(icmp_frame_buf + ETH_HDR_LEN);
+    icmp_header_t *icmp_req = (icmp_header_t *)(icmp_frame_buf + ETH_HDR_LEN + IPV4_MIN_HDR_LEN);
+    uint8_t *icmp_payload = icmp_frame_buf + ETH_HDR_LEN + IPV4_MIN_HDR_LEN + ICMP_MIN_HDR_LEN;
+
+    memcpy(eth_req->src_mac, test_mac, ETH_ADDR_LEN);
+    memcpy(eth_req->dest_mac, cfg.mac, ETH_ADDR_LEN);
+    eth_req->ethertype = NET_HTONS(ETHERTYPE_IPV4);
+
+    ip_req->ver_ihl = IPV4_VER_IHL_DEFAULT;
+    ip_req->total_len = NET_HTONS(IPV4_MIN_HDR_LEN + ICMP_MIN_HDR_LEN + 4U);
+    ip_req->protocol = IPV4_PROTO_ICMP;
+    ip_req->ttl = 64U;
+    ip_req->src_ip = NET_HTONL(peer_ip);
+    ip_req->dest_ip = NET_HTONL(cfg.ip);
+    ip_req->checksum = net_ipv4_checksum(ip_req);
+
+    icmp_req->type = ICMP_TYPE_ECHO_REQUEST;
+    icmp_req->code = ICMP_CODE_ECHO;
+    icmp_req->id = NET_HTONS(0x1234U);
+    icmp_req->sequence = NET_HTONS(1U);
+    icmp_payload[0] = 'P'; icmp_payload[1] = 'I'; icmp_payload[2] = 'N'; icmp_payload[3] = 'G';
+    icmp_req->checksum = net_checksum(icmp_req, ICMP_MIN_HDR_LEN + 4U);
+
+    uint16_t req_len = ETH_HDR_LEN + IPV4_MIN_HDR_LEN + ICMP_MIN_HDR_LEN + 4U;
+    uint8_t icmp_rep_buf[128] = {0};
+    uint16_t icmp_rep_len = 0U;
+    TEST_ASSERT(icmp_process_packet(icmp_frame_buf, req_len, icmp_rep_buf, sizeof(icmp_rep_buf), &icmp_rep_len) == NET_OK, "icmp_process_packet succeeds");
+    TEST_ASSERT(icmp_rep_len == req_len, "ICMP reply length matches request length");
+    const icmp_header_t *rep_icmp = (const icmp_header_t *)(icmp_rep_buf + ETH_HDR_LEN + IPV4_MIN_HDR_LEN);
+    const ipv4_header_t *rep_ip = (const ipv4_header_t *)(icmp_rep_buf + ETH_HDR_LEN);
+    TEST_ASSERT(rep_ip->src_ip == NET_HTONL(cfg.ip), "Echo reply src is our IP");
+    TEST_ASSERT(rep_ip->dest_ip == NET_HTONL(peer_ip), "Echo reply dest is peer IP");
+    TEST_ASSERT(rep_icmp->type == ICMP_TYPE_ECHO_REPLY, "Echo reply type is 0");
+    TEST_ASSERT(rep_icmp->code == ICMP_CODE_ECHO, "Echo reply code is 0");
+
+    /* 6. TCP State Machine & PCB Lifecycle */
+    tcp_pcb_t *pcb = tcp_new();
+    TEST_ASSERT(pcb != NULL, "tcp_new allocates PCB");
+    TEST_ASSERT(pcb->state == TCP_STATE_CLOSED, "Initial PCB state is CLOSED");
+    TEST_ASSERT(tcp_bind(pcb, 80U) == TCP_OK, "tcp_bind to port 80 succeeds");
+    TEST_ASSERT(tcp_listen(pcb, NULL) == TCP_OK, "tcp_listen succeeds");
+    TEST_ASSERT(pcb->state == TCP_STATE_LISTEN, "State transitions to LISTEN");
+    TEST_ASSERT(tcp_close(pcb) == TCP_OK, "tcp_close succeeds");
+    TEST_ASSERT(pcb->state == TCP_STATE_CLOSED, "State returns to CLOSED");
+
+    /* 7. Reset to Defaults */
+    TEST_ASSERT(net_reset_defaults() == NET_OK, "net_reset_defaults succeeds");
+}
+
 /* ========================================================================= */
 /* Phase 0-3 Host Test Hardening: Cross-Module Integration & Edge Case Tests */
 /* ========================================================================= */
@@ -2570,6 +2714,7 @@ int main(void)
     test_ble_gatt_subsystem();
     test_wifi_mac_subsystem();
     test_ieee802154_subsystem();
+    test_tcpip_subsystem();
 
     /* Hardened cross-module integration and edge case tests */
     test_coroutine_systimer_dpc_integration();

@@ -25,6 +25,8 @@
 #include "ble_gatt.h"
 #include "wifi.h"
 #include "ieee802154.h"
+#include "net.h"
+#include "tcp.h"
 
 static void print_help(void)
 {
@@ -48,6 +50,7 @@ static void print_help(void)
     console_puts("  ble [status|adv|stop|read|info] - Show or control BLE controller, advertising & GATT\r\n");
     console_puts("  wifi [status|mac|ring|init] - Show or control 802.11ax Wi-Fi 6 MAC driver & packet ring\r\n");
     console_puts("  15.4 [status|chan|pan|short|rx|tx|stop] - Show or control IEEE 802.15.4 radio transceiver\r\n");
+    console_puts("  net [status|ip|mask|gw|arp|tcp|reset] - Show or control IPv4 network interface & TCP state machine\r\n");
     console_puts("  do-test             - Run full baseline validation test suite\r\n");
 }
 
@@ -296,6 +299,20 @@ static void print_info(void)
     console_puts(", Short: ");
     put_hex(ztel.short_addr);
     console_puts("\r\n");
+
+    net_config_t ncfg;
+    net_get_config(&ncfg);
+    char ip_buf[NET_IP_STR_BUF_LEN];
+    net_ip_to_str(ncfg.ip, ip_buf, sizeof(ip_buf));
+    console_puts(" Net:     IP: ");
+    console_puts(ip_buf);
+    console_puts(", Mask: ");
+    net_ip_to_str(ncfg.netmask, ip_buf, sizeof(ip_buf));
+    console_puts(ip_buf);
+    console_puts(", GW: ");
+    net_ip_to_str(ncfg.gateway, ip_buf, sizeof(ip_buf));
+    console_puts(ip_buf);
+    console_puts(", TCP: Active\r\n");
     console_puts("========================================\r\n");
 }
 
@@ -1540,6 +1557,242 @@ static void shell_execute(char *input_buffer)
             console_puts("\r\n");
         }
     }
+    else if (strncmp(input_buffer, "net", 3) == 0 && (input_buffer[3] == ' ' || input_buffer[3] == '\0'))
+    {
+        char *subcmd = input_buffer + 3;
+        while (*subcmd == ' ') subcmd++;
+
+        if (strncmp(subcmd, "ip", 2) == 0)
+        {
+            char *arg = subcmd + 2;
+            while (*arg == ' ') arg++;
+            if (*arg != '\0')
+            {
+                uint32_t new_ip = net_str_to_ip(arg);
+                if (new_ip != 0U)
+                {
+                    net_config_t cur_cfg;
+                    net_get_config(&cur_cfg);
+                    net_set_ip(new_ip, cur_cfg.netmask, cur_cfg.gateway);
+                    console_puts("Network IP updated to: ");
+                    console_puts(arg);
+                    console_puts("\r\n");
+                }
+                else
+                {
+                    console_puts("Error: Invalid IPv4 address format (e.g. 192.168.1.50).\r\n");
+                }
+            }
+            else
+            {
+                net_config_t cur_cfg;
+                net_get_config(&cur_cfg);
+                char s[NET_IP_STR_BUF_LEN];
+                net_ip_to_str(cur_cfg.ip, s, sizeof(s));
+                console_puts("Current IP Address: ");
+                console_puts(s);
+                console_puts("\r\n");
+            }
+        }
+        else if (strncmp(subcmd, "mask", 4) == 0)
+        {
+            char *arg = subcmd + 4;
+            while (*arg == ' ') arg++;
+            if (*arg != '\0')
+            {
+                uint32_t new_mask = net_str_to_ip(arg);
+                if (new_mask != 0U)
+                {
+                    net_config_t cur_cfg;
+                    net_get_config(&cur_cfg);
+                    net_set_ip(cur_cfg.ip, new_mask, cur_cfg.gateway);
+                    console_puts("Network Subnet Mask updated to: ");
+                    console_puts(arg);
+                    console_puts("\r\n");
+                }
+                else
+                {
+                    console_puts("Error: Invalid subnet mask format (e.g. 255.255.255.0).\r\n");
+                }
+            }
+            else
+            {
+                net_config_t cur_cfg;
+                net_get_config(&cur_cfg);
+                char s[NET_IP_STR_BUF_LEN];
+                net_ip_to_str(cur_cfg.netmask, s, sizeof(s));
+                console_puts("Current Subnet Mask: ");
+                console_puts(s);
+                console_puts("\r\n");
+            }
+        }
+        else if (strncmp(subcmd, "gw", 2) == 0)
+        {
+            char *arg = subcmd + 2;
+            while (*arg == ' ') arg++;
+            if (*arg != '\0')
+            {
+                uint32_t new_gw = net_str_to_ip(arg);
+                if (new_gw != 0U)
+                {
+                    net_config_t cur_cfg;
+                    net_get_config(&cur_cfg);
+                    net_set_ip(cur_cfg.ip, cur_cfg.netmask, new_gw);
+                    console_puts("Network Default Gateway updated to: ");
+                    console_puts(arg);
+                    console_puts("\r\n");
+                }
+                else
+                {
+                    console_puts("Error: Invalid gateway format (e.g. 192.168.1.1).\r\n");
+                }
+            }
+            else
+            {
+                net_config_t cur_cfg;
+                net_get_config(&cur_cfg);
+                char s[NET_IP_STR_BUF_LEN];
+                net_ip_to_str(cur_cfg.gateway, s, sizeof(s));
+                console_puts("Current Gateway: ");
+                console_puts(s);
+                console_puts("\r\n");
+            }
+        }
+        else if (strncmp(subcmd, "reset", 5) == 0)
+        {
+            net_reset_defaults();
+            console_puts("Network configuration reset to defaults from config.h.\r\n");
+        }
+        else if (strncmp(subcmd, "arp", 3) == 0)
+        {
+            console_puts("ARP Table Cache:\r\n");
+            console_puts("  Slot | IP Address      | MAC Address       | Status\r\n");
+            console_puts("  -----+-----------------+-------------------+--------\r\n");
+            for (uint32_t i = 0; i < ARP_TABLE_CAPACITY; i++)
+            {
+                net_config_t cfg;
+                net_get_config(&cfg);
+                console_puts("    ");
+                put_dec(i);
+                console_puts("  | ");
+                if (i == 0)
+                {
+                    char gw_s[NET_IP_STR_BUF_LEN];
+                    net_ip_to_str(cfg.gateway, gw_s, sizeof(gw_s));
+                    console_puts(gw_s);
+                    for (size_t k = strlen(gw_s); k < 15; k++) console_putc(' ');
+                    console_puts(" | ff:ff:ff:ff:ff:ff | GATEWAY\r\n");
+                }
+                else
+                {
+                    console_puts("---             | --:--:--:--:--:-- | EMPTY\r\n");
+                }
+            }
+        }
+        else if (strncmp(subcmd, "tcp", 3) == 0)
+        {
+            tcp_telemetry_t tt;
+            tcp_get_telemetry(&tt);
+            console_puts("Bare-Metal Lightweight TCP Connection Engine:\r\n");
+            console_puts("  Active Conns:      ");
+            put_dec(tt.active_connections);
+            console_puts("\r\n");
+            console_puts("  Listening Sockets: ");
+            put_dec(tt.listening_pcbs);
+            console_puts("\r\n");
+            console_puts("  SYN Received:      ");
+            put_dec(tt.syn_received_count);
+            console_puts("\r\n");
+            console_puts("  Established:       ");
+            put_dec(tt.established_count);
+            console_puts("\r\n");
+            console_puts("  Data TX / RX:      ");
+            put_dec(tt.bytes_tx);
+            console_puts(" B / ");
+            put_dec(tt.bytes_rx);
+            console_puts(" B\r\n");
+            console_puts("  Retransmits / RST: ");
+            put_dec(tt.retransmit_count);
+            console_puts(" / ");
+            put_dec(tt.rst_sent_count);
+            console_puts("\r\n");
+            for (uint32_t i = 0; i < TCP_MAX_PCBS; i++)
+            {
+                const tcp_pcb_t *p = tcp_get_pcb(i);
+                if (p != NULL && p->in_use)
+                {
+                    console_puts("  PCB ");
+                    put_dec(i);
+                    console_puts(": State=");
+                    console_puts(tcp_state_to_str(p->state));
+                    console_puts(", LocalPort=");
+                    put_dec(p->local_port);
+                    console_puts(", RemotePort=");
+                    put_dec(p->remote_port);
+                    console_puts("\r\n");
+                }
+            }
+        }
+        else
+        {
+            net_config_t nc;
+            net_get_config(&nc);
+            net_telemetry_t nt;
+            net_get_telemetry(&nt);
+            char s[NET_IP_STR_BUF_LEN];
+
+            console_puts("Bare-Metal Zero-Copy IPv4 & TCP Protocol Stack Status:\r\n");
+            net_ip_to_str(nc.ip, s, sizeof(s));
+            console_puts("  IP Address:        ");
+            console_puts(s);
+            console_puts("\r\n");
+            net_ip_to_str(nc.netmask, s, sizeof(s));
+            console_puts("  Subnet Mask:       ");
+            console_puts(s);
+            console_puts("\r\n");
+            net_ip_to_str(nc.gateway, s, sizeof(s));
+            console_puts("  Default Gateway:   ");
+            console_puts(s);
+            console_puts("\r\n");
+            console_puts("  Ethernet MAC:      ");
+            for (int i = 0; i < 6; i++)
+            {
+                const char hex_chars[] = "0123456789abcdef";
+                console_putc(hex_chars[(nc.mac[i] >> 4) & 0x0F]);
+                console_putc(hex_chars[nc.mac[i] & 0x0F]);
+                if (i < 5) console_putc(':');
+            }
+            console_puts("\r\n");
+            console_puts("  Packets TX / RX:   ");
+            put_dec(nt.tx_packets);
+            console_puts(" / ");
+            put_dec(nt.rx_packets);
+            console_puts("\r\n");
+            console_puts("  Bytes TX / RX:     ");
+            put_dec(nt.tx_bytes);
+            console_puts(" / ");
+            put_dec(nt.rx_bytes);
+            console_puts("\r\n");
+            console_puts("  ARP Req/Rep:       ");
+            put_dec(nt.arp_requests_rx);
+            console_puts(" RX / ");
+            put_dec(nt.arp_replies_tx);
+            console_puts(" TX\r\n");
+            console_puts("  ICMP Echo:         ");
+            put_dec(nt.icmp_rx);
+            console_puts(" RX / ");
+            put_dec(nt.icmp_tx);
+            console_puts(" TX\r\n");
+            console_puts("  TCP Segments:      ");
+            put_dec(nt.tcp_rx);
+            console_puts(" RX / ");
+            put_dec(nt.tcp_tx);
+            console_puts(" TX\r\n");
+            console_puts("  Checksum Errors:   ");
+            put_dec(nt.checksum_errors);
+            console_puts(" (RFC 1071 Validation OK)\r\n");
+        }
+    }
     else
     {
         console_puts("Unknown command. Type 'help' for available commands.\r\n");
@@ -1625,6 +1878,12 @@ void main(void)
     /* Initialize IEEE 802.15.4 Radio Transceiver Driver */
     ieee802154_init();
 
+    /* Initialize Bare-Metal Zero-Copy IPv4, ARP & ICMP Network Stack */
+    net_init();
+
+    /* Initialize Lightweight Bare-Metal TCP State Machine */
+    tcp_init();
+
     console_puts("\r\n");
     print_info();
 
@@ -1636,6 +1895,7 @@ void main(void)
     {
         wdt_supervisor_tick();
         dpc_process_all();
+        tcp_tick();
         shell_tick();
         task_yield();
     }

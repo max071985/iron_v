@@ -540,7 +540,9 @@
 #define PCR_PVT_MONITOR_FUNC_CLK_CONF_PVT_MONITOR_FUNC_CLK_EN_V(v) (((v) << 22) & 0x00400000U)
 
 // GDMA configuration register
+#ifndef PCR_GDMA_CONF_REG
 #define PCR_GDMA_CONF_REG ((volatile uint32_t *)(PCR_BASE + 0xBC))
+#endif
 #define PCR_GDMA_CONF_GDMA_CLK_EN_M (0x00000001U)
 #define PCR_GDMA_CONF_GDMA_CLK_EN_S (0)
 #define PCR_GDMA_CONF_GDMA_CLK_EN_V(v) (((v) << 0) & 0x00000001U)

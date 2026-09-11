@@ -21,6 +21,7 @@
 #include "power.h"
 #include "gpio.h"
 #include "gdma.h"
+#include "modem.h"
 
 /* Freestanding function aliases matching runtime naming conventions */
 static inline size_t s_strlen(const char *s)
@@ -1201,6 +1202,82 @@ static void test_gdma_subsystem(void)
     TEST_ASSERT(gdma_get_channel_telemetry(GDMA_CHANNEL_0, NULL) == GDMA_ERR_INVALID_ARG, "gdma_get_channel_telemetry rejects NULL");
 }
 
+static void test_modem_subsystem(void)
+{
+    printf("  [TEST] Modem clock & power control driver (Task 5.1)...\n");
+
+    /* 1. Register Address & Offset Calculation Validation (AGENTS.md rule) */
+    TEST_ASSERT((uintptr_t)PCR_MODEM_APB_CONF_REG == 0x60096108U, "PCR_MODEM_APB_CONF_REG address calculation");
+    TEST_ASSERT((uintptr_t)MODEM_SYSCON_CLK_CONF_REG == 0x600A9804U, "MODEM_SYSCON_CLK_CONF_REG address calculation");
+    TEST_ASSERT((uintptr_t)MODEM_SYSCON_CLK_CONF_FORCE_ON_REG == 0x600A9808U, "MODEM_SYSCON_CLK_CONF_FORCE_ON_REG address calculation");
+    TEST_ASSERT((uintptr_t)MODEM_SYSCON_CLK_PWR_ST_REG == 0x600A980CU, "MODEM_SYSCON_CLK_PWR_ST_REG address calculation");
+    TEST_ASSERT((uintptr_t)MODEM_SYSCON_MODEM_RST_CONF_REG == 0x600A9810U, "MODEM_SYSCON_MODEM_RST_CONF_REG address calculation");
+    TEST_ASSERT((uintptr_t)MODEM_SYSCON_CLK_CONF1_REG == 0x600A9814U, "MODEM_SYSCON_CLK_CONF1_REG address calculation");
+    TEST_ASSERT((uintptr_t)MODEM_SYSCON_MEM_CONF_REG == 0x600A9818U, "MODEM_SYSCON_MEM_CONF_REG address calculation");
+    TEST_ASSERT((uintptr_t)MODEM_SYSCON_DATE_REG == 0x600A9824U, "MODEM_SYSCON_DATE_REG address calculation");
+
+    TEST_ASSERT((uintptr_t)MODEM_LPCON_COEX_LP_CLK_CONF_REG == 0x600AF008U, "MODEM_LPCON_COEX_LP_CLK_CONF_REG address calculation");
+    TEST_ASSERT((uintptr_t)MODEM_LPCON_CLK_CONF_REG == 0x600AF018U, "MODEM_LPCON_CLK_CONF_REG address calculation");
+    TEST_ASSERT((uintptr_t)MODEM_LPCON_DATE_REG == 0x600AF02CU, "MODEM_LPCON_DATE_REG address calculation");
+
+    TEST_ASSERT((uintptr_t)IEEE802154_COMMAND_REG == 0x600A3000U, "IEEE802154_COMMAND_REG address calculation");
+    TEST_ASSERT((uintptr_t)IEEE802154_CTRL_CFG_REG == 0x600A3004U, "IEEE802154_CTRL_CFG_REG address calculation");
+
+    /* 2. Concrete Data Structure Geometry */
+    TEST_ASSERT(sizeof(modem_clock_state_t) == 4U, "sizeof(modem_clock_state_t) must be 4 bytes");
+
+    /* 3. Driver Lifecycle Initialization */
+    TEST_ASSERT(modem_init() == MODEM_OK, "modem_init succeeds");
+    TEST_ASSERT(modem_get_syscon_date() == MODEM_SYSCON_DATE_EXPECTED, "modem_get_syscon_date matches expected");
+    TEST_ASSERT(modem_get_lpcon_date() == MODEM_LPCON_DATE_EXPECTED, "modem_get_lpcon_date matches expected");
+
+    /* 4. Initial State Assertions */
+    modem_clock_state_t st;
+    TEST_ASSERT(modem_get_clock_state(NULL) == MODEM_ERR_INVALID_ARG, "modem_get_clock_state rejects NULL pointer");
+    TEST_ASSERT(modem_get_clock_state(&st) == MODEM_OK, "modem_get_clock_state succeeds");
+    TEST_ASSERT(st.wifi_clk_enabled == 0U, "Wi-Fi clock initially disabled");
+    TEST_ASSERT(st.ble_clk_enabled == 1U, "BLE clock enabled after modem_init");
+    TEST_ASSERT(st.ieee802154_clk_enabled == 0U, "IEEE 802.15.4 clock initially disabled");
+    TEST_ASSERT(st.coexistence_enabled == 1U, "Coexistence enabled after modem_init");
+
+    TEST_ASSERT(!modem_is_wifi_enabled(), "modem_is_wifi_enabled reports false initially");
+    TEST_ASSERT(modem_is_ble_enabled(), "modem_is_ble_enabled reports true initially");
+    TEST_ASSERT(!modem_is_ieee802154_enabled(), "modem_is_ieee802154_enabled reports false initially");
+    TEST_ASSERT(modem_is_coex_enabled(), "modem_is_coex_enabled reports true initially");
+
+    /* 5. Wi-Fi Clock Control Transitions */
+    TEST_ASSERT(modem_enable_wifi_clocks() == MODEM_OK, "modem_enable_wifi_clocks succeeds");
+    TEST_ASSERT(modem_is_wifi_enabled(), "modem_is_wifi_enabled reports true");
+    TEST_ASSERT(modem_disable_wifi_clocks() == MODEM_OK, "modem_disable_wifi_clocks succeeds");
+    TEST_ASSERT(!modem_is_wifi_enabled(), "modem_is_wifi_enabled reports false");
+
+    /* 6. Bluetooth Clock Control Transitions */
+    TEST_ASSERT(modem_enable_ble_clocks() == MODEM_OK, "modem_enable_ble_clocks succeeds");
+    TEST_ASSERT(modem_is_ble_enabled(), "modem_is_ble_enabled reports true");
+    TEST_ASSERT(modem_disable_ble_clocks() == MODEM_OK, "modem_disable_ble_clocks succeeds");
+    TEST_ASSERT(!modem_is_ble_enabled(), "modem_is_ble_enabled reports false");
+
+    /* 7. IEEE 802.15.4 Clock Control Transitions */
+    TEST_ASSERT(modem_enable_ieee802154_clocks() == MODEM_OK, "modem_enable_ieee802154_clocks succeeds");
+    TEST_ASSERT(modem_is_ieee802154_enabled(), "modem_is_ieee802154_enabled reports true");
+    TEST_ASSERT(modem_disable_ieee802154_clocks() == MODEM_OK, "modem_disable_ieee802154_clocks succeeds");
+    TEST_ASSERT(!modem_is_ieee802154_enabled(), "modem_is_ieee802154_enabled reports false");
+
+    /* 8. Coexistence Clock Transitions */
+    TEST_ASSERT(modem_disable_coexistence() == MODEM_OK, "modem_disable_coexistence succeeds");
+    TEST_ASSERT(!modem_is_coex_enabled(), "modem_is_coex_enabled reports false");
+    TEST_ASSERT(modem_enable_coexistence() == MODEM_OK, "modem_enable_coexistence succeeds");
+    TEST_ASSERT(modem_is_coex_enabled(), "modem_is_coex_enabled reports true");
+
+    /* 9. Orchestrated Wireless Subsystems Activation (TEST 29 Stimulus) */
+    TEST_ASSERT(modem_enable_all_clocks() == MODEM_OK, "modem_enable_all_clocks succeeds");
+    TEST_ASSERT(modem_get_clock_state(&st) == MODEM_OK, "modem_get_clock_state succeeds after all enabled");
+    TEST_ASSERT(st.wifi_clk_enabled == 1U, "Wi-Fi clock confirmed enabled");
+    TEST_ASSERT(st.ble_clk_enabled == 1U, "BLE clock confirmed enabled");
+    TEST_ASSERT(st.ieee802154_clk_enabled == 1U, "IEEE 802.15.4 clock confirmed enabled");
+    TEST_ASSERT(st.coexistence_enabled == 1U, "Coexistence confirmed enabled");
+}
+
 /* ========================================================================= */
 /* Phase 0-3 Host Test Hardening: Cross-Module Integration & Edge Case Tests */
 /* ========================================================================= */
@@ -2199,6 +2276,7 @@ int main(void)
     test_power_mailbox_subsystem();
     test_gpio_subsystem();
     test_gdma_subsystem();
+    test_modem_subsystem();
 
     /* Hardened cross-module integration and edge case tests */
     test_coroutine_systimer_dpc_integration();

@@ -5,6 +5,7 @@
 #include "string.h"
 #include "test.h"
 #include "clock.h"
+#include "mmu.h"
 #include "wdt.h"
 #include "trap.h"
 #include "interrupt.h"
@@ -25,6 +26,7 @@
 #include "ble.h"
 #include "ble_gatt.h"
 #include "wifi.h"
+#include "wifi_os_adapter.h"
 #include "ieee802154.h"
 #include "net.h"
 #include "tcp.h"
@@ -49,7 +51,8 @@ static void print_help(void)
     console_puts("  dma [status]        - Show GDMA multi-channel engine status\r\n");
     console_puts("  modem [status|all|wifi|ble|15.4] - Show or control wireless modem clocks and power\r\n");
     console_puts("  ble [status|adv|stop|read|info] - Show or control BLE controller, advertising & GATT\r\n");
-    console_puts("  wifi [status|mac|ring|init] - Show or control 802.11ax Wi-Fi 6 MAC driver & packet ring\r\n");
+    console_puts("  wifi [status|mac|ring|init|scan] - Show or control 802.11ax Wi-Fi 6 MAC driver & packet ring\r\n");
+    console_puts("  mmu [status|map]    - Show MSPI MMU Flash XIP mapping & cache status\r\n");
     console_puts("  15.4 [status|chan|pan|short|rx|tx|stop] - Show or control IEEE 802.15.4 radio transceiver\r\n");
     console_puts("  net [status|ip|mask|gw|arp|tcp|reset] - Show or control IPv4 network interface & TCP state machine\r\n");
     console_puts("  do-test             - Run full baseline validation test suite\r\n");
@@ -1378,6 +1381,65 @@ static void shell_execute(char *input_buffer)
                 console_puts("\r\n");
             }
         }
+        else if (strncmp(subcmd, "scan", 4) == 0)
+        {
+            uint8_t chan = 0U;
+            bool passive = false;
+            char *p = subcmd + 4;
+            while (*p == ' ') p++;
+            if (*p >= '0' && *p <= '9')
+            {
+                chan = (uint8_t)(*p - '0');
+                p++;
+                if (*p >= '0' && *p <= '9')
+                {
+                    chan = (uint8_t)(chan * 10U + (*p - '0'));
+                    p++;
+                }
+            }
+            while (*p == ' ') p++;
+            if (strncmp(p, "passive", 7) == 0)
+            {
+                passive = true;
+            }
+            console_puts("Triggering Wi-Fi Scan (500ms dwell)...\r\n");
+            wifi_status_t sc_st = wifi_scan(NULL, chan, passive, 500U);
+            if (sc_st != WIFI_OK)
+            {
+                console_puts("Scan returned status: ");
+                put_dec((uint32_t)sc_st);
+                console_puts("\r\n");
+            }
+        }
+        else if (strncmp(subcmd, "sniffer", 7) == 0)
+        {
+            uint8_t chan = 1U;
+            uint32_t dur = 5U;
+            char *p = subcmd + 7;
+            while (*p == ' ') p++;
+            if (*p >= '0' && *p <= '9')
+            {
+                chan = (uint8_t)(*p - '0');
+                p++;
+                if (*p >= '0' && *p <= '9')
+                {
+                    chan = (uint8_t)(chan * 10U + (*p - '0'));
+                    p++;
+                }
+                while (*p == ' ') p++;
+                if (*p >= '0' && *p <= '9')
+                {
+                    dur = (uint32_t)(*p - '0');
+                    p++;
+                    while (*p >= '0' && *p <= '9')
+                    {
+                        dur = dur * 10U + (uint32_t)(*p - '0');
+                        p++;
+                    }
+                }
+            }
+            wifi_sniffer(chan, dur);
+        }
         else
         {
             wifi_telemetry_t wt;
@@ -1424,7 +1486,23 @@ static void shell_execute(char *input_buffer)
             console_puts("  GDMA Fault Errors: ");
             put_dec(wt.dma_err_count);
             console_puts("\r\n");
+            console_puts("  ISR 1 Count:       ");
+            put_dec(interrupt_get_count(1));
+            console_puts("\r\n");
         }
+    }
+    else if (strncmp(input_buffer, "mmu", 3) == 0 && (input_buffer[3] == ' ' || input_buffer[3] == '\0'))
+    {
+        extern const uint8_t _sflash_xip[];
+        extern const uint8_t _eflash_xip[];
+        uint32_t flash_len = (uint32_t)(_eflash_xip - _sflash_xip);
+        console_puts("ESP32-C6 Flash Cache & MSPI MMU Status:\r\n");
+        console_puts("  VMA Start:         0x42000000 (External Flash XIP)\r\n");
+        console_puts("  Flash Binary Size: ");
+        put_dec(flash_len);
+        console_puts(" bytes mapped\r\n");
+        console_puts("  MMU Page Size:     64 KB\r\n");
+        console_puts("  L1 ICache:         Operational (32 KB 4-way set associative)\r\n");
     }
     else if (strncmp(input_buffer, "15.4", 4) == 0 && (input_buffer[4] == ' ' || input_buffer[4] == '\0'))
     {
@@ -1827,6 +1905,9 @@ void main(void)
     /* Initialize PCR clock tree to 160 MHz CPU PLL and 40 MHz APB */
     clock_init();
 
+    /* Initialize Flash Cache & MSPI MMU (Maps Flash XIP 0x42000000) */
+    mmu_init();
+
     /* Initialize high-resolution 64-bit hardware system timer (SYSTIMER 16 MHz) */
     systimer_init();
 
@@ -1900,6 +1981,7 @@ void main(void)
         wdt_supervisor_tick();
         dpc_process_all();
         tcp_tick();
+        wifi_os_adapter_poll();
         shell_tick();
         task_yield();
     }

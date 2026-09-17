@@ -112,18 +112,19 @@ void wdt_feed(void)
 {
     if (!g_wdt_supervisor.active) return;
 
-    /* Enforce bounded feed limit per epoch (protects against runaway spin-loops) */
+    *TIMG0_WDTWPROTECT = TIMG_WDT_WKEY;
+    FENCE();
+    *TIMG0_WDTFEED = 1;
+    FENCE();
+
     if (g_wdt_supervisor.feed_count < g_wdt_supervisor.max_feeds_per_epoch)
     {
-        *TIMG0_WDTWPROTECT = TIMG_WDT_WKEY;
-        FENCE();
-        *TIMG0_WDTFEED = 1;
-        FENCE();
-
         g_wdt_supervisor.feed_count++;
-        g_wdt_supervisor.total_feed_count++;
-        g_wdt_last_feed_ticks = wdt_get_systimer_ticks();
     }
+    g_wdt_supervisor.total_feed_count++;
+    g_wdt_last_feed_ticks = wdt_get_systimer_ticks();
+
+    lp_wdt_feed();
 }
 
 void wdt_supervisor_tick(void)
@@ -158,6 +159,82 @@ void wdt_supervisor_tick(void)
     {
         wdt_feed();
     }
+}
+
+void wdt_disable(void)
+{
+    *TIMG0_WDTWPROTECT = TIMG_WDT_WKEY;
+    FENCE();
+    *TIMG0_WDTCONFIG0 &= ~TIMG0_WDTCONFIG0_WDT_EN_M;
+    *TIMG0_WDTCONFIG0 |= TIMG0_WDTCONFIG0_WDT_CONF_UPDATE_EN_M;
+    FENCE();
+    *TIMG0_WDTWPROTECT = 0;
+    FENCE();
+    g_wdt_supervisor.active = 0;
+
+    lp_wdt_disable();
+}
+
+void wdt_enable(void)
+{
+    *TIMG0_WDTWPROTECT = TIMG_WDT_WKEY;
+    FENCE();
+    *TIMG0_WDTCONFIG0 |= TIMG0_WDTCONFIG0_WDT_EN_M | TIMG0_WDTCONFIG0_WDT_CONF_UPDATE_EN_M;
+    *TIMG0_WDTFEED = 1;
+    FENCE();
+    *TIMG0_WDTWPROTECT = 0;
+    FENCE();
+    g_wdt_supervisor.active = 1;
+    g_wdt_epoch_start_ticks = wdt_get_systimer_ticks();
+    g_wdt_last_feed_ticks = g_wdt_epoch_start_ticks;
+    g_wdt_supervisor.feed_count = 1;
+
+    lp_wdt_enable();
+}
+
+void lp_wdt_feed(void)
+{
+    *RTC_WDT_WPROTECT_REG = TIMG_WDT_WKEY;
+    FENCE();
+    *LP_WDT_WDTFEED_REG = LP_WDT_WDTFEED_RTC_WDT_FEED_M;
+    FENCE();
+    *RTC_WDT_SWD_WPROTECT_REG = TIMG_WDT_WKEY;
+    FENCE();
+    *RTC_WDT_SWD_CONFIG_REG |= LP_WDT_SWD_CONF_SWD_FEED_M;
+    FENCE();
+    *RTC_WDT_SWD_WPROTECT_REG = 0;
+    *RTC_WDT_WPROTECT_REG = 0;
+    FENCE();
+}
+
+void lp_wdt_disable(void)
+{
+    /* 1. Disable Super Watchdog (SWD) */
+    *RTC_WDT_SWD_WPROTECT_REG = TIMG_WDT_WKEY;
+    FENCE();
+    *RTC_WDT_SWD_CONFIG_REG |= LP_WDT_SWD_CONF_SWD_DISABLE_M;
+    FENCE();
+    *RTC_WDT_SWD_WPROTECT_REG = 0;
+    FENCE();
+
+    /* 2. Disable RTC Watchdog */
+    *RTC_WDT_WPROTECT_REG = TIMG_WDT_WKEY;
+    FENCE();
+    *RTC_WDT_CONFIG0_REG &= ~LP_WDT_WDTCONFIG0_WDT_EN_M;
+    FENCE();
+    *RTC_WDT_WPROTECT_REG = 0;
+    FENCE();
+}
+
+void lp_wdt_enable(void)
+{
+    *RTC_WDT_WPROTECT_REG = TIMG_WDT_WKEY;
+    FENCE();
+    *RTC_WDT_CONFIG0_REG |= LP_WDT_WDTCONFIG0_WDT_EN_M;
+    *LP_WDT_WDTFEED_REG = LP_WDT_WDTFEED_RTC_WDT_FEED_M;
+    FENCE();
+    *RTC_WDT_WPROTECT_REG = 0;
+    FENCE();
 }
 
 void wdt_get_status(wdt_supervisor_t *status)

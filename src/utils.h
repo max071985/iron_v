@@ -6,9 +6,16 @@
 #include "uart.h"
 #include "console.h"
 
+#include <stdarg.h>
+
 void read_line(char *buffer, int max_len);
 void put_hex(uint32_t val);
 void put_dec(uint32_t val);
+int mini_vsnprintf(char *buf, size_t size, const char *fmt, va_list ap);
+int mini_snprintf(char *buf, size_t size, const char *fmt, ...);
+int snprintf(char *buf, size_t size, const char *fmt, ...);
+int sprintf(char *buf, const char *fmt, ...);
+
 
 /* ASCII character constants */
 #define ASCII_BS               0x08    /* Backspace */

@@ -179,6 +179,7 @@ void interrupt_global_enable(void);
 void interrupt_global_disable(void);
 uint32_t interrupt_global_save_and_disable(void);
 void interrupt_global_restore(uint32_t prev_mstatus);
+bool interrupt_in_isr(void);
 
 /* Central interrupt dispatcher invoked from trap_handler */
 void interrupt_dispatch(uint32_t channel, trapframe_t *tf);

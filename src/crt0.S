@@ -1,12 +1,15 @@
 #include "interrupt.h"
+#include "io_constants.h"
 
 .section .text.entry, "ax"
 .global _start
 .global _hang
 
 _start:
-    /* 1. Setup Stack Pointer (Top of DRAM, 16-byte aligned) */
+    /* 1. Setup Stack Pointer (Placed below ROM reserved DRAM at 0x4087CE00, 16-byte aligned) */
     la sp, _stack_top
+    li t0, ESP32C6_ROM_RESERVED_DRAM_SIZE
+    sub sp, sp, t0
 
     /* 2. Setup Global Pointer (gp) safely to optimize linker relaxation */
     .option push

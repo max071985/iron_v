@@ -106,3 +106,80 @@ int s_htoi(char **s, uint32_t *out)
     *s = str;
     return 1;
 }
+
+size_t strnlen(const char *str, size_t maxlen)
+{
+    size_t len = 0U;
+    while (len < maxlen && str[len] != '\0')
+    {
+        len++;
+    }
+    return len;
+}
+
+char *strcpy(char *dest, const char *src)
+{
+    char *d = dest;
+    while ((*d++ = *src++) != '\0')
+    {
+    }
+    return dest;
+}
+
+char *strncpy(char *dest, const char *src, size_t n)
+{
+    char *d = dest;
+    while (n > 0U && (*d++ = *src++) != '\0')
+    {
+        n--;
+    }
+    while (n > 0U)
+    {
+        *d++ = '\0';
+        n--;
+    }
+    return dest;
+}
+
+void *memmove(void *dest, const void *src, size_t n)
+{
+    unsigned char *d = (unsigned char *)dest;
+    const unsigned char *s = (const unsigned char *)src;
+
+    if (d < s)
+    {
+        while (n--)
+        {
+            *d++ = *s++;
+            __asm__ __volatile__("" : "+r"(d));
+        }
+    }
+    else if (d > s)
+    {
+        d += n;
+        s += n;
+        while (n--)
+        {
+            *--d = *--s;
+            __asm__ __volatile__("" : "+r"(d));
+        }
+    }
+    return dest;
+}
+
+int memcmp(const void *s1, const void *s2, size_t n)
+{
+    const unsigned char *p1 = (const unsigned char *)s1;
+    const unsigned char *p2 = (const unsigned char *)s2;
+
+    while (n--)
+    {
+        if (*p1 != *p2)
+        {
+            return (int)*p1 - (int)*p2;
+        }
+        p1++;
+        p2++;
+    }
+    return 0;
+}

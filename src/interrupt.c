@@ -308,10 +308,18 @@ void interrupt_global_restore(uint32_t prev_mstatus)
     }
 }
 
+static volatile uint32_t s_in_isr = 0U;
+
+bool interrupt_in_isr(void)
+{
+    return (s_in_isr > 0U);
+}
+
 void interrupt_dispatch(uint32_t channel, trapframe_t *tf)
 {
     if (channel < INTERRUPT_CPU_CHANNELS && g_isr_table[channel].handler)
     {
+        s_in_isr++;
         g_isr_table[channel].count++;
         g_isr_table[channel].handler(g_isr_table[channel].arg);
 
@@ -321,6 +329,7 @@ void interrupt_dispatch(uint32_t channel, trapframe_t *tf)
             *PLIC_MXINT_CLEAR_REG = (1U << channel);
             *PLIC_MXINT_CLEAR_REG = 0U;
         }
+        s_in_isr--;
     }
     else
     {

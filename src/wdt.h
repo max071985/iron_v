@@ -73,6 +73,17 @@ void wdt_feed(void);
 /* Periodic supervisor tick to service watchdogs, advance epochs, and maintain liveness */
 void wdt_supervisor_tick(void);
 
+/* Temporarily disable watchdog hardware timer */
+void wdt_disable(void);
+
+/* Re-enable watchdog hardware timer */
+void wdt_enable(void);
+
+/* Low-power / RTC Watchdog controls (TRM §15.2-§15.3 & RF Calibration protection) */
+void lp_wdt_feed(void);
+void lp_wdt_disable(void);
+void lp_wdt_enable(void);
+
 /* Query supervisor telemetry */
 void wdt_get_status(wdt_supervisor_t *status);
 

@@ -1,6 +1,7 @@
 #ifndef IO_CONSTANTS_H
 #define IO_CONSTANTS_H
 
+#ifndef __ASSEMBLER__
 #include <stdint.h>
 #include "regs/uart0.h"
 #include "regs/gpio.h"
@@ -14,6 +15,8 @@
 /* Memory barriers */
 #define FENCE()   __asm__ volatile ("fence" ::: "memory")
 #define FENCE_I() __asm__ volatile ("fence.i" ::: "memory")
+#endif
+
 
 /* Alignment bitmasks */
 #define WORD_ALIGN_MASK     0x00000003U
@@ -72,4 +75,15 @@
 #define INTERNAL_ROM_START_ADDR     0x40000000U
 #define INTERNAL_ROM_END_ADDR       0x40050000U
 
+/* ESP32-C6 TRM Section 3: ROM Reserved DRAM Region (0x4087CE00 - 0x40880000, 12.5 KB) */
+#define ESP32C6_ROM_RESERVED_DRAM_SIZE 0x3200U
+#define ESP32C6_RUNTIME_STACK_TOP      (HP_DRAM_END_ADDR - ESP32C6_ROM_RESERVED_DRAM_SIZE)
+#define ESP32C6_WIFI_ROM_BSS_START     0x4087FCE0U
+#define ESP32C6_WIFI_ROM_BSS_END       0x4087FFC8U
+#define ESP32C6_ROM_COEX_PTI_TAB_PTR_ADDR 0x4087FFC0U
+#ifndef __ASSEMBLER__
+#define ESP32C6_ROM_PHY_IQ_EST_SLOT_REG   ((volatile uint32_t *)0x4087D280U)
+#endif
+
 #endif // IO_CONSTANTS_H
+

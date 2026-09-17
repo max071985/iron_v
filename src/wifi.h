@@ -16,6 +16,7 @@
 #include <stdbool.h>
 #include "gdma.h"
 #include "modem.h"
+#include "regs/wifi_mac.h"
 
 /* ========================================================================= */
 /* Packet Ring Sizing & Geometry Constants (docs/development-roadmap.md:678) */
@@ -24,9 +25,23 @@
 #define PACKET_RING_COUNT                32U
 #define WIFI_TX_RING_COUNT               8U
 
+#ifndef WIFI_MAC_ADDR_LEN
 #define WIFI_MAC_ADDR_LEN                6U
+#endif
 #define WIFI_FRAME_MIN_LEN               14U
 #define WIFI_FRAME_MAX_LEN               1536U
+#define WIFI_MAX_SSID_LEN                32U
+#define WIFI_MAX_PASSPHRASE_LEN          64U
+#define WIFI_SCAN_DEFAULT_DURATION_MS    20000U
+#define WIFI_SCAN_CHANNEL_DWELL_MS       1500U
+#define WIFI_SNIFFER_DEFAULT_DURATION_SEC 10U
+#define WIFI_SNIFFER_MAX_BEACONS_LOGGED  32U
+#define WIFI_STA_START_TIMEOUT_US        5000000ULL
+#define WIFI_SCAN_ALL_2G_CHANNELS_MASK   0x7FFEU
+#define WIFI_SCAN_BYPASS_5G_MASK         0x0001U
+#define WIFI_DEFAULT_SCAN_RSSI_THRESHOLD (-127)
+
+
 
 /* Dedicated GDMA Channel for Wi-Fi MAC Data Transfer */
 #define WIFI_GDMA_CHANNEL                GDMA_CHANNEL_1
@@ -131,4 +146,19 @@ wifi_status_t wifi_get_mac_addr(uint8_t *out_mac);
 wifi_status_t wifi_get_telemetry(wifi_telemetry_t *out_telemetry);
 const net_packet_t *wifi_get_rx_packet(uint32_t index);
 
+/* Event Handling from Vendor Wi-Fi Stack */
+void wifi_handle_vendor_event(int32_t event_id, void *event_data);
+
+/* Active/Passive Scanning & Sniffing */
+wifi_status_t wifi_scan(const char *ssid, uint8_t channel, bool passive, uint32_t duration_ms);
+wifi_status_t wifi_sniffer(uint8_t channel, uint32_t duration_sec);
+
+/* Baseband DMA Linkage & Timings (Task 3) */
+uint32_t wifi_get_rf_dma_linkage_reg(void);
+uint32_t wifi_get_bb_tx_on_delay(void);
+uint32_t wifi_get_tx_ramp_delay(void);
+uint32_t wifi_get_tx_cca_start_ts(void);
+
 #endif /* IRON_V_WIFI_H */
+
+

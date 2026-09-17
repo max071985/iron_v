@@ -15,6 +15,8 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include "regs/i2c_ana.h"
+#include "regs/adc.h"
 
 /* ========================================================================= */
 /* Peripheral Base Addresses (TRM Table 3-3 Peripheral Memory Cartography)   */
@@ -170,6 +172,87 @@
 #define MODEM_LPCON_CLK_COEX_EN_BIT          (1U << 1)
 #define MODEM_LPCON_CLK_I2C_MST_EN_BIT       (1U << 2)
 #define MODEM_LPCON_CLK_LP_TIMER_EN_BIT      (1U << 3)
+#define MODEM_LPCON_I2C_MST_SEL_160M_BIT     (1U << 0)
+#define MODEM_LPCON_CLK_I2C_MST_FO_BIT       (1U << 2)
+#define MODEM_LPCON_CLK_I2C_MST_MEM_FO_BIT   (1U << 5)
+#define MODEM_LPCON_RST_I2C_MST_BIT          (1U << 2)
+#define MODEM_LPCON_MEM_I2C_MST_PU_BIT       (1U << 8)
+#define MODEM_LPCON_MEM_I2C_MST_PD_BIT       (1U << 9)
+
+#define MODEM_CLK_WIFIBB_ALL_EN_MASK         (MODEM_CLK_WIFIBB_22M_EN_BIT | \
+                                              MODEM_CLK_WIFIBB_40M_EN_BIT | \
+                                              MODEM_CLK_WIFIBB_44M_EN_BIT | \
+                                              MODEM_CLK_WIFIBB_80M_EN_BIT | \
+                                              MODEM_CLK_WIFIBB_40X_EN_BIT | \
+                                              MODEM_CLK_WIFIBB_80X_EN_BIT | \
+                                              MODEM_CLK_WIFIBB_40X1_EN_BIT | \
+                                              MODEM_CLK_WIFIBB_80X1_EN_BIT | \
+                                              MODEM_CLK_WIFIBB_160X1_EN_BIT | \
+                                              MODEM_CLK_WIFIBB_480M_EN_BIT)
+
+#define MODEM_CLK_FE_ALL_EN_MASK             (MODEM_CLK_FE_20M_EN_BIT | \
+                                              MODEM_CLK_FE_40M_EN_BIT | \
+                                              MODEM_CLK_FE_80M_EN_BIT | \
+                                              MODEM_CLK_FE_160M_EN_BIT | \
+                                              MODEM_CLK_FE_CAL_160M_EN_BIT | \
+                                              MODEM_CLK_FE_APB_EN_BIT | \
+                                              MODEM_CLK_FE_480M_EN_BIT | \
+                                              MODEM_CLK_FE_ANAMODE_40M_EN_BIT | \
+                                              MODEM_CLK_FE_ANAMODE_80M_EN_BIT | \
+                                              MODEM_CLK_FE_ANAMODE_160M_EN_BIT)
+
+#define MODEM_LPCON_RST_WIFIPWR_BIT          (1U << 0)
+#define MODEM_LPCON_RST_COEX_BIT             (1U << 1)
+#define MODEM_LPCON_CLK_WIFIPWR_FO_BIT       (1U << 0)
+#define MODEM_LPCON_CLK_COEX_FO_BIT          (1U << 1)
+#define MODEM_LPCON_CLK_BCMEM_FO_BIT         (1U << 4)
+#define MODEM_LPCON_CLK_CHAN_FREQ_MEM_FO_BIT (1U << 6)
+#define MODEM_LPCON_CLK_PBUS_MEM_FO_BIT      (1U << 7)
+#define MODEM_LPCON_CLK_AGC_MEM_FO_BIT       (1U << 8)
+#define MODEM_LPCON_CLK_DC_MEM_FO_BIT        (1U << 9)
+
+#define MODEM_LPCON_MEM_DC_PU_BIT            (1U << 0)
+#define MODEM_LPCON_MEM_DC_PD_BIT            (1U << 1)
+#define MODEM_LPCON_MEM_AGC_PU_BIT           (1U << 2)
+#define MODEM_LPCON_MEM_AGC_PD_BIT           (1U << 3)
+#define MODEM_LPCON_MEM_PBUS_PU_BIT          (1U << 4)
+#define MODEM_LPCON_MEM_PBUS_PD_BIT          (1U << 5)
+#define MODEM_LPCON_MEM_BC_PU_BIT            (1U << 6)
+#define MODEM_LPCON_MEM_BC_PD_BIT            (1U << 7)
+#define MODEM_LPCON_MEM_CHAN_FREQ_PU_BIT     (1U << 10)
+#define MODEM_LPCON_MEM_CHAN_FREQ_PD_BIT     (1U << 11)
+
+#define LP_PERI_CLK_LP_ANA_I2C_BIT           (1U << 29)
+#define LP_PERI_RST_LP_ANA_I2C_BIT           (1U << 29)
+#define LP_I2C_ANA_MST_ALL_DEVICES_EN        0x00000FFFU
+
+#include "regs/lp_peri.h"
+#include "regs/lp_i2c_ana_mst.h"
+#include "regs/lp_ana.h"
+#include "regs/modem_rf.h"
+#include "regs/pmu.h"
+
+/* ========================================================================= */
+/* PMU Power State & Modem ICG Mode Definitions                              */
+/* ========================================================================= */
+#define PMU_HP_ICG_MODEM_CODE_SLEEP          0U
+#define PMU_HP_ICG_MODEM_CODE_MODEM          1U
+#define PMU_HP_ICG_MODEM_CODE_ACTIVE         2U
+
+/* Un-gate all modem clock domains across power states in MODEM_SYSCON & MODEM_LPCON */
+#define MODEM_SYSCON_CLK_CONF_POWER_ST_ACTIVE_ALL ( \
+    (0xFU << 8)  | /* ZB */ \
+    (0xFU << 12) | /* FE */ \
+    (0xFU << 16) | /* BT */ \
+    (0xFU << 20) | /* WIFI */ \
+    (0xFU << 24) | /* MODEM_PERI */ \
+    (0xFU << 28))  /* MODEM_APB */
+
+#define MODEM_LPCON_CLK_CONF_POWER_ST_ACTIVE_ALL ( \
+    (0xFU << 16) | /* WIFIPWR */ \
+    (0xFU << 20) | /* COEX */ \
+    (0xFU << 24) | /* I2C_MST */ \
+    (0xFU << 28))  /* LP_APB */
 
 /* ========================================================================= */
 /* IEEE 802.15.4 Baseband Verification Register Accessors                    */
@@ -179,6 +262,23 @@
 #define IEEE802154_CTRL_CFG_OFFSET           0x0004U
 #define IEEE802154_COMMAND_REG               IEEE802154_REG(IEEE802154_COMMAND_OFFSET)
 #define IEEE802154_CTRL_CFG_REG              IEEE802154_REG(IEEE802154_CTRL_CFG_OFFSET)
+
+/* ========================================================================= */
+/* MODEM RF Front-End & Baseband IQ Estimation MMIO Registers               */
+/* ========================================================================= */
+#define MODEM_FE_FREQ_STATUS_REG             ((volatile uint32_t *)0x600A00CCU)
+#define MODEM_FE_FREQ_LOCK_BIT               (1U << 8)
+#define MODEM_FE_FREQ_LOCK_TIMEOUT_US        10000U
+
+#define MODEM_FE_IQ_CTRL_REG                 ((volatile uint32_t *)0x600A0450U)
+#define MODEM_FE_IQ_TRIG_REG                 ((volatile uint32_t *)0x600A0454U)
+#define MODEM_FE_IQ_STAT_REG                 ((volatile uint32_t *)0x600A0458U)
+#define MODEM_FE_IQ_DONE_BIT                 (1U << 0)
+#define MODEM_FE_IQ_TIMEOUT_US               5000U
+
+#define MODEM_FE_IQ_RESULT_I_REG             ((volatile uint32_t *)0x600A0488U)
+#define MODEM_FE_IQ_RESULT_Q_REG             ((volatile uint32_t *)0x600A048CU)
+#define MODEM_FE_IQ_RESULT_PWR_REG           ((volatile uint32_t *)0x600A0490U)
 
 /* ========================================================================= */
 /* Hardware Version Date Constants (Verified on ESP32-C6 Silicon)           */
@@ -219,6 +319,8 @@ modem_status_t modem_init(void);
 /* Discrete subsystem clock controls */
 modem_status_t modem_enable_wifi_clocks(void);
 modem_status_t modem_disable_wifi_clocks(void);
+modem_status_t modem_enable_i2c_ana_mst(void);
+modem_status_t modem_enable_rf_synthesizer(void);
 modem_status_t modem_enable_ble_clocks(void);
 modem_status_t modem_disable_ble_clocks(void);
 modem_status_t modem_enable_ieee802154_clocks(void);
@@ -235,9 +337,23 @@ modem_status_t modem_disable_coexistence(void);
 modem_status_t modem_get_clock_state(modem_clock_state_t *state);
 uint32_t modem_get_syscon_date(void);
 uint32_t modem_get_lpcon_date(void);
+uint32_t modem_get_rf_enable_reg(void);
+uint32_t modem_get_lp_ana_peri_pwr_reg(void);
+uint32_t modem_get_lp_ana_peri_clk_reg(void);
 bool modem_is_wifi_enabled(void);
 bool modem_is_ble_enabled(void);
 bool modem_is_ieee802154_enabled(void);
 bool modem_is_coex_enabled(void);
+bool modem_is_rf_synth_enabled(void);
+
+/* I2C Analog Master & SAR ADC Calibration APIs (Task 4) */
+modem_status_t modem_configure_i2c_analog_master(void);
+modem_status_t modem_prime_sar_adc_calibration(void);
+uint32_t modem_get_i2c_ana_mst_link0_reg(void);
+uint32_t modem_get_i2c_ana_mst_link1_reg(void);
+bool modem_is_sar_adc_cal_primed(void);
+
+/* Bare-Metal Wi-Fi RX AGC Override */
+void modem_force_rx_agc(void);
 
 #endif /* IRON_V_MODEM_H */

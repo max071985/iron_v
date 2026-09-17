@@ -29,6 +29,7 @@
 #include "ieee802154.h"
 #include "net.h"
 #include "tcp.h"
+#include "regs/lp_wdt.h"
 
 /* Freestanding function aliases matching runtime naming conventions */
 static inline size_t s_strlen(const char *s)
@@ -262,6 +263,30 @@ static void test_memory_utils(void)
     {
         TEST_ASSERT(dest[i] == src[i], "memcpy byte exact match");
     }
+
+    /* memcmp */
+    TEST_ASSERT(memcmp(dest, src, sizeof(dest)) == 0, "memcmp equal buffers");
+    dest[5] = 0x00;
+    TEST_ASSERT(memcmp(dest, src, sizeof(dest)) < 0, "memcmp less than");
+    dest[5] = 0xFF;
+    TEST_ASSERT(memcmp(dest, src, sizeof(dest)) > 0, "memcmp greater than");
+
+    /* memmove overlapping forward and backward */
+    uint8_t move_buf[16] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
+    memmove(move_buf + 2, move_buf, 6); /* {0, 1, 0, 1, 2, 3, 4, 5, 8, ...} */
+    TEST_ASSERT(move_buf[2] == 0 && move_buf[3] == 1 && move_buf[7] == 5, "memmove forward overlap");
+    memmove(move_buf, move_buf + 2, 6);
+    TEST_ASSERT(move_buf[0] == 0 && move_buf[1] == 1 && move_buf[5] == 5, "memmove backward overlap");
+
+    /* strnlen, strcpy, strncpy */
+    TEST_ASSERT(strnlen("hello", 10) == 5, "strnlen normal");
+    TEST_ASSERT(strnlen("hello", 3) == 3, "strnlen clamped");
+    char str_dest[16];
+    strcpy(str_dest, "iron-v");
+    TEST_ASSERT(strcmp(str_dest, "iron-v") == 0, "strcpy exact copy");
+    memset(str_dest, 'A', sizeof(str_dest));
+    strncpy(str_dest, "abc", 5);
+    TEST_ASSERT(str_dest[0] == 'a' && str_dest[1] == 'b' && str_dest[2] == 'c' && str_dest[3] == '\0' && str_dest[4] == '\0', "strncpy null pads");
 }
 
 static void test_char_helpers(void)
@@ -1230,6 +1255,27 @@ static void test_modem_subsystem(void)
     TEST_ASSERT((uintptr_t)IEEE802154_COMMAND_REG == 0x600A3000U, "IEEE802154_COMMAND_REG address calculation");
     TEST_ASSERT((uintptr_t)IEEE802154_CTRL_CFG_REG == 0x600A3004U, "IEEE802154_CTRL_CFG_REG address calculation");
 
+    TEST_ASSERT((uintptr_t)MODEM_RF_ENABLE_REG == 0x600A7104U, "MODEM_RF_ENABLE_REG address calculation");
+    TEST_ASSERT((uintptr_t)LP_ANA_PERI_PWR_CONF_REG == 0x600B2C04U, "LP_ANA_PERI_PWR_CONF_REG address calculation");
+    TEST_ASSERT((uintptr_t)LP_ANA_PERI_CLK_CONF_REG == 0x600B2C0CU, "LP_ANA_PERI_CLK_CONF_REG address calculation");
+    TEST_ASSERT((uintptr_t)LP_CLKRST_I2C_ANA_MST_LINK0_REG == 0x600B0418U, "LP_CLKRST_I2C_ANA_MST_LINK0_REG address calculation");
+    TEST_ASSERT((uintptr_t)LP_CLKRST_I2C_ANA_MST_LINK1_REG == 0x600B041CU, "LP_CLKRST_I2C_ANA_MST_LINK1_REG address calculation");
+    TEST_ASSERT((uintptr_t)I2C_ANA_MST_DEVICE_EN_REG == 0x600AF814U, "I2C_ANA_MST_DEVICE_EN_REG address calculation");
+    TEST_ASSERT((uintptr_t)APB_SARADC_CAL_REG(0) == 0x6000E0D0U, "APB_SARADC_CAL_REG(0) address calculation");
+    TEST_ASSERT((uintptr_t)APB_SARADC_CAL_REG(11) == 0x6000E0FCU, "APB_SARADC_CAL_REG(11) address calculation");
+    TEST_ASSERT((uintptr_t)MODEM_RF_AGC_CTRL_REG == 0x600A7400U, "MODEM_RF_AGC_CTRL_REG address calculation");
+    TEST_ASSERT((uintptr_t)MODEM_RF_AGC_CFG1_REG == 0x600A7414U, "MODEM_RF_AGC_CFG1_REG address calculation");
+    TEST_ASSERT((uintptr_t)MODEM_RF_AGC_CFG2_REG == 0x600A7418U, "MODEM_RF_AGC_CFG2_REG address calculation");
+    TEST_ASSERT((uintptr_t)MODEM_RF_AGC_CFG3_REG == 0x600A7424U, "MODEM_RF_AGC_CFG3_REG address calculation");
+    TEST_ASSERT((uintptr_t)MODEM_RF_AGC_CFG4_REG == 0x600A7428U, "MODEM_RF_AGC_CFG4_REG address calculation");
+    TEST_ASSERT((uintptr_t)MODEM_RF_AGC_CFG5_REG == 0x600A7438U, "MODEM_RF_AGC_CFG5_REG address calculation");
+    TEST_ASSERT((uintptr_t)MODEM_RF_CAL_OFFSET_0_REG == 0x600A7C00U, "MODEM_RF_CAL_OFFSET_0_REG address calculation");
+    TEST_ASSERT((uintptr_t)MODEM_RF_CAL_OFFSET_1_REG == 0x600A7C14U, "MODEM_RF_CAL_OFFSET_1_REG address calculation");
+    TEST_ASSERT((uintptr_t)MODEM_RF_CAL_OFFSET_2_REG == 0x600A7C30U, "MODEM_RF_CAL_OFFSET_2_REG address calculation");
+    TEST_ASSERT((uintptr_t)MODEM_RF_CAL_OFFSET_3_REG == 0x600A7C6CU, "MODEM_RF_CAL_OFFSET_3_REG address calculation");
+    TEST_ASSERT((uintptr_t)MODEM_RF_CAL_OFFSET_4_REG == 0x600A7CA8U, "MODEM_RF_CAL_OFFSET_4_REG address calculation");
+    TEST_ASSERT((uintptr_t)MODEM_RF_CAL_OFFSET_5_REG == 0x600A7CD0U, "MODEM_RF_CAL_OFFSET_5_REG address calculation");
+
     /* 2. Concrete Data Structure Geometry */
     TEST_ASSERT(sizeof(modem_clock_state_t) == 4U, "sizeof(modem_clock_state_t) must be 4 bytes");
 
@@ -1237,6 +1283,13 @@ static void test_modem_subsystem(void)
     TEST_ASSERT(modem_init() == MODEM_OK, "modem_init succeeds");
     TEST_ASSERT(modem_get_syscon_date() == MODEM_SYSCON_DATE_EXPECTED, "modem_get_syscon_date matches expected");
     TEST_ASSERT(modem_get_lpcon_date() == MODEM_LPCON_DATE_EXPECTED, "modem_get_lpcon_date matches expected");
+    TEST_ASSERT((modem_get_rf_enable_reg() & MODEM_RF_ENABLE_MASTER_BIT) != 0U, "MODEM_RF Master Enable bit asserted after modem_init");
+    TEST_ASSERT((modem_get_lp_ana_peri_pwr_reg() & LP_ANA_PERI_PWR_ENABLE_BIT) != 0U, "LP_ANA_PERI power enabled after modem_init");
+    TEST_ASSERT(modem_get_lp_ana_peri_clk_reg() == LP_ANA_PERI_CLK_ENABLE_VAL, "LP_ANA_PERI clock enabled after modem_init");
+    TEST_ASSERT(modem_is_rf_synth_enabled(), "modem_is_rf_synth_enabled reports true after modem_init");
+    TEST_ASSERT(modem_is_sar_adc_cal_primed(), "SAR ADC calibration primed during modem_init");
+    TEST_ASSERT((modem_get_i2c_ana_mst_link0_reg() & 0xFFC00000U) == 0x60000000U, "I2C_ANA_MST_LINK0 configured after modem_init");
+    TEST_ASSERT((modem_get_i2c_ana_mst_link1_reg() & 0xFFC00000U) == 0x60000000U, "I2C_ANA_MST_LINK1 configured after modem_init");
 
     /* 4. Initial State Assertions */
     modem_clock_state_t st;
@@ -1283,6 +1336,36 @@ static void test_modem_subsystem(void)
     TEST_ASSERT(st.ble_clk_enabled == 1U, "BLE clock confirmed enabled");
     TEST_ASSERT(st.ieee802154_clk_enabled == 1U, "IEEE 802.15.4 clock confirmed enabled");
     TEST_ASSERT(st.coexistence_enabled == 1U, "Coexistence confirmed enabled");
+    TEST_ASSERT((modem_get_rf_enable_reg() & MODEM_RF_ENABLE_MASTER_BIT) != 0U, "MODEM_RF Master Enable bit asserted after modem_enable_all_clocks");
+    TEST_ASSERT(modem_is_rf_synth_enabled(), "modem_is_rf_synth_enabled confirmed enabled");
+
+    /* 10. Wi-Fi RX AGC Override Validation */
+    modem_force_rx_agc();
+}
+
+static void test_lp_wdt_subsystem(void)
+{
+    printf("  [TEST] Low-Power Watchdog (LP_WDT) Register Architecture (Task 5.7 Remediation)...\n");
+
+    /* 1. Register Address & Offset Calculation Validation (AGENTS.md rule) */
+    TEST_ASSERT((uintptr_t)LP_WDT_WDTCONFIG0_REG == 0x600B1C00U, "LP_WDT_WDTCONFIG0_REG address calculation");
+    TEST_ASSERT((uintptr_t)LP_WDT_CONFIG1_REG == 0x600B1C04U, "LP_WDT_CONFIG1_REG address calculation");
+    TEST_ASSERT((uintptr_t)LP_WDT_WDTFEED_REG == 0x600B1C14U, "LP_WDT_WDTFEED_REG address calculation");
+    TEST_ASSERT((uintptr_t)LP_WDT_WDTWPROTECT_REG == 0x600B1C18U, "LP_WDT_WDTWPROTECT_REG address calculation");
+    TEST_ASSERT((uintptr_t)LP_WDT_SWD_CONF_REG == 0x600B1C1CU, "LP_WDT_SWD_CONF_REG address calculation");
+    TEST_ASSERT((uintptr_t)LP_WDT_SWD_WPROTECT_REG == 0x600B1C20U, "LP_WDT_SWD_WPROTECT_REG address calculation");
+
+    /* 2. Parameterized Accessor Verification (AGENTS.md rule) */
+    TEST_ASSERT((uintptr_t)LP_WDT_REG(0x0U) == 0x600B1C00U, "LP_WDT_REG(0x0) macro calculation");
+    TEST_ASSERT((uintptr_t)LP_WDT_REG(0x14U) == 0x600B1C14U, "LP_WDT_REG(0x14) macro calculation");
+    TEST_ASSERT((uintptr_t)LP_WDT_REG(0x18U) == 0x600B1C18U, "LP_WDT_REG(0x18) macro calculation");
+
+    /* 3. Symbolic Constants & Bitmask Verification */
+    TEST_ASSERT(LP_WDT_WKEY_VALUE == 0x50D83AA1U, "LP_WDT_WKEY_VALUE matches 0x50D83AA1");
+    TEST_ASSERT(LP_WDT_WDTFEED_RTC_WDT_FEED_M == 0x80000000U, "LP_WDT_WDTFEED_RTC_WDT_FEED_M is bit 31");
+    TEST_ASSERT(LP_WDT_SWD_CONF_SWD_DISABLE_M == 0x40000000U, "LP_WDT_SWD_CONF_SWD_DISABLE_M is bit 30");
+    TEST_ASSERT(LP_WDT_SWD_CONF_SWD_FEED_M == 0x80000000U, "LP_WDT_SWD_CONF_SWD_FEED_M is bit 31");
+    TEST_ASSERT(LP_WDT_WDTCONFIG0_WDT_EN_M == 0x80000000U, "LP_WDT_WDTCONFIG0_WDT_EN_M is bit 31");
 }
 
 static void test_ble_gatt_subsystem(void)
@@ -1424,6 +1507,14 @@ static void test_wifi_mac_subsystem(void)
     TEST_ASSERT((uintptr_t)EFUSE_MAC_SYS_0_REG == 0x600B0844U, "EFUSE_MAC_SYS_0_REG address calculation");
     TEST_ASSERT((uintptr_t)EFUSE_MAC_SYS_1_REG == 0x600B0848U, "EFUSE_MAC_SYS_1_REG address calculation");
     TEST_ASSERT(WIFI_GDMA_CHANNEL == GDMA_CHANNEL_1, "Wi-Fi bound to GDMA Channel 1");
+    TEST_ASSERT((uintptr_t)MODEM_DATA_RF_DMA_DESC_ADDR_REG == 0x600AD000U, "MODEM_DATA_RF_DMA_DESC_ADDR_REG address calculation");
+    TEST_ASSERT((uintptr_t)MODEM_SYSCON_RF_DMA_ADDR_REG == 0x600AD000U, "MODEM_SYSCON_RF_DMA_ADDR_REG address calculation");
+    TEST_ASSERT((uintptr_t)MODEM_DATA_TX_DMA_DESC_ADDR_REG == 0x600AD004U, "MODEM_DATA_TX_DMA_DESC_ADDR_REG address calculation");
+    TEST_ASSERT((uintptr_t)MODEM_DATA_BLE_DMA_DESC_ADDR_REG == 0x600AD008U, "MODEM_DATA_BLE_DMA_DESC_ADDR_REG address calculation");
+    TEST_ASSERT((uintptr_t)WIFI_MAC_BB_TX_ON_DELAY_REG == 0x600A4010U, "WIFI_MAC_BB_TX_ON_DELAY_REG address calculation");
+    TEST_ASSERT((uintptr_t)WIFI_MAC_TX_RAMP_DELAY_REG == 0x600A4014U, "WIFI_MAC_TX_RAMP_DELAY_REG address calculation");
+    TEST_ASSERT((uintptr_t)WIFI_MAC_TX_CCA_START_TS_REG == 0x600A4018U, "WIFI_MAC_TX_CCA_START_TS_REG address calculation");
+    TEST_ASSERT((uintptr_t)WIFI_MAC_TX_CCA_END_TS_REG == 0x600A401CU, "WIFI_MAC_TX_CCA_END_TS_REG address calculation");
 
     /* 2. Concrete Data Structure Geometry & Memory Sizing */
     TEST_ASSERT(PACKET_BUFFER_SIZE == 1536U, "PACKET_BUFFER_SIZE must be exactly 1536 bytes");
@@ -1434,6 +1525,12 @@ static void test_wifi_mac_subsystem(void)
     /* 3. Subsystem Lifecycle & MAC Address Retrieval */
     TEST_ASSERT(wifi_init() == WIFI_OK, "wifi_init succeeds");
     TEST_ASSERT(wifi_get_state() == WIFI_STATE_IDLE, "Wi-Fi initial state is WIFI_STATE_IDLE");
+
+    /* Baseband DMA Linkage & Timings (Task 3 Remediation) */
+    TEST_ASSERT(wifi_get_rf_dma_linkage_reg() == (uint32_t)(uintptr_t)&wifi_get_rx_packet(0U)->dma_desc, "RF DMA linkage points to RX ring dma_descriptor");
+    TEST_ASSERT(wifi_get_bb_tx_on_delay() == WIFI_MAC_DEFAULT_BB_TX_ON_DELAY_US, "bb_tx_on_delay matches 50us default");
+    TEST_ASSERT(wifi_get_tx_ramp_delay() == WIFI_MAC_DEFAULT_TX_RAMP_DELAY_US, "tx_ramp_delay matches 60us default");
+    TEST_ASSERT(wifi_get_tx_cca_start_ts() == WIFI_MAC_DEFAULT_TX_CCA_START_TS_US, "tx_cca_start_ts matches 80us default");
 
     uint8_t mac[WIFI_MAC_ADDR_LEN] = {0};
     TEST_ASSERT(wifi_get_mac_addr(NULL) == WIFI_ERR_INVALID_ARG, "wifi_get_mac_addr rejects NULL");
@@ -2712,6 +2809,7 @@ int main(void)
     test_gpio_subsystem();
     test_gdma_subsystem();
     test_modem_subsystem();
+    test_lp_wdt_subsystem();
     test_ble_gatt_subsystem();
     test_wifi_mac_subsystem();
     test_ieee802154_subsystem();

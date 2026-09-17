@@ -1157,8 +1157,9 @@
 #define PMU_BACKUP_CFG_BACKUP_SYS_CLK_NO_DIV_S (31)
 #define PMU_BACKUP_CFG_BACKUP_SYS_CLK_NO_DIV_V(v) (((v) << 31) & 0x80000000U)
 
-// need_des
+#ifndef PMU_INT_RAW_REG
 #define PMU_INT_RAW_REG ((volatile uint32_t *)(PMU_BASE + 0x15C))
+#endif
 #define PMU_INT_RAW_LP_CPU_EXC_INT_RAW_M (0x08000000U)
 #define PMU_INT_RAW_LP_CPU_EXC_INT_RAW_S (27)
 #define PMU_INT_RAW_LP_CPU_EXC_INT_RAW_V(v) (((v) << 27) & 0x08000000U)
@@ -1211,8 +1212,9 @@
 #define PMU_HP_INT_ENA_SOC_WAKEUP_INT_ENA_S (31)
 #define PMU_HP_INT_ENA_SOC_WAKEUP_INT_ENA_V(v) (((v) << 31) & 0x80000000U)
 
-// need_des
+#ifndef PMU_HP_INT_CLR_REG
 #define PMU_HP_INT_CLR_REG ((volatile uint32_t *)(PMU_BASE + 0x168))
+#endif
 #define PMU_HP_INT_CLR_LP_CPU_EXC_INT_CLR_M (0x08000000U)
 #define PMU_HP_INT_CLR_LP_CPU_EXC_INT_CLR_S (27)
 #define PMU_HP_INT_CLR_LP_CPU_EXC_INT_CLR_V(v) (((v) << 27) & 0x08000000U)
@@ -1229,8 +1231,9 @@
 #define PMU_HP_INT_CLR_SOC_WAKEUP_INT_CLR_S (31)
 #define PMU_HP_INT_CLR_SOC_WAKEUP_INT_CLR_V(v) (((v) << 31) & 0x80000000U)
 
-// need_des
+#ifndef PMU_LP_INT_RAW_REG
 #define PMU_LP_INT_RAW_REG ((volatile uint32_t *)(PMU_BASE + 0x16C))
+#endif
 #define PMU_LP_INT_RAW_LP_CPU_WAKEUP_INT_RAW_M (0x00100000U)
 #define PMU_LP_INT_RAW_LP_CPU_WAKEUP_INT_RAW_S (20)
 #define PMU_LP_INT_RAW_LP_CPU_WAKEUP_INT_RAW_V(v) (((v) << 20) & 0x00100000U)
@@ -1346,8 +1349,9 @@
 #define PMU_LP_INT_ENA_HP_SW_TRIGGER_INT_ENA_S (31)
 #define PMU_LP_INT_ENA_HP_SW_TRIGGER_INT_ENA_V(v) (((v) << 31) & 0x80000000U)
 
-// need_des
+#ifndef PMU_LP_INT_CLR_REG
 #define PMU_LP_INT_CLR_REG ((volatile uint32_t *)(PMU_BASE + 0x178))
+#endif
 #define PMU_LP_INT_CLR_LP_CPU_WAKEUP_INT_CLR_M (0x00100000U)
 #define PMU_LP_INT_CLR_LP_CPU_WAKEUP_INT_CLR_S (20)
 #define PMU_LP_INT_CLR_LP_CPU_WAKEUP_INT_CLR_V(v) (((v) << 20) & 0x00100000U)
@@ -1386,7 +1390,9 @@
 #define PMU_LP_INT_CLR_HP_SW_TRIGGER_INT_CLR_V(v) (((v) << 31) & 0x80000000U)
 
 // need_des
+#ifndef PMU_LP_CPU_PWR0_REG
 #define PMU_LP_CPU_PWR0_REG ((volatile uint32_t *)(PMU_BASE + 0x17C))
+#endif
 #define PMU_LP_CPU_PWR0_LP_CPU_WAITI_RDY_M (0x00000001U)
 #define PMU_LP_CPU_PWR0_LP_CPU_WAITI_RDY_S (0)
 #define PMU_LP_CPU_PWR0_LP_CPU_WAITI_RDY_V(v) (((v) << 0) & 0x00000001U)
@@ -1416,7 +1422,9 @@
 #define PMU_LP_CPU_PWR0_LP_CPU_SLP_BYPASS_INTR_EN_V(v) (((v) << 31) & 0x80000000U)
 
 // need_des
+#ifndef PMU_LP_CPU_PWR1_REG
 #define PMU_LP_CPU_PWR1_REG ((volatile uint32_t *)(PMU_BASE + 0x180))
+#endif
 #define PMU_LP_CPU_PWR1_LP_CPU_WAKEUP_EN_M (0x0000FFFFU)
 #define PMU_LP_CPU_PWR1_LP_CPU_WAKEUP_EN_S (0)
 #define PMU_LP_CPU_PWR1_LP_CPU_WAKEUP_EN_V(v) (((v) << 0) & 0x0000FFFFU)
@@ -1425,7 +1433,9 @@
 #define PMU_LP_CPU_PWR1_LP_CPU_SLEEP_REQ_V(v) (((v) << 31) & 0x80000000U)
 
 // need_des
+#ifndef PMU_HP_LP_CPU_COMM_REG
 #define PMU_HP_LP_CPU_COMM_REG ((volatile uint32_t *)(PMU_BASE + 0x184))
+#endif
 #define PMU_HP_LP_CPU_COMM_LP_TRIGGER_HP_M (0x40000000U)
 #define PMU_HP_LP_CPU_COMM_LP_TRIGGER_HP_S (30)
 #define PMU_HP_LP_CPU_COMM_LP_TRIGGER_HP_V(v) (((v) << 30) & 0x40000000U)

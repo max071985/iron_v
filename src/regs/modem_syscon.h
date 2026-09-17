@@ -329,4 +329,9 @@
 #define MODEM_SYSCON_DATE_DATE_S (0)
 #define MODEM_SYSCON_DATE_DATE_V(v) (((v) << 0) & 0x0FFFFFFFU)
 
+/* ========================================================================= */
+/* Modem Data & DMA Buffer Linkage Register (0x600AD000)                     */
+/* ========================================================================= */
+#include "regs/wifi_mac.h"
+
 #endif // MODEM_SYSCON_H

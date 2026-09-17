@@ -11,6 +11,19 @@
 
 #define LP_ANA_BASE 0x600B2C00
 
+/* Parameterized MMIO Register Accessor Macro (AGENTS.md rule) */
+#define LP_ANA_REG(offset)                      ((volatile uint32_t *)(LP_ANA_BASE + (offset)))
+
+/* LP_ANALOG_PERI Register Aliases for RF / PHY Power & Clocking */
+#define LP_ANA_PERI_PWR_CONF_OFFSET             0x0004U
+#define LP_ANA_PERI_PWR_CONF_REG                LP_ANA_REG(LP_ANA_PERI_PWR_CONF_OFFSET)
+#define LP_ANA_PERI_PWR_ENABLE_VAL              0xFFFF0000U
+#define LP_ANA_PERI_PWR_ENABLE_BIT              (1U << 31)
+
+#define LP_ANA_PERI_CLK_CONF_OFFSET             0x000CU
+#define LP_ANA_PERI_CLK_CONF_REG                LP_ANA_REG(LP_ANA_PERI_CLK_CONF_OFFSET)
+#define LP_ANA_PERI_CLK_ENABLE_VAL              0xFFFF0000U
+
 // need_des
 #define LP_ANA_BOD_MODE0_CNTL_REG ((volatile uint32_t *)(LP_ANA_BASE + 0x0))
 #define LP_ANA_BOD_MODE0_CNTL_BOD_MODE0_CLOSE_FLASH_ENA_M (0x00000040U)

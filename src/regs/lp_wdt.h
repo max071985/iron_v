@@ -11,6 +11,12 @@
 
 #define LP_WDT_BASE 0x600B1C00
 
+/* Parameterized MMIO Register Accessor Macro (AGENTS.md rule) */
+#define LP_WDT_REG(offset)                      ((volatile uint32_t *)(LP_WDT_BASE + (offset)))
+
+/* Watchdog register unlock key (TRM §15.2.2.3 & Silicon verified) */
+#define LP_WDT_WKEY_VALUE                       0x50D83AA1U
+
 // need_des
 #define LP_WDT_WDTCONFIG0_REG ((volatile uint32_t *)(LP_WDT_BASE + 0x0))
 #define LP_WDT_WDTCONFIG0_WDT_CHIP_RESET_WIDTH_M (0x000000FFU)

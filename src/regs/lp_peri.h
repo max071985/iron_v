@@ -11,8 +11,9 @@
 
 #define LP_PERI_BASE 0x600B2800
 
-// need_des
+#ifndef LP_PERI_CLK_EN_REG
 #define LP_PERI_CLK_EN_REG ((volatile uint32_t *)(LP_PERI_BASE + 0x0))
+#endif
 #define LP_PERI_CLK_EN_LP_TOUCH_CK_EN_M (0x00800000U)
 #define LP_PERI_CLK_EN_LP_TOUCH_CK_EN_S (23)
 #define LP_PERI_CLK_EN_LP_TOUCH_CK_EN_V(v) (((v) << 23) & 0x00800000U)
@@ -42,7 +43,9 @@
 #define LP_PERI_CLK_EN_LP_CPU_CK_EN_V(v) (((v) << 31) & 0x80000000U)
 
 // need_des
+#ifndef LP_PERI_RESET_EN_REG
 #define LP_PERI_RESET_EN_REG ((volatile uint32_t *)(LP_PERI_BASE + 0x4))
+#endif
 #define LP_PERI_RESET_EN_BUS_RESET_EN_M (0x00800000U)
 #define LP_PERI_RESET_EN_BUS_RESET_EN_S (23)
 #define LP_PERI_RESET_EN_BUS_RESET_EN_V(v) (((v) << 23) & 0x00800000U)
@@ -72,19 +75,25 @@
 #define LP_PERI_RESET_EN_LP_CPU_RESET_EN_V(v) (((v) << 31) & 0x80000000U)
 
 // need_des
+#ifndef LP_PERI_RNG_DATA_REG
 #define LP_PERI_RNG_DATA_REG ((volatile uint32_t *)(LP_PERI_BASE + 0x8))
+#endif
 #define LP_PERI_RNG_DATA_RND_DATA_M (0xFFFFFFFFU)
 #define LP_PERI_RNG_DATA_RND_DATA_S (0)
 #define LP_PERI_RNG_DATA_RND_DATA_V(v) (((v) << 0) & 0xFFFFFFFFU)
 
 // need_des
+#ifndef LP_PERI_CPU_REG
 #define LP_PERI_CPU_REG ((volatile uint32_t *)(LP_PERI_BASE + 0xC))
+#endif
 #define LP_PERI_CPU_LPCORE_DBGM_UNAVALIABLE_M (0x80000000U)
 #define LP_PERI_CPU_LPCORE_DBGM_UNAVALIABLE_S (31)
 #define LP_PERI_CPU_LPCORE_DBGM_UNAVALIABLE_V(v) (((v) << 31) & 0x80000000U)
 
 // need_des
+#ifndef LP_PERI_BUS_TIMEOUT_REG
 #define LP_PERI_BUS_TIMEOUT_REG ((volatile uint32_t *)(LP_PERI_BASE + 0x10))
+#endif
 #define LP_PERI_BUS_TIMEOUT_LP_PERI_TIMEOUT_THRES_M (0x3FFFC000U)
 #define LP_PERI_BUS_TIMEOUT_LP_PERI_TIMEOUT_THRES_S (14)
 #define LP_PERI_BUS_TIMEOUT_LP_PERI_TIMEOUT_THRES_V(v) (((v) << 14) & 0x3FFFC000U)

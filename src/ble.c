@@ -80,6 +80,24 @@ static inline void ble_fence(void)
 #endif
 }
 
+#if !defined(__riscv)
+/* Host Emulation Environment for Native Verification */
+#undef BLE_LL_CMD_REG
+#undef BLE_LL_STATUS_REG
+#undef BLE_LL_CLK_LINK_REG
+#undef BLE_LL_MODEM_LINK_REG
+
+static volatile uint32_t s_mock_ble_ll_cmd = 0U;
+static volatile uint32_t s_mock_ble_ll_status = 0U;
+static volatile uint32_t s_mock_ble_ll_clk_link = 0U;
+static volatile uint32_t s_mock_ble_ll_modem_link = 0xFC000000U;
+
+#define BLE_LL_CMD_REG        (&s_mock_ble_ll_cmd)
+#define BLE_LL_STATUS_REG     (&s_mock_ble_ll_status)
+#define BLE_LL_CLK_LINK_REG   (&s_mock_ble_ll_clk_link)
+#define BLE_LL_MODEM_LINK_REG (&s_mock_ble_ll_modem_link)
+#endif
+
 /* ========================================================================= */
 /* Internal HCI Event Queue Management                                       */
 /* ========================================================================= */
@@ -162,6 +180,67 @@ static void ble_read_hardware_mac(uint8_t *out_addr)
 }
 
 /* ========================================================================= */
+/* Bare-Metal Link Layer Hardware Driver                                     */
+/* ========================================================================= */
+
+ble_status_t ble_hw_init(void)
+{
+    /* 1. Poll status register with timeout until stable */
+#if defined(__riscv)
+    uint64_t start_us = systimer_get_us();
+    uint32_t prev_status = *BLE_LL_STATUS_REG;
+    uint32_t stable_count = 0U;
+    while ((systimer_get_us() - start_us) < (uint64_t)BLE_LL_STATUS_TIMEOUT_US)
+    {
+        uint32_t cur_status = *BLE_LL_STATUS_REG;
+        if (cur_status == prev_status)
+        {
+            stable_count++;
+            if (stable_count >= 16U)
+            {
+                break;
+            }
+        }
+        else
+        {
+            stable_count = 0U;
+            prev_status = cur_status;
+        }
+    }
+#else
+    volatile uint32_t status = *BLE_LL_STATUS_REG;
+    (void)status;
+#endif
+
+    /* Memory barrier */
+    ble_fence();
+
+    return BLE_OK;
+}
+
+ble_status_t ble_hw_start_advertising(void)
+{
+    uint32_t cmd = *BLE_LL_CMD_REG;
+    cmd &= BLE_LL_CMD_TRIG_CLR_MASK;
+    cmd |= BLE_LL_CMD_START_ADV_BIT;
+    *BLE_LL_CMD_REG = cmd;
+    ble_fence();
+    return BLE_OK;
+}
+
+ble_status_t ble_hw_stop_advertising(void)
+{
+    *BLE_LL_CMD_REG &= ~BLE_LL_CMD_START_ADV_BIT;
+    ble_fence();
+    return BLE_OK;
+}
+
+bool ble_hw_is_advertising(void)
+{
+    return (*BLE_LL_CMD_REG & BLE_LL_CMD_START_ADV_BIT) != 0U;
+}
+
+/* ========================================================================= */
 /* Subsystem Lifecycle Initialization                                        */
 /* ========================================================================= */
 
@@ -170,7 +249,10 @@ ble_status_t ble_init(void)
     /* 1. Ensure Task 5.1 modem clocks and base BLE timer are enabled */
     modem_enable_ble_clocks();
 
-    /* 2. Extract authentic physical BD_ADDR from eFuse */
+    /* 2. Initialize bare-metal Link Layer hardware */
+    ble_hw_init();
+
+    /* 3. Extract authentic physical BD_ADDR from eFuse */
     ble_read_hardware_mac(s_ble_telemetry.bd_addr);
 
 #if defined(__riscv)
@@ -520,7 +602,13 @@ ble_status_t ble_gap_start_advertising(void)
     enable_pkt[3] = 1U;
     enable_pkt[4] = 1U; /* Enable */
 
-    return ble_hci_execute_cmd(enable_pkt, sizeof(enable_pkt), evt_resp, sizeof(evt_resp), BLE_DEFAULT_TIMEOUT_MS);
+    status = ble_hci_execute_cmd(enable_pkt, sizeof(enable_pkt), evt_resp, sizeof(evt_resp), BLE_DEFAULT_TIMEOUT_MS);
+    if (status != BLE_OK)
+    {
+        return status;
+    }
+
+    return ble_hw_start_advertising();
 }
 
 ble_status_t ble_gap_stop_advertising(void)
@@ -533,7 +621,9 @@ ble_status_t ble_gap_stop_advertising(void)
     disable_pkt[4] = 0U; /* Disable */
 
     uint8_t evt_resp[16];
-    return ble_hci_execute_cmd(disable_pkt, sizeof(disable_pkt), evt_resp, sizeof(evt_resp), BLE_DEFAULT_TIMEOUT_MS);
+    ble_status_t status = ble_hci_execute_cmd(disable_pkt, sizeof(disable_pkt), evt_resp, sizeof(evt_resp), BLE_DEFAULT_TIMEOUT_MS);
+    ble_hw_stop_advertising();
+    return status;
 }
 
 ble_gap_state_t ble_gap_get_state(void)

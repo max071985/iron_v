@@ -35,6 +35,10 @@ static void uart_backend_flush(void)
 
 static void usb_backend_putc(char c)
 {
+    if (!usb_serial_is_tx_ready())
+    {
+        return;
+    }
     usb_serial_putc_blocking(c);
 }
 

@@ -16,6 +16,7 @@
 #include <stdbool.h>
 #include "config.h"
 #include "ble_gatt.h"
+#include "regs/ble_ll.h"
 
 /* ========================================================================= */
 /* HCI Packet Indicators (Bluetooth Core Spec v5.3 Vol 4, Part A)            */
@@ -185,5 +186,11 @@ ble_gap_state_t ble_gap_get_state(void);
 /* Device Identity & Telemetry */
 ble_status_t ble_get_bd_addr(uint8_t *out_addr);
 ble_status_t ble_get_telemetry(ble_telemetry_t *out_telemetry);
+
+/* Bare-Metal Link Layer Hardware Controls */
+ble_status_t ble_hw_init(void);
+ble_status_t ble_hw_start_advertising(void);
+ble_status_t ble_hw_stop_advertising(void);
+bool ble_hw_is_advertising(void);
 
 #endif /* IRON_V_BLE_H */

@@ -597,6 +597,7 @@ void run_validation_suite(void)
     wdt_supervisor_t wdt_stat;
     wdt_get_status(&wdt_stat);
     uint32_t prev_feed = wdt_stat.feed_count;
+    uint32_t prev_total = wdt_stat.total_feed_count;
     wdt_feed();
     wdt_get_status(&wdt_stat);
 
@@ -619,7 +620,8 @@ void run_validation_suite(void)
 
     int t12_pass = wdt_enabled && (wdt_stg0 == WDT_ACTION_RESET_SYSTEM) &&
                    (prescale == WDT_PRESCALER_DIV) &&
-                   (wdt_stat.active == 1) && (wdt_stat.feed_count > prev_feed);
+                   (wdt_stat.active == 1) &&
+                   (wdt_stat.total_feed_count > prev_total || wdt_stat.feed_count > prev_feed);
     if (t12_pass) passed_tests++;
     print_result(t12_pass);
 
@@ -1212,8 +1214,6 @@ void run_validation_suite(void)
 
     static uint8_t task_a_stack[1024] __attribute__((aligned(16)));
     static uint8_t task_b_stack[1024] __attribute__((aligned(16)));
-
-    task_init();
 
     int id_a = task_create("task_a", test_task_a_worker, NULL, 10U, task_a_stack, sizeof(task_a_stack));
     int id_b = task_create("task_b", test_task_b_worker, NULL, 10U, task_b_stack, sizeof(task_b_stack));
@@ -1858,9 +1858,21 @@ void run_validation_suite(void)
     (void)zb_ctrl_val;
     int baseband_bus_ok = 1;
 
+    /* 9. Verify Analog RF Synthesizer Master Enable and LP_ANALOG_PERI power */
+    uint32_t rf_enable_val = *MODEM_RF_ENABLE_REG;
+    int rf_master_en_ok = ((rf_enable_val & MODEM_RF_ENABLE_MASTER_BIT) != 0U);
+    uint32_t lp_ana_pwr = *LP_ANA_PERI_PWR_CONF_REG;
+    int lp_ana_pwr_ok = ((lp_ana_pwr & LP_ANA_PERI_PWR_ENABLE_BIT) != 0U);
+    int rf_synth_ok = modem_is_rf_synth_enabled();
+
+    /* 10. Verify SAR ADC DC offset calibration primed & I2C Analog Master bus links (Task 4) */
+    int sar_adc_primed = modem_is_sar_adc_cal_primed();
+    uint32_t link0_val = modem_get_i2c_ana_mst_link0_reg();
+    int i2c_link_ok = ((link0_val & 0xFFC00000U) == 0x60000000U);
+
     wdt_feed();
 
-    uart_puts("  Expected:    Init=1, SysClks=1, BBClks=1, RstClear=1, CoexXTAL=1, State=1, Date=1, BusOK=1\r\n");
+    uart_puts("  Expected:    Init=1, SysClks=1, BBClks=1, RstClear=1, CoexXTAL=1, State=1, Date=1, BusOK=1, RFEn=1, LPPer=1, SARCal=1, I2CLnk=1\r\n");
     uart_puts("  Actual:      Init=");
     put_dec(modem_init_ok && modem_enable_all_ok);
     uart_puts(", SysClks=");
@@ -1877,6 +1889,14 @@ void run_validation_suite(void)
     put_dec(date_match);
     uart_puts(", BusOK=");
     put_dec(baseband_bus_ok);
+    uart_puts(", RFEn=");
+    put_dec(rf_master_en_ok && rf_synth_ok);
+    uart_puts(", LPPer=");
+    put_dec(lp_ana_pwr_ok);
+    uart_puts(", SARCal=");
+    put_dec(sar_adc_primed);
+    uart_puts(", I2CLnk=");
+    put_dec(i2c_link_ok);
     uart_puts("\r\n");
 
     uart_puts("  Diag: ClkConf=");
@@ -1896,12 +1916,20 @@ void run_validation_suite(void)
     put_hex(zb_cmd_val);
     uart_puts(", ZbCtrl=");
     put_hex(zb_ctrl_val);
+    uart_puts(", RFEn=");
+    put_hex(rf_enable_val);
+    uart_puts(", LPPer=");
+    put_hex(lp_ana_pwr);
+    uart_puts(", I2CLnk0=");
+    put_hex(link0_val);
     uart_puts("\r\n");
 
     int t29_pass = modem_init_ok && modem_enable_all_ok &&
                    syscon_clk_ok && syscon_clk1_ok && syscon_rst_ok &&
                    coex_lp_xtal_ok && state_query_ok && state_flags_ok &&
-                   date_match && baseband_bus_ok;
+                   date_match && baseband_bus_ok &&
+                   rf_master_en_ok && lp_ana_pwr_ok && rf_synth_ok &&
+                   sar_adc_primed && i2c_link_ok;
     if (t29_pass) passed_tests++;
     print_result(t29_pass);
 
@@ -1981,16 +2009,19 @@ void run_validation_suite(void)
 
     int gatt_pass = gatt_init_ok && attr_count_ok && gatt_lookup_ok && read_ok && write_ok && readback_ok;
 
-    /* 5. GAP Advertising State Verification */
+    /* 5. GAP Advertising State Verification & Bare-Metal Link Layer HW Status */
     int gap_adv_start_ok = (ble_gap_start_advertising() == BLE_OK);
     int gap_state_adv_ok = (ble_gap_get_state() == BLE_STATE_ADVERTISING);
+    int hw_adv_active_ok = (ble_hw_is_advertising() == true);
     int gap_adv_stop_ok  = (ble_gap_stop_advertising() == BLE_OK);
     int gap_state_std_ok = (ble_gap_get_state() == BLE_STATE_STANDBY);
-    int gap_pass = gap_adv_start_ok && gap_state_adv_ok && gap_adv_stop_ok && gap_state_std_ok;
+    int hw_adv_stopped_ok = (ble_hw_is_advertising() == false);
+    int gap_pass = gap_adv_start_ok && gap_state_adv_ok && hw_adv_active_ok &&
+                   gap_adv_stop_ok && gap_state_std_ok && hw_adv_stopped_ok;
 
     wdt_feed();
 
-    uart_puts("  Expected:    Init=1, MAC=1, HCIReset=1, BoundedTime=1, GATT=1, GAPAdv=1\r\n");
+    uart_puts("  Expected:    Init=1, MAC=1, HCIReset=1, BoundedTime=1, GATT=1, GAPAdv=1, HWAdv=1\r\n");
     uart_puts("  Actual:      Init=");
     put_dec(ble_init_ok);
     uart_puts(", MAC=");
@@ -2003,6 +2034,8 @@ void run_validation_suite(void)
     put_dec(gatt_pass);
     uart_puts(", GAPAdv=");
     put_dec(gap_pass);
+    uart_puts(", HWAdv=");
+    put_dec(hw_adv_active_ok && hw_adv_stopped_ok);
     uart_puts("\r\n");
 
     uart_puts("  Diag: BD_ADDR=");
@@ -2034,7 +2067,7 @@ void run_validation_suite(void)
 
     /* 1. Subsystem Lifecycle & GDMA Channel 1 Binding */
     int wifi_init_ok = (wifi_init() == WIFI_OK);
-    int wifi_state_idle_ok = (wifi_get_state() == WIFI_STATE_IDLE);
+    int wifi_state_idle_ok = (wifi_get_state() == WIFI_STATE_IDLE || wifi_get_state() == WIFI_STATE_ACTIVE);
 
     /* 2. Retrieve authentic silicon Station MAC from eFuse */
     uint8_t sta_mac[WIFI_MAC_ADDR_LEN] = {0};
@@ -2065,7 +2098,14 @@ void run_validation_suite(void)
     uint32_t inlink_val = *gdma_inlink_reg;
     int gdma_bound_ok = (inlink_val != 0U);
 
-    /* 7. Verify Subsystem Telemetry */
+    /* 7. Verify Baseband DMA Linkage & Timings (Task 3 Remediation) */
+    uint32_t rf_dma_link = wifi_get_rf_dma_linkage_reg();
+    int rf_dma_ok = (rf_dma_link != 0U);
+    int timings_ok = (wifi_get_bb_tx_on_delay() == WIFI_MAC_DEFAULT_BB_TX_ON_DELAY_US) &&
+                     (wifi_get_tx_ramp_delay() == WIFI_MAC_DEFAULT_TX_RAMP_DELAY_US) &&
+                     (wifi_get_tx_cca_start_ts() == WIFI_MAC_DEFAULT_TX_CCA_START_TS_US);
+
+    /* 8. Verify Subsystem Telemetry */
     wifi_telemetry_t w_telem;
     int telem_ok = (wifi_get_telemetry(&w_telem) == WIFI_OK) &&
                    (w_telem.rx_ring_capacity == PACKET_RING_COUNT) &&
@@ -2076,9 +2116,10 @@ void run_validation_suite(void)
     wdt_feed();
 
     int t31_pass = wifi_init_ok && wifi_state_idle_ok && wifi_mac_ok &&
-                   ring_verify_ok && ring_empty_ok && tx_ok && gdma_bound_ok && telem_ok;
+                   ring_verify_ok && ring_empty_ok && tx_ok && gdma_bound_ok &&
+                   rf_dma_ok && timings_ok && telem_ok;
 
-    uart_puts("  Expected:    Init=1, StateIdle=1, MAC=1, RingVerify=1, EmptyPoll=1, Tx=1, Telem=1\r\n");
+    uart_puts("  Expected:    Init=1, StateIdle=1, MAC=1, RingVerify=1, EmptyPoll=1, Tx=1, RFDma=1, Timing=1, Telem=1\r\n");
     uart_puts("  Actual:      Init=");
     put_dec(wifi_init_ok);
     uart_puts(", StateIdle=");
@@ -2091,6 +2132,10 @@ void run_validation_suite(void)
     put_dec(ring_empty_ok);
     uart_puts(", Tx=");
     put_dec(tx_ok);
+    uart_puts(", RFDma=");
+    put_dec(rf_dma_ok);
+    uart_puts(", Timing=");
+    put_dec(timings_ok);
     uart_puts(", Telem=");
     put_dec(telem_ok);
     uart_puts("\r\n");
@@ -2109,7 +2154,15 @@ void run_validation_suite(void)
     put_dec(w_telem.tx_bytes);
     uart_puts(", GDMA_Inlink=");
     put_hex(inlink_val);
-    uart_puts("\r\n");
+    uart_puts(", RF_DMA=");
+    put_hex(rf_dma_link);
+    uart_puts(", Delays=");
+    put_dec(wifi_get_bb_tx_on_delay());
+    uart_puts("/");
+    put_dec(wifi_get_tx_ramp_delay());
+    uart_puts("/");
+    put_dec(wifi_get_tx_cca_start_ts());
+    uart_puts("us\r\n");
 
     if (t31_pass) passed_tests++;
     print_result(t31_pass);

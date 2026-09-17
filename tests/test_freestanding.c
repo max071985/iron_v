@@ -1375,6 +1375,11 @@ static void test_ble_gatt_subsystem(void)
     /* 1. Register Address & Offset Calculation Validation (AGENTS.md rule) */
     TEST_ASSERT((uintptr_t)EFUSE_MAC_SYS_0_REG == 0x600B0844U, "EFUSE_MAC_SYS_0_REG address calculation");
     TEST_ASSERT((uintptr_t)EFUSE_MAC_SYS_1_REG == 0x600B0848U, "EFUSE_MAC_SYS_1_REG address calculation");
+    TEST_ASSERT((uintptr_t)BLE_LL_REG(0x000CU) == 0x600B000CU, "BLE_LL_REG macro address calculation");
+    TEST_ASSERT((uintptr_t)BLE_LL_CMD_REG == 0x600B000CU, "BLE_LL_CMD_REG address calculation");
+    TEST_ASSERT((uintptr_t)BLE_LL_STATUS_REG == 0x600B0058U, "BLE_LL_STATUS_REG address calculation");
+    TEST_ASSERT((uintptr_t)BLE_LL_CLK_LINK_REG == 0x600B00CCU, "BLE_LL_CLK_LINK_REG address calculation");
+    TEST_ASSERT((uintptr_t)BLE_LL_MODEM_LINK_REG == 0x600B0154U, "BLE_LL_MODEM_LINK_REG address calculation");
 
     /* 2. Concrete Data Structure Geometry & Packet Sizing */
     TEST_ASSERT(sizeof(ble_adv_packet_t) == 21U, "sizeof(ble_adv_packet_t) must be 21 bytes packed");
@@ -1445,14 +1450,24 @@ static void test_ble_gatt_subsystem(void)
                 "Unknown HCI command dispatches cleanly");
     TEST_ASSERT(evt_resp[6] == HCI_STATUS_UNKNOWN_HCI_CMD, "Unknown command returns HCI_STATUS_UNKNOWN_HCI_CMD");
 
-    /* 6. GAP Advertising State Machine */
+    /* 6. Bare-Metal Link Layer Hardware Advertising & State Control */
+    TEST_ASSERT(ble_hw_init() == BLE_OK, "ble_hw_init succeeds");
+    TEST_ASSERT(ble_hw_is_advertising() == false, "ble_hw_is_advertising initially false");
+    TEST_ASSERT(ble_hw_start_advertising() == BLE_OK, "ble_hw_start_advertising succeeds");
+    TEST_ASSERT(ble_hw_is_advertising() == true, "ble_hw_is_advertising returns true after start");
+    TEST_ASSERT(ble_hw_stop_advertising() == BLE_OK, "ble_hw_stop_advertising succeeds");
+    TEST_ASSERT(ble_hw_is_advertising() == false, "ble_hw_is_advertising returns false after stop");
+
+    /* 7. GAP Advertising State Machine */
     TEST_ASSERT(ble_gap_start_advertising() == BLE_OK, "ble_gap_start_advertising succeeds");
     TEST_ASSERT(ble_gap_get_state() == BLE_STATE_ADVERTISING, "State transitions to BLE_STATE_ADVERTISING");
+    TEST_ASSERT(ble_hw_is_advertising() == true, "ble_hw_is_advertising reports true during GAP advertising");
     TEST_ASSERT(ble_get_telemetry(&telem) == BLE_OK, "ble_get_telemetry succeeds");
     TEST_ASSERT(telem.adv_start_count >= 1U, "adv_start_count incremented");
 
     TEST_ASSERT(ble_gap_stop_advertising() == BLE_OK, "ble_gap_stop_advertising succeeds");
     TEST_ASSERT(ble_gap_get_state() == BLE_STATE_STANDBY, "State returns to BLE_STATE_STANDBY");
+    TEST_ASSERT(ble_hw_is_advertising() == false, "ble_hw_is_advertising reports false after GAP advertising stopped");
     TEST_ASSERT(ble_get_telemetry(&telem) == BLE_OK, "ble_get_telemetry succeeds");
     TEST_ASSERT(telem.adv_stop_count >= 1U, "adv_stop_count incremented");
 

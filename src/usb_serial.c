@@ -122,6 +122,11 @@ int usb_serial_puts(const char *str)
 {
     if (!str) return USB_SERIAL_ERR_INVALID;
 
+    if (!usb_serial_is_tx_ready())
+    {
+        return USB_SERIAL_ERR_TIMEOUT;
+    }
+
     while (*str)
     {
         int res = usb_serial_putc_blocking(*str++);

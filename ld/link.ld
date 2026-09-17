@@ -2,19 +2,40 @@ ENTRY(_start)
 
 MEMORY
 {
-    hp_iram (rx)  : ORIGIN = 0x40800000, LENGTH = 128K
-    hp_dram (rw)  : ORIGIN = 0x40820000, LENGTH = 384K
+    hp_iram (rx)  : ORIGIN = 0x40800000, LENGTH = 0x29000
+    hp_dram (rw)  : ORIGIN = 0x40829000, LENGTH = 0x57000
     lp_sram (rw)  : ORIGIN = 0x50000000, LENGTH = 16K
     flash_xip (rx): ORIGIN = 0x42000000, LENGTH = 8M
 }
 
 SECTIONS
 {
+    .flash_xip : ALIGN(16) {
+        _sflash_xip = .;
+        _flash_text_start = .;
+        *libnet80211.a:(.text .text.*)
+        *libpp.a:(.text .text.*)
+        *libphy.a:(.text .text.*)
+        *libcore.a:(.text .text.*)
+        *(.flash_text .flash_text.*)
+        *(.flash.text .flash.text.*)
+        _flash_rodata_start = .;
+        *(.flash.rodata .flash.rodata.*)
+        . = ALIGN(16);
+        _eflash_xip = .;
+    } > flash_xip
+
     .text : ALIGN(16) {
         _stext = .;
         KEEP(*(.text.entry))
         *(.text .text.*)
         *(.init .init.*)
+        *(.iram1 .iram1.*)
+        *(.wifi*iram .wifi*iram.*)
+        *(.wifiextrairam .wifiextrairam.*)
+        *(.wifirxiram .wifirxiram.*)
+        *(.wifislpiram .wifislpiram.*)
+        *(.wifislprxiram .wifislprxiram.*)
         . = ALIGN(16);
         _etext = .;
     } > hp_iram
@@ -23,6 +44,7 @@ SECTIONS
         _srodata = .;
         *(.rodata .rodata.*)
         *(.srodata .srodata.*)
+        *(.rodata_wlog* .rodata_wlog*.*)
         . = ALIGN(16);
         _erodata = .;
     } > hp_dram
@@ -31,6 +53,7 @@ SECTIONS
         _sdata = .;
         *(.data .data.*)
         *(.sdata .sdata.*)
+        *(.dram1 .dram1.*)
         . = ALIGN(16);
         _edata = .;
         __global_pointer$ = _sdata + 0x800;
@@ -59,15 +82,11 @@ SECTIONS
         _elp_sram = .;
     } > lp_sram
 
-    .flash_xip : ALIGN(16) {
-        _sflash_xip = .;
-        _flash_text_start = .;
-        *(.flash.text .flash.text.*)
-        _flash_rodata_start = .;
-        *(.flash.rodata .flash.rodata.*)
-        . = ALIGN(16);
-        _eflash_xip = .;
-    } > flash_xip
-
     _stack_top = ORIGIN(hp_dram) + LENGTH(hp_dram);
+
+    /DISCARD/ : {
+        *(.eh_frame)
+        *(.eh_frame_hdr)
+        *(.comment)
+    }
 }

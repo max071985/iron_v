@@ -12,13 +12,13 @@ LD = $(CROSS_COMPILE)ld
 OBJCOPY = $(CROSS_COMPILE)objcopy
 
 # Compiler flags
-CFLAGS = -march=rv32imac_zicsr_zifencei -mabi=ilp32 -ffreestanding -nostdlib -O2 -g -Wall -Wextra -Werror -Isrc
+CFLAGS = -march=rv32imac_zicsr_zifencei -mabi=ilp32 -ffreestanding -nostdlib -O2 -g -Wall -Wextra -Werror -Wno-unterminated-string-initialization -Isrc -Isrc/vendor/include
 
 # Linker flags
-LDFLAGS = -T ld/link.ld -nostdlib
+LDFLAGS = -T ld/link.ld -T ld/rom/esp32c6.rom.ld -T ld/rom/esp32c6.rom.phy.ld -T ld/rom/esp32c6.rom.pp.ld -T ld/rom/esp32c6.rom.net80211.ld -T ld/rom/esp32c6.rom.coexist.ld -Llibs/esp32c6 -nostdlib -Wl,--wrap=ram_set_chan_freq_sw_start
 
 # Baseline source files
-SRCS = src/crt0.S src/trap_entry.S src/task_switch.S src/main.c src/string.c src/utils.c src/test.c src/clock.c src/wdt.c src/trap.c src/panic.c src/interrupt.c src/dpc.c src/usb_serial.c src/uart.c src/console.c src/timer.c src/arena.c src/systimer.c src/task.c src/pmp.c src/lp_core.c src/power.c src/gpio.c src/gdma.c src/modem.c src/ble.c src/wifi.c src/ieee802154.c src/net.c src/tcp.c
+SRCS = src/crt0.S src/trap_entry.S src/task_switch.S src/main.c src/string.c src/utils.c src/test.c src/clock.c src/mmu.c src/wdt.c src/trap.c src/panic.c src/interrupt.c src/dpc.c src/usb_serial.c src/uart.c src/console.c src/timer.c src/arena.c src/systimer.c src/task.c src/pmp.c src/lp_core.c src/power.c src/gpio.c src/gdma.c src/modem.c src/ble.c src/wifi.c src/ieee802154.c src/net.c src/tcp.c src/wifi_os_adapter.c src/vendor/esp_wifi_regulatory.c src/vendor/ftm_load_calibration.c src/vendor/phy_init_data.c
 
 # Interface selection: 'usb' (default) or 'uart'
 INTERFACE ?= usb
@@ -35,6 +35,9 @@ endif
 
 MONITOR_BAUD ?= 115200
 
+.PHONY: all flash monitor clean test
+all: firmware.bin
+
 # LP Core Firmware Targets
 lp_core/lp_firmware.elf: lp_core/main.c lp_core/link.ld
 	$(CC) -march=rv32imac_zicsr -mabi=ilp32 -Os -nostdlib -Wl,-T,lp_core/link.ld $< -o $@
@@ -47,10 +50,10 @@ src/lp_firmware_image.h: lp_core/lp_firmware.bin
 	open('$@','w').write('/* Auto-generated */\n#ifndef LP_FIRMWARE_IMAGE_H\n#define LP_FIRMWARE_IMAGE_H\n#include <stdint.h>\n#include <stddef.h>\nstatic const uint8_t g_lp_firmware_bin[] __attribute__((aligned(4))) = {' + ','.join(f'0x{b:02X}U' for b in d) + '};\nstatic const size_t g_lp_firmware_bin_len = ' + str(len(d)) + 'U;\n#endif\n')"
 
 # Targets
-all: firmware.bin
+
 
 firmware.elf: src/lp_firmware_image.h $(SRCS)
-	$(CC) $(CFLAGS) $(LDFLAGS) $(filter-out src/lp_firmware_image.h,$^) -lgcc -o $@
+	$(CC) $(CFLAGS) $(LDFLAGS) $(filter-out src/lp_firmware_image.h,$^) -Wl,--start-group -lnet80211 -lpp -lphy -lcore -Wl,--end-group -lgcc -o $@
 
 firmware.bin: firmware.elf
 	esptool --chip esp32c6 elf2image --flash-mode dio --flash-size 8MB --flash-freq 80m -o $@ $<
@@ -64,8 +67,8 @@ erase_flash:
 monitor:
 	picocom $(MONITOR_FLAGS) $(PORT)
 
-tests/test_freestanding: tests/test_freestanding.c src/string.c src/string.h src/dpc.c src/dpc.h src/arena.c src/arena.h src/pmp.c src/pmp.h src/lp_core.c src/lp_core.h src/lp_firmware_image.h src/power.c src/power.h src/gpio.c src/gpio.h src/gdma.c src/gdma.h src/modem.c src/modem.h src/ble.c src/ble.h src/ble_gatt.h src/wifi.c src/wifi.h src/ieee802154.c src/ieee802154.h src/config.h src/net.c src/net.h src/tcp.c src/tcp.h
-	gcc -O2 -fno-tree-loop-distribute-patterns -Wall -Wextra -Werror -Isrc tests/test_freestanding.c src/string.c src/dpc.c src/arena.c src/pmp.c src/lp_core.c src/power.c src/gpio.c src/gdma.c src/modem.c src/ble.c src/wifi.c src/ieee802154.c src/net.c src/tcp.c -o $@
+tests/test_freestanding: tests/test_freestanding.c src/string.c src/string.h src/mmu.c src/mmu.h src/dpc.c src/dpc.h src/arena.c src/arena.h src/pmp.c src/pmp.h src/lp_core.c src/lp_core.h src/lp_firmware_image.h src/power.c src/power.h src/gpio.c src/gpio.h src/gdma.c src/gdma.h src/modem.c src/modem.h src/ble.c src/ble.h src/ble_gatt.h src/wifi.c src/wifi.h src/ieee802154.c src/ieee802154.h src/config.h src/net.c src/net.h src/tcp.c src/tcp.h src/wifi_os_adapter.c src/wifi_os_adapter.h
+	gcc -O2 -fno-tree-loop-distribute-patterns -Wall -Wextra -Werror -Isrc -Isrc/vendor/include tests/test_freestanding.c src/string.c src/mmu.c src/dpc.c src/arena.c src/pmp.c src/lp_core.c src/power.c src/gpio.c src/gdma.c src/modem.c src/ble.c src/wifi.c src/ieee802154.c src/net.c src/tcp.c src/wifi_os_adapter.c -o $@
 
 do-test: firmware.elf firmware.bin tests/test_freestanding
 	@./tests/test_freestanding

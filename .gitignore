@@ -10,3 +10,4 @@ context**:Zone.Identifier
 context*
 -l
 arch_cmds
+src/config_local.h

@@ -2066,6 +2066,10 @@ void run_validation_suite(void)
     wdt_feed();
 
     /* 1. Subsystem Lifecycle & GDMA Channel 1 Binding */
+    if (wifi_is_ap_active())
+    {
+        wifi_stop_ap();
+    }
     int wifi_init_ok = (wifi_init() == WIFI_OK);
     int wifi_state_idle_ok = (wifi_get_state() == WIFI_STATE_IDLE || wifi_get_state() == WIFI_STATE_ACTIVE);
 
@@ -2113,13 +2117,14 @@ void run_validation_suite(void)
                    (w_telem.tx_packets >= 1U) &&
                    (w_telem.tx_bytes >= sizeof(test_tx_frame));
 
-    /* 9. SoftAP Broadcasting Functionality (Task 5.7.2) */
+    /* 9. SoftAP Broadcasting Functionality (Task 5.7.2 & 5.7.3) */
     int ap_init_inactive = (!wifi_is_ap_active());
     int ap_start_ok = (wifi_start_ap(NULL, NULL, 1U) == WIFI_OK);
     int ap_is_active = (wifi_is_ap_active() != 0);
+    int rf_sw_ok = (modem_get_rf_analog_switch0() != 0U && modem_get_rf_analog_switch1() != 0U);
     int ap_stop_ok = (wifi_stop_ap() == WIFI_OK);
     int ap_stopped_inactive = (!wifi_is_ap_active());
-    int softap_ok = ap_init_inactive && ap_start_ok && ap_is_active && ap_stop_ok && ap_stopped_inactive;
+    int softap_ok = ap_init_inactive && ap_start_ok && ap_is_active && rf_sw_ok && ap_stop_ok && ap_stopped_inactive;
 
     wdt_feed();
 

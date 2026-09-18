@@ -17,6 +17,7 @@
 #include <stdbool.h>
 #include "regs/i2c_ana.h"
 #include "regs/adc.h"
+#include "regs/modem_rf_analog.h"
 
 /* ========================================================================= */
 /* Peripheral Base Addresses (TRM Table 3-3 Peripheral Memory Cartography)   */
@@ -355,5 +356,11 @@ bool modem_is_sar_adc_cal_primed(void);
 
 /* Bare-Metal Wi-Fi RX AGC Override */
 void modem_force_rx_agc(void);
+
+/* Bare-Metal RF Front-End Analog Routing & TX Power Activation (Task 5.7.3) */
+void modem_rf_analog_init(void);
+void modem_force_tx_pa(void);
+uint32_t modem_get_rf_analog_switch0(void);
+uint32_t modem_get_rf_analog_switch1(void);
 
 #endif /* IRON_V_MODEM_H */

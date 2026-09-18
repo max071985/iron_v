@@ -1084,6 +1084,9 @@ wifi_status_t wifi_start_ap(const char *ssid, const char *password, uint8_t chan
         }
 
         esp_wifi_set_mode(WIFI_MODE_AP);
+        esp_wifi_set_protocol(WIFI_IF_AP, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
+        esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW20);
+        esp_wifi_set_max_tx_power(80);
 
         wifi_config_t ap_cfg;
         memset(&ap_cfg, 0, sizeof(ap_cfg));
@@ -1118,6 +1121,8 @@ wifi_status_t wifi_start_ap(const char *ssid, const char *password, uint8_t chan
         esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
         esp_wifi_start();
         modem_force_rx_agc();
+        modem_force_tx_pa();
+        wifi_set_cca_enabled(false);
 
         uint64_t start_wait = systimer_get_us();
         while (!s_wifi_ap_running &&
@@ -1173,5 +1178,33 @@ uint8_t wifi_get_ap_channel(void)
     return s_wifi_ap_channel;
 }
 
+/* ========================================================================= */
+/* PHY CCA Control APIs (Task 5.7.3)                                         */
+/* ========================================================================= */
 
+wifi_status_t wifi_set_cca_enabled(bool enabled)
+{
+#if defined(__riscv)
+    if (!enabled)
+    {
+        *WIFI_MAC_PHY_CCA_CTRL_REG |= WIFI_MAC_PHY_CCA_DISABLE_MASK;
+    }
+    else
+    {
+        *WIFI_MAC_PHY_CCA_CTRL_REG &= ~WIFI_MAC_PHY_CCA_DISABLE_MASK;
+    }
+    wifi_fence();
+#else
+    (void)enabled;
+#endif
+    return WIFI_OK;
+}
 
+bool wifi_is_cca_enabled(void)
+{
+#if defined(__riscv)
+    return (*WIFI_MAC_PHY_CCA_CTRL_REG & WIFI_MAC_PHY_CCA_DISABLE_MASK) == 0U;
+#else
+    return true;
+#endif
+}

@@ -1510,16 +1510,52 @@ static void shell_execute(char *input_buffer)
                     console_puts("\r\n");
                 }
             }
+            else if (strncmp(p, "cca", 3) == 0 && (p[3] == ' ' || p[3] == '\0'))
+            {
+                p += 3;
+                while (*p == ' ') p++;
+                if (strncmp(p, "on", 2) == 0)
+                {
+                    wifi_set_cca_enabled(true);
+                    console_puts("Wi-Fi CCA enabled.\r\n");
+                }
+                else if (strncmp(p, "off", 3) == 0)
+                {
+                    wifi_set_cca_enabled(false);
+                    console_puts("Wi-Fi CCA disabled (Medium-busy lockout bypassed).\r\n");
+                }
+                else
+                {
+                    console_puts("Wi-Fi CCA Status: ");
+                    console_puts(wifi_is_cca_enabled() ? "ENABLED\r\n" : "DISABLED\r\n");
+                }
+            }
+            else if (strncmp(p, "pa", 2) == 0 && (p[2] == ' ' || p[2] == '\0'))
+            {
+                console_puts("Applying PA bias and RF analog switch routing...\r\n");
+                modem_force_tx_pa();
+                console_puts("RF Switch 0: 0x");
+                put_hex(modem_get_rf_analog_switch0());
+                console_puts("\r\nRF Switch 1: 0x");
+                put_hex(modem_get_rf_analog_switch1());
+                console_puts("\r\n");
+            }
             else
             {
                 /* status (explicit "status" or default) */
                 bool active = wifi_is_ap_active();
                 console_puts("SoftAP Status: ");
                 console_puts(active ? "ACTIVE\r\n" : "INACTIVE\r\n");
-                console_puts("  SSID:    ");
+                console_puts("  SSID:        ");
                 console_puts(wifi_get_ap_ssid());
-                console_puts("\r\n  Channel: ");
+                console_puts("\r\n  Channel:     ");
                 put_dec((uint32_t)wifi_get_ap_channel());
+                console_puts("\r\n  CCA:         ");
+                console_puts(wifi_is_cca_enabled() ? "ENABLED\r\n" : "DISABLED (Bypassed)\r\n");
+                console_puts("  RF Switch 0: 0x");
+                put_hex(modem_get_rf_analog_switch0());
+                console_puts("\r\n  RF Switch 1: 0x");
+                put_hex(modem_get_rf_analog_switch1());
                 console_puts("\r\n");
             }
         }

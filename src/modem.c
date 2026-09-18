@@ -97,6 +97,8 @@ static uint32_t s_mock_modem_rf_enable     = 0U;
 static uint32_t s_mock_modem_rf_agc_ctrl   = 0U;
 static uint32_t s_mock_i2c_ana_link0       = 0U;
 static uint32_t s_mock_i2c_ana_link1       = 0U;
+static uint32_t s_mock_modem_rf_analog_sw0 = 0U;
+static uint32_t s_mock_modem_rf_analog_sw1 = 0U;
 static uint32_t s_mock_sar_adc_cal[APB_SARADC_CAL_REG_COUNT] = {0};
 
 static inline void modem_fence(void)
@@ -142,6 +144,8 @@ static inline uint32_t reg_read(volatile uint32_t *addr)
     if (a == (uintptr_t)MODEM_RF_AGC_CTRL_REG) return s_mock_modem_rf_agc_ctrl;
     if (a == (uintptr_t)LP_CLKRST_I2C_ANA_MST_LINK0_REG) return s_mock_i2c_ana_link0;
     if (a == (uintptr_t)LP_CLKRST_I2C_ANA_MST_LINK1_REG) return s_mock_i2c_ana_link1;
+    if (a == (uintptr_t)MODEM_RF_ANALOG_SWITCH0_REG) return s_mock_modem_rf_analog_sw0;
+    if (a == (uintptr_t)MODEM_RF_ANALOG_SWITCH1_REG) return s_mock_modem_rf_analog_sw1;
     if (a >= (uintptr_t)APB_SARADC_CAL_REG(0) && a <= (uintptr_t)APB_SARADC_CAL_REG(APB_SARADC_CAL_REG_COUNT - 1))
     {
         return s_mock_sar_adc_cal[(a - (uintptr_t)APB_SARADC_CAL_REG(0)) / 4U];
@@ -182,6 +186,8 @@ static inline void reg_write(volatile uint32_t *addr, uint32_t val)
     else if (a == (uintptr_t)MODEM_RF_AGC_CTRL_REG) s_mock_modem_rf_agc_ctrl = val;
     else if (a == (uintptr_t)LP_CLKRST_I2C_ANA_MST_LINK0_REG) s_mock_i2c_ana_link0 = val;
     else if (a == (uintptr_t)LP_CLKRST_I2C_ANA_MST_LINK1_REG) s_mock_i2c_ana_link1 = val;
+    else if (a == (uintptr_t)MODEM_RF_ANALOG_SWITCH0_REG) s_mock_modem_rf_analog_sw0 = val;
+    else if (a == (uintptr_t)MODEM_RF_ANALOG_SWITCH1_REG) s_mock_modem_rf_analog_sw1 = val;
 }
 
 static inline void reg_set_bits(volatile uint32_t *addr, uint32_t mask)
@@ -714,4 +720,56 @@ void modem_force_rx_agc(void)
     modem_fence();
 #endif
 }
+
+/* ========================================================================= */
+/* Bare-Metal RF Front-End Analog Routing & TX Power Activation (Task 5.7.3) */
+/* ========================================================================= */
+
+#if defined(__riscv)
+extern void tx_paon_set_new(void);
+extern void open_i2c_xpd_new(uint32_t mode);
+extern void noise_floor_auto_set_new(void);
+#endif
+
+static uint32_t s_rf_analog_sw0 = 0U;
+static uint32_t s_rf_analog_sw1 = 0U;
+
+void modem_rf_analog_init(void)
+{
+    /* Enable internal RF front-end antenna switch routing for TX/RX */
+    s_rf_analog_sw0 = MODEM_RF_ANALOG_SWITCH_DEFAULT_CONFIG;
+    s_rf_analog_sw1 = MODEM_RF_ANALOG_SWITCH_DEFAULT_CONFIG;
+    reg_write(MODEM_RF_ANALOG_SWITCH0_REG, s_rf_analog_sw0);
+    reg_write(MODEM_RF_ANALOG_SWITCH1_REG, s_rf_analog_sw1);
+    modem_fence();
+}
+
+void modem_force_tx_pa(void)
+{
+    modem_rf_analog_init();
+
+#if defined(__riscv)
+    /* Open internal I2C analog front-end bus links */
+    open_i2c_xpd_new(0U);
+
+    /* Assert Power Amplifier bias and active TX configuration */
+    tx_paon_set_new();
+
+    /* Recalibrate noise floor and DC offsets */
+    noise_floor_auto_set_new();
+#endif
+
+    modem_fence();
+}
+
+uint32_t modem_get_rf_analog_switch0(void)
+{
+    return s_rf_analog_sw0;
+}
+
+uint32_t modem_get_rf_analog_switch1(void)
+{
+    return s_rf_analog_sw1;
+}
+
 

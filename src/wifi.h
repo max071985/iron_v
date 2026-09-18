@@ -180,6 +180,10 @@ bool wifi_is_ap_active(void);
 const char *wifi_get_ap_ssid(void);
 uint8_t wifi_get_ap_channel(void);
 
+/* PHY CCA Control APIs (Task 5.7.3) */
+wifi_status_t wifi_set_cca_enabled(bool enabled);
+bool wifi_is_cca_enabled(void);
+
 #endif /* IRON_V_WIFI_H */
 
 

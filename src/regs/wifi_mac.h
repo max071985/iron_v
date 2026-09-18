@@ -57,6 +57,12 @@
 #define WIFI_MAC_TX_CCA_END_TS_OFFSET           0x001CU
 #define WIFI_MAC_TX_CCA_END_TS_REG              WIFI_MAC_REG(WIFI_MAC_TX_CCA_END_TS_OFFSET)
 
+#define WIFI_MAC_PHY_CCA_CTRL_OFFSET            0x0C5CU
+#define WIFI_MAC_PHY_CCA_CTRL_REG               WIFI_MAC_REG(WIFI_MAC_PHY_CCA_CTRL_OFFSET)
+#define WIFI_MAC_PHY_CCA_DISABLE_BIT31          (1U << 31)
+#define WIFI_MAC_PHY_CCA_DISABLE_BIT29          (1U << 29)
+#define WIFI_MAC_PHY_CCA_DISABLE_MASK           (WIFI_MAC_PHY_CCA_DISABLE_BIT31 | WIFI_MAC_PHY_CCA_DISABLE_BIT29)
+
 /* ========================================================================= */
 /* Timing Constants (Safe standard 802.11 defaults in microseconds)          */
 /* Zero magic numbers execution standard (AGENTS.md rule)                    */

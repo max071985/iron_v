@@ -1530,6 +1530,9 @@ static void test_wifi_mac_subsystem(void)
     TEST_ASSERT((uintptr_t)WIFI_MAC_TX_RAMP_DELAY_REG == 0x600A4014U, "WIFI_MAC_TX_RAMP_DELAY_REG address calculation");
     TEST_ASSERT((uintptr_t)WIFI_MAC_TX_CCA_START_TS_REG == 0x600A4018U, "WIFI_MAC_TX_CCA_START_TS_REG address calculation");
     TEST_ASSERT((uintptr_t)WIFI_MAC_TX_CCA_END_TS_REG == 0x600A401CU, "WIFI_MAC_TX_CCA_END_TS_REG address calculation");
+    TEST_ASSERT((uintptr_t)WIFI_MAC_PHY_CCA_CTRL_REG == 0x600A4C5CU, "WIFI_MAC_PHY_CCA_CTRL_REG address calculation");
+    TEST_ASSERT((uintptr_t)MODEM_RF_ANALOG_SWITCH0_REG == 0x600AA008U, "MODEM_RF_ANALOG_SWITCH0_REG address calculation");
+    TEST_ASSERT((uintptr_t)MODEM_RF_ANALOG_SWITCH1_REG == 0x600AA02CU, "MODEM_RF_ANALOG_SWITCH1_REG address calculation");
 
     /* 2. Concrete Data Structure Geometry & Memory Sizing */
     TEST_ASSERT(PACKET_BUFFER_SIZE == 1536U, "PACKET_BUFFER_SIZE must be exactly 1536 bytes");
@@ -1632,6 +1635,13 @@ static void test_wifi_mac_subsystem(void)
 
     TEST_ASSERT(wifi_stop_ap() == WIFI_OK, "wifi_stop_ap cleanly stops AP");
     TEST_ASSERT(!wifi_is_ap_active(), "SoftAP is inactive after final stop");
+
+    /* 8. RF Front-End Analog Switch & CCA Control (Task 5.7.3) */
+    TEST_ASSERT(wifi_set_cca_enabled(false) == WIFI_OK, "wifi_set_cca_enabled(false) succeeds");
+    TEST_ASSERT(wifi_set_cca_enabled(true) == WIFI_OK, "wifi_set_cca_enabled(true) succeeds");
+    modem_rf_analog_init();
+    TEST_ASSERT(modem_get_rf_analog_switch0() == MODEM_RF_ANALOG_SWITCH_DEFAULT_CONFIG, "modem_get_rf_analog_switch0 matches default config");
+    TEST_ASSERT(modem_get_rf_analog_switch1() == MODEM_RF_ANALOG_SWITCH_DEFAULT_CONFIG, "modem_get_rf_analog_switch1 matches default config");
 }
 
 static void test_ieee802154_subsystem(void)

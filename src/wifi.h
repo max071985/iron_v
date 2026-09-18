@@ -41,7 +41,20 @@
 #define WIFI_SCAN_BYPASS_5G_MASK         0x0001U
 #define WIFI_DEFAULT_SCAN_RSSI_THRESHOLD (-127)
 
+/* SoftAP Geometry & Timing Constants (Task 5.7.2) */
+#define WIFI_DEFAULT_AP_SSID            "IronV-C6"
+#define WIFI_DEFAULT_AP_CHANNEL         1U
+#define WIFI_DEFAULT_AP_MAX_CONN        4U
+#define WIFI_DEFAULT_AP_BEACON_INTERVAL_TU 100U
+#define WIFI_AP_MIN_PASSWORD_LEN        8U
+#define WIFI_MIN_CHANNEL                1U
+#define WIFI_MAX_CHANNEL                14U
 
+/* Fallback Event Identifiers for Host Simulation */
+#define WIFI_VENDOR_EVENT_AP_START       12
+#define WIFI_VENDOR_EVENT_AP_STOP        13
+#define WIFI_VENDOR_EVENT_AP_STACONNECTED 14
+#define WIFI_VENDOR_EVENT_AP_STADISCONNECTED 15
 
 /* Dedicated GDMA Channel for Wi-Fi MAC Data Transfer */
 #define WIFI_GDMA_CHANNEL                GDMA_CHANNEL_1
@@ -75,7 +88,8 @@ typedef enum {
     WIFI_STATE_ACTIVE,
     WIFI_STATE_SCANNING,
     WIFI_STATE_CONNECTED,
-    WIFI_STATE_DISCONNECTED
+    WIFI_STATE_DISCONNECTED,
+    WIFI_STATE_AP_ACTIVE
 } wifi_state_t;
 
 typedef enum {
@@ -158,6 +172,13 @@ uint32_t wifi_get_rf_dma_linkage_reg(void);
 uint32_t wifi_get_bb_tx_on_delay(void);
 uint32_t wifi_get_tx_ramp_delay(void);
 uint32_t wifi_get_tx_cca_start_ts(void);
+
+/* SoftAP Broadcasting Subsystem (Task 5.7.2) */
+wifi_status_t wifi_start_ap(const char *ssid, const char *password, uint8_t channel);
+wifi_status_t wifi_stop_ap(void);
+bool wifi_is_ap_active(void);
+const char *wifi_get_ap_ssid(void);
+uint8_t wifi_get_ap_channel(void);
 
 #endif /* IRON_V_WIFI_H */
 

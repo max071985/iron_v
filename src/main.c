@@ -51,7 +51,7 @@ static void print_help(void)
     console_puts("  dma [status]        - Show GDMA multi-channel engine status\r\n");
     console_puts("  modem [status|all|wifi|ble|15.4] - Show or control wireless modem clocks and power\r\n");
     console_puts("  ble [status|adv|stop|read|info] - Show or control BLE controller, advertising & GATT\r\n");
-    console_puts("  wifi [status|mac|ring|init|scan] - Show or control 802.11ax Wi-Fi 6 MAC driver & packet ring\r\n");
+    console_puts("  wifi [status|mac|ring|init|scan|sniffer|ap] - Show or control 802.11ax Wi-Fi 6 MAC driver & SoftAP\r\n");
     console_puts("  mmu [status|map]    - Show MSPI MMU Flash XIP mapping & cache status\r\n");
     console_puts("  15.4 [status|chan|pan|short|rx|tx|stop] - Show or control IEEE 802.15.4 radio transceiver\r\n");
     console_puts("  net [status|ip|mask|gw|arp|tcp|reset] - Show or control IPv4 network interface & TCP state machine\r\n");
@@ -274,6 +274,7 @@ static void print_info(void)
     else if (wtel.state == WIFI_STATE_ACTIVE) console_puts("ACTIVE");
     else if (wtel.state == WIFI_STATE_SCANNING) console_puts("SCANNING");
     else if (wtel.state == WIFI_STATE_CONNECTED) console_puts("CONNECTED");
+    else if (wtel.state == WIFI_STATE_AP_ACTIVE) console_puts("AP_ACTIVE");
     else console_puts("DISCONNECTED");
     console_puts(", MAC: ");
     for (int i = 0; i < 6; i++)
@@ -1440,6 +1441,88 @@ static void shell_execute(char *input_buffer)
             }
             wifi_sniffer(chan, dur);
         }
+        else if (strncmp(subcmd, "ap", 2) == 0 && (subcmd[2] == ' ' || subcmd[2] == '\0'))
+        {
+            char *p = subcmd + 2;
+            while (*p == ' ') p++;
+
+            if (strncmp(p, "start", 5) == 0 && (p[5] == ' ' || p[5] == '\0'))
+            {
+                p += 5;
+                while (*p == ' ') p++;
+
+                char ssid_buf[WIFI_MAX_SSID_LEN + 1U] = {0};
+                uint8_t chan = WIFI_DEFAULT_AP_CHANNEL;
+
+                if (*p != '\0')
+                {
+                    uint32_t idx = 0U;
+                    while (*p != '\0' && *p != ' ' && idx < WIFI_MAX_SSID_LEN)
+                    {
+                        ssid_buf[idx++] = *p++;
+                    }
+                    ssid_buf[idx] = '\0';
+
+                    while (*p == ' ') p++;
+                    if (*p >= '0' && *p <= '9')
+                    {
+                        chan = (uint8_t)(*p - '0');
+                        p++;
+                        if (*p >= '0' && *p <= '9')
+                        {
+                            chan = (uint8_t)(chan * 10U + (*p - '0'));
+                            p++;
+                        }
+                    }
+                }
+
+                const char *use_ssid = (ssid_buf[0] != '\0') ? ssid_buf : WIFI_DEFAULT_AP_SSID;
+                console_puts("Starting SoftAP (SSID: '");
+                console_puts(use_ssid);
+                console_puts("', Channel: ");
+                put_dec((uint32_t)chan);
+                console_puts(")...\r\n");
+
+                wifi_status_t st = wifi_start_ap(use_ssid, NULL, chan);
+                if (st == WIFI_OK)
+                {
+                    console_puts("SoftAP started successfully.\r\n");
+                }
+                else
+                {
+                    console_puts("SoftAP start failed with status: ");
+                    put_dec((uint32_t)-st);
+                    console_puts("\r\n");
+                }
+            }
+            else if (strncmp(p, "stop", 4) == 0 && (p[4] == ' ' || p[4] == '\0'))
+            {
+                console_puts("Stopping SoftAP...\r\n");
+                wifi_status_t st = wifi_stop_ap();
+                if (st == WIFI_OK)
+                {
+                    console_puts("SoftAP stopped successfully.\r\n");
+                }
+                else
+                {
+                    console_puts("SoftAP stop failed with status: ");
+                    put_dec((uint32_t)-st);
+                    console_puts("\r\n");
+                }
+            }
+            else
+            {
+                /* status (explicit "status" or default) */
+                bool active = wifi_is_ap_active();
+                console_puts("SoftAP Status: ");
+                console_puts(active ? "ACTIVE\r\n" : "INACTIVE\r\n");
+                console_puts("  SSID:    ");
+                console_puts(wifi_get_ap_ssid());
+                console_puts("\r\n  Channel: ");
+                put_dec((uint32_t)wifi_get_ap_channel());
+                console_puts("\r\n");
+            }
+        }
         else
         {
             wifi_telemetry_t wt;
@@ -1452,6 +1535,7 @@ static void shell_execute(char *input_buffer)
             else if (wt.state == WIFI_STATE_ACTIVE) console_puts("ACTIVE");
             else if (wt.state == WIFI_STATE_SCANNING) console_puts("SCANNING");
             else if (wt.state == WIFI_STATE_CONNECTED) console_puts("CONNECTED");
+            else if (wt.state == WIFI_STATE_AP_ACTIVE) console_puts("AP_ACTIVE");
             else console_puts("DISCONNECTED");
             console_puts("\r\n");
             console_puts("  Station MAC:       ");

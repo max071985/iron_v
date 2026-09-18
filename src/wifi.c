@@ -41,6 +41,11 @@ static uint32_t s_bb_tx_on_delay = 0U;
 static uint32_t s_tx_ramp_delay = 0U;
 static uint32_t s_tx_cca_start_ts = 0U;
 
+/* SoftAP Broadcast Tracking (Task 5.7.2) */
+static bool s_wifi_ap_running = false;
+static char s_wifi_ap_ssid[WIFI_MAX_SSID_LEN + 1U] = {0};
+static uint8_t s_wifi_ap_channel = WIFI_DEFAULT_AP_CHANNEL;
+
 /* ========================================================================= */
 /* Static Storage: Pre-Allocated Packet Descriptor Rings in HP SRAM DRAM    */
 /* Zero dynamic heap memory calls permitted (AGENTS.md execution standard)   */
@@ -252,6 +257,22 @@ static esp_err_t wifi_vendor_rx_callback(void *buffer, uint16_t len, void *eb)
 }
 #endif
 
+#if defined(__riscv)
+static void wifi_print_mac(const uint8_t *mac)
+{
+    const char hex_chars[] = "0123456789abcdef";
+    for (uint32_t i = 0U; i < WIFI_MAC_ADDR_LEN; i++)
+    {
+        console_putc(hex_chars[(mac[i] >> 4U) & 0x0FU]);
+        console_putc(hex_chars[mac[i] & 0x0FU]);
+        if (i < (WIFI_MAC_ADDR_LEN - 1U))
+        {
+            console_putc(':');
+        }
+    }
+}
+#endif
+
 void wifi_handle_vendor_event(int32_t event_id, void *event_data)
 {
 #if defined(__riscv)
@@ -296,8 +317,57 @@ void wifi_handle_vendor_event(int32_t event_id, void *event_data)
         s_wifi_telemetry.state = WIFI_STATE_DISCONNECTED;
         s_wifi_rssi = 0;
     }
+    else if (event_id == WIFI_EVENT_AP_START)
+    {
+        console_puts("[Wi-Fi] Event: AP_START\r\n");
+        s_wifi_telemetry.state = WIFI_STATE_AP_ACTIVE;
+        s_wifi_ap_running = true;
+    }
+    else if (event_id == WIFI_EVENT_AP_STOP)
+    {
+        console_puts("[Wi-Fi] Event: AP_STOP\r\n");
+        s_wifi_telemetry.state = WIFI_STATE_IDLE;
+        s_wifi_ap_running = false;
+    }
+    else if (event_id == WIFI_EVENT_AP_STACONNECTED)
+    {
+        console_puts("[Wi-Fi] Event: AP_STACONNECTED");
+        if (event_data != NULL)
+        {
+            const wifi_event_ap_staconnected_t *staconn = (const wifi_event_ap_staconnected_t *)event_data;
+            console_puts(" MAC: ");
+            wifi_print_mac(staconn->mac);
+            console_puts(" AID=");
+            put_dec((uint32_t)staconn->aid);
+        }
+        console_puts("\r\n");
+    }
+    else if (event_id == WIFI_EVENT_AP_STADISCONNECTED)
+    {
+        console_puts("[Wi-Fi] Event: AP_STADISCONNECTED");
+        if (event_data != NULL)
+        {
+            const wifi_event_ap_stadisconnected_t *stadisconn = (const wifi_event_ap_stadisconnected_t *)event_data;
+            console_puts(" MAC: ");
+            wifi_print_mac(stadisconn->mac);
+            console_puts(" AID=");
+            put_dec((uint32_t)stadisconn->aid);
+            console_puts(" reason=");
+            put_dec((uint32_t)stadisconn->reason);
+        }
+        console_puts("\r\n");
+    }
 #else
-    (void)event_id;
+    if (event_id == WIFI_VENDOR_EVENT_AP_START)
+    {
+        s_wifi_telemetry.state = WIFI_STATE_AP_ACTIVE;
+        s_wifi_ap_running = true;
+    }
+    else if (event_id == WIFI_VENDOR_EVENT_AP_STOP)
+    {
+        s_wifi_telemetry.state = WIFI_STATE_IDLE;
+        s_wifi_ap_running = false;
+    }
     (void)event_data;
 #endif
 }
@@ -978,5 +1048,130 @@ uint32_t wifi_get_tx_cca_start_ts(void)
 {
     return s_tx_cca_start_ts;
 }
+
+/* ========================================================================= */
+/* SoftAP Broadcasting Subsystem (Task 5.7.2)                                */
+/* ========================================================================= */
+
+wifi_status_t wifi_start_ap(const char *ssid, const char *password, uint8_t channel)
+{
+    if (!s_wifi_initialized)
+    {
+        wifi_init();
+    }
+
+    modem_enable_wifi_clocks();
+
+    const char *target_ssid = (ssid != NULL && ssid[0] != '\0') ? ssid : WIFI_DEFAULT_AP_SSID;
+    size_t ssid_len = strlen(target_ssid);
+    if (ssid_len > WIFI_MAX_SSID_LEN)
+    {
+        ssid_len = WIFI_MAX_SSID_LEN;
+    }
+    memcpy(s_wifi_ap_ssid, target_ssid, ssid_len);
+    s_wifi_ap_ssid[ssid_len] = '\0';
+    s_wifi_ap_channel = (channel >= WIFI_MIN_CHANNEL && channel <= WIFI_MAX_CHANNEL) ? channel : WIFI_DEFAULT_AP_CHANNEL;
+
+#if defined(__riscv)
+    if (s_vendor_wifi_inited)
+    {
+        if (s_wifi_telemetry.state == WIFI_STATE_ACTIVE ||
+            s_wifi_telemetry.state == WIFI_STATE_CONNECTED ||
+            s_wifi_telemetry.state == WIFI_STATE_AP_ACTIVE ||
+            s_wifi_ap_running)
+        {
+            esp_wifi_stop();
+        }
+
+        esp_wifi_set_mode(WIFI_MODE_AP);
+
+        wifi_config_t ap_cfg;
+        memset(&ap_cfg, 0, sizeof(ap_cfg));
+        memcpy(ap_cfg.ap.ssid, s_wifi_ap_ssid, ssid_len);
+        ap_cfg.ap.ssid[ssid_len] = '\0';
+        ap_cfg.ap.ssid_len = (uint8_t)ssid_len;
+        ap_cfg.ap.channel = s_wifi_ap_channel;
+
+        if (password != NULL && strlen(password) >= WIFI_AP_MIN_PASSWORD_LEN)
+        {
+            size_t pass_len = strlen(password);
+            if (pass_len > WIFI_MAX_PASSPHRASE_LEN)
+            {
+                pass_len = WIFI_MAX_PASSPHRASE_LEN;
+            }
+            memcpy(ap_cfg.ap.password, password, pass_len);
+            if (pass_len < sizeof(ap_cfg.ap.password))
+            {
+                ap_cfg.ap.password[pass_len] = '\0';
+            }
+            ap_cfg.ap.authmode = WIFI_AUTH_WPA2_PSK;
+        }
+        else
+        {
+            ap_cfg.ap.authmode = WIFI_AUTH_OPEN;
+        }
+
+        ap_cfg.ap.ssid_hidden = 0U;
+        ap_cfg.ap.max_connection = WIFI_DEFAULT_AP_MAX_CONN;
+        ap_cfg.ap.beacon_interval = WIFI_DEFAULT_AP_BEACON_INTERVAL_TU;
+
+        esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
+        esp_wifi_start();
+        modem_force_rx_agc();
+
+        uint64_t start_wait = systimer_get_us();
+        while (!s_wifi_ap_running &&
+               s_wifi_telemetry.state != WIFI_STATE_AP_ACTIVE &&
+               (systimer_get_us() - start_wait) < WIFI_STA_START_TIMEOUT_US)
+        {
+            wdt_feed();
+            lp_wdt_feed();
+            wifi_os_adapter_poll();
+            wdt_supervisor_tick();
+            if (task_get_count() > 1U)
+            {
+                task_yield();
+            }
+        }
+    }
+#else
+    (void)password;
+#endif
+
+    s_wifi_ap_running = true;
+    s_wifi_telemetry.state = WIFI_STATE_AP_ACTIVE;
+
+    return WIFI_OK;
+}
+
+wifi_status_t wifi_stop_ap(void)
+{
+#if defined(__riscv)
+    if (s_vendor_wifi_inited)
+    {
+        esp_wifi_stop();
+        esp_wifi_set_mode(WIFI_MODE_STA);
+    }
+#endif
+    s_wifi_ap_running = false;
+    s_wifi_telemetry.state = WIFI_STATE_IDLE;
+    return WIFI_OK;
+}
+
+bool wifi_is_ap_active(void)
+{
+    return s_wifi_ap_running || (s_wifi_telemetry.state == WIFI_STATE_AP_ACTIVE);
+}
+
+const char *wifi_get_ap_ssid(void)
+{
+    return (s_wifi_ap_ssid[0] != '\0') ? s_wifi_ap_ssid : WIFI_DEFAULT_AP_SSID;
+}
+
+uint8_t wifi_get_ap_channel(void)
+{
+    return s_wifi_ap_channel;
+}
+
 
 

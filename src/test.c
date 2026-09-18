@@ -2113,13 +2113,21 @@ void run_validation_suite(void)
                    (w_telem.tx_packets >= 1U) &&
                    (w_telem.tx_bytes >= sizeof(test_tx_frame));
 
+    /* 9. SoftAP Broadcasting Functionality (Task 5.7.2) */
+    int ap_init_inactive = (!wifi_is_ap_active());
+    int ap_start_ok = (wifi_start_ap(NULL, NULL, 1U) == WIFI_OK);
+    int ap_is_active = (wifi_is_ap_active() != 0);
+    int ap_stop_ok = (wifi_stop_ap() == WIFI_OK);
+    int ap_stopped_inactive = (!wifi_is_ap_active());
+    int softap_ok = ap_init_inactive && ap_start_ok && ap_is_active && ap_stop_ok && ap_stopped_inactive;
+
     wdt_feed();
 
     int t31_pass = wifi_init_ok && wifi_state_idle_ok && wifi_mac_ok &&
                    ring_verify_ok && ring_empty_ok && tx_ok && gdma_bound_ok &&
-                   rf_dma_ok && timings_ok && telem_ok;
+                   rf_dma_ok && timings_ok && telem_ok && softap_ok;
 
-    uart_puts("  Expected:    Init=1, StateIdle=1, MAC=1, RingVerify=1, EmptyPoll=1, Tx=1, RFDma=1, Timing=1, Telem=1\r\n");
+    uart_puts("  Expected:    Init=1, StateIdle=1, MAC=1, RingVerify=1, EmptyPoll=1, Tx=1, RFDma=1, Timing=1, Telem=1, SoftAP=1\r\n");
     uart_puts("  Actual:      Init=");
     put_dec(wifi_init_ok);
     uart_puts(", StateIdle=");
@@ -2138,6 +2146,8 @@ void run_validation_suite(void)
     put_dec(timings_ok);
     uart_puts(", Telem=");
     put_dec(telem_ok);
+    uart_puts(", SoftAP=");
+    put_dec(softap_ok);
     uart_puts("\r\n");
 
     uart_puts("  Diag: MAC=");

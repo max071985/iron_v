@@ -1600,6 +1600,38 @@ static void test_wifi_mac_subsystem(void)
     TEST_ASSERT(wifi_get_telemetry(&telem) == WIFI_OK, "wifi_get_telemetry succeeds");
     TEST_ASSERT(telem.tx_packets >= 1U, "tx_packets telemetry incremented");
     TEST_ASSERT(telem.tx_bytes >= sizeof(tx_frame), "tx_bytes telemetry incremented");
+
+    /* 7. SoftAP Broadcasting Functionality (Task 5.7.2) */
+    TEST_ASSERT(!wifi_is_ap_active(), "SoftAP is initially inactive");
+    TEST_ASSERT(wifi_start_ap(NULL, NULL, 0U) == WIFI_OK, "wifi_start_ap succeeds with default parameters");
+    TEST_ASSERT(wifi_is_ap_active(), "SoftAP is active after start");
+    TEST_ASSERT(wifi_get_state() == WIFI_STATE_AP_ACTIVE, "Wi-Fi state is WIFI_STATE_AP_ACTIVE");
+    TEST_ASSERT(s_strncmp(wifi_get_ap_ssid(), WIFI_DEFAULT_AP_SSID, 8) == 0, "Default AP SSID matches 'IronV-C6'");
+    TEST_ASSERT(wifi_get_ap_channel() == WIFI_DEFAULT_AP_CHANNEL, "Default AP channel matches 1");
+
+    /* Stop AP */
+    TEST_ASSERT(wifi_stop_ap() == WIFI_OK, "wifi_stop_ap succeeds");
+    TEST_ASSERT(!wifi_is_ap_active(), "SoftAP is inactive after stop");
+    TEST_ASSERT(wifi_get_state() == WIFI_STATE_IDLE, "Wi-Fi state is WIFI_STATE_IDLE after stop");
+
+    /* Start AP with custom SSID, password, and channel */
+    TEST_ASSERT(wifi_start_ap("IronV-Lab", "supersecret123", 6U) == WIFI_OK, "wifi_start_ap succeeds with custom config");
+    TEST_ASSERT(wifi_is_ap_active(), "SoftAP is active after custom start");
+    TEST_ASSERT(wifi_get_state() == WIFI_STATE_AP_ACTIVE, "Wi-Fi state is WIFI_STATE_AP_ACTIVE with custom config");
+    TEST_ASSERT(s_strncmp(wifi_get_ap_ssid(), "IronV-Lab", 9) == 0, "Custom AP SSID matches 'IronV-Lab'");
+    TEST_ASSERT(wifi_get_ap_channel() == 6U, "Custom AP channel matches 6");
+
+    /* Test event simulation on host */
+    wifi_handle_vendor_event(WIFI_VENDOR_EVENT_AP_STOP, NULL);
+    TEST_ASSERT(!wifi_is_ap_active(), "SoftAP is inactive after vendor AP_STOP event");
+    TEST_ASSERT(wifi_get_state() == WIFI_STATE_IDLE, "Wi-Fi state is WIFI_STATE_IDLE after AP_STOP event");
+
+    wifi_handle_vendor_event(WIFI_VENDOR_EVENT_AP_START, NULL);
+    TEST_ASSERT(wifi_is_ap_active(), "SoftAP is active after vendor AP_START event");
+    TEST_ASSERT(wifi_get_state() == WIFI_STATE_AP_ACTIVE, "Wi-Fi state is WIFI_STATE_AP_ACTIVE after AP_START event");
+
+    TEST_ASSERT(wifi_stop_ap() == WIFI_OK, "wifi_stop_ap cleanly stops AP");
+    TEST_ASSERT(!wifi_is_ap_active(), "SoftAP is inactive after final stop");
 }
 
 static void test_ieee802154_subsystem(void)

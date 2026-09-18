@@ -20,20 +20,34 @@ LDFLAGS = -T ld/link.ld -T ld/rom/esp32c6.rom.ld -T ld/rom/esp32c6.rom.phy.ld -T
 # Baseline source files
 SRCS = src/crt0.S src/trap_entry.S src/task_switch.S src/main.c src/string.c src/utils.c src/test.c src/clock.c src/mmu.c src/wdt.c src/trap.c src/panic.c src/interrupt.c src/dpc.c src/usb_serial.c src/uart.c src/console.c src/timer.c src/arena.c src/systimer.c src/task.c src/pmp.c src/lp_core.c src/power.c src/gpio.c src/gdma.c src/modem.c src/ble.c src/wifi.c src/ieee802154.c src/net.c src/tcp.c src/wifi_os_adapter.c src/vendor/esp_wifi_regulatory.c src/vendor/ftm_load_calibration.c src/vendor/phy_init_data.c
 
-# Interface selection: 'usb' (default) or 'uart'
-INTERFACE ?= usb
+# Auto-detect hardware ports
+DETECTED_ACM ?= $(firstword $(wildcard /dev/ttyACM*))
+DETECTED_USB ?= $(firstword $(wildcard /dev/ttyUSB*))
 
-ifeq ($(INTERFACE),uart)
-  PORT ?= /dev/ttyUSB0
-  FLASH_BAUD ?= 460800
-  MONITOR_FLAGS ?= -b $(MONITOR_BAUD)
-else
-  PORT ?= /dev/ttyACM0
-  FLASH_BAUD ?= 460800
-  MONITOR_FLAGS ?= --noreset --lower-rts --lower-dtr
+# Interface selection: auto-detect if not explicitly provided (prefers USB, falls back to UART)
+ifeq ($(origin INTERFACE), undefined)
+  ifneq ($(findstring ttyUSB,$(PORT)),)
+    INTERFACE := uart
+  else ifneq ($(DETECTED_ACM),)
+    INTERFACE := usb
+  else ifneq ($(DETECTED_USB),)
+    INTERFACE := uart
+  else
+    INTERFACE := usb
+  endif
 endif
 
 MONITOR_BAUD ?= 115200
+
+ifeq ($(INTERFACE),uart)
+  PORT ?= $(if $(DETECTED_USB),$(DETECTED_USB),/dev/ttyUSB0)
+  FLASH_BAUD ?= 460800
+  MONITOR_FLAGS ?= -b $(MONITOR_BAUD)
+else
+  PORT ?= $(if $(DETECTED_ACM),$(DETECTED_ACM),/dev/ttyACM0)
+  FLASH_BAUD ?= 460800
+  MONITOR_FLAGS ?= --noreset --lower-rts --lower-dtr
+endif
 
 .PHONY: all flash monitor clean test
 all: firmware.bin
@@ -65,7 +79,34 @@ erase_flash:
 	esptool --chip esp32c6 --port $(PORT) erase_flash
 
 monitor:
-	picocom $(MONITOR_FLAGS) $(PORT)
+	@port="$(PORT)"; \
+	flags="$(MONITOR_FLAGS)"; \
+	if [ ! -e "$$port" ]; then \
+		echo "Port '$$port' not found."; \
+		if [ -e /dev/ttyACM0 ]; then \
+			echo "Found USB port (/dev/ttyACM0). Connecting via USB..."; \
+			port="/dev/ttyACM0"; \
+			flags="--noreset --lower-rts --lower-dtr"; \
+		elif [ -n "$(DETECTED_ACM)" ] && [ -e "$(DETECTED_ACM)" ]; then \
+			echo "Found USB port ($(DETECTED_ACM)). Connecting via USB..."; \
+			port="$(DETECTED_ACM)"; \
+			flags="--noreset --lower-rts --lower-dtr"; \
+		elif [ -e /dev/ttyUSB0 ]; then \
+			echo "Found UART port (/dev/ttyUSB0). Connecting via UART at $(MONITOR_BAUD) baud..."; \
+			port="/dev/ttyUSB0"; \
+			flags="-b $(MONITOR_BAUD)"; \
+		elif [ -n "$(DETECTED_USB)" ] && [ -e "$(DETECTED_USB)" ]; then \
+			echo "Found UART port ($(DETECTED_USB)). Connecting via UART at $(MONITOR_BAUD) baud..."; \
+			port="$(DETECTED_USB)"; \
+			flags="-b $(MONITOR_BAUD)"; \
+		else \
+			echo "Error: Neither USB (/dev/ttyACM*) nor UART (/dev/ttyUSB*) port is available." >&2; \
+			echo "Please connect the ESP32-C6 board via USB or UART." >&2; \
+			exit 1; \
+		fi; \
+	fi; \
+	echo "Connecting to $$port with picocom $$flags..."; \
+	exec picocom $$flags "$$port"
 
 tests/test_freestanding: tests/test_freestanding.c src/string.c src/string.h src/mmu.c src/mmu.h src/dpc.c src/dpc.h src/arena.c src/arena.h src/pmp.c src/pmp.h src/lp_core.c src/lp_core.h src/lp_firmware_image.h src/power.c src/power.h src/gpio.c src/gpio.h src/gdma.c src/gdma.h src/modem.c src/modem.h src/ble.c src/ble.h src/ble_gatt.h src/wifi.c src/wifi.h src/ieee802154.c src/ieee802154.h src/config.h src/net.c src/net.h src/tcp.c src/tcp.h src/wifi_os_adapter.c src/wifi_os_adapter.h
 	gcc -O2 -fno-tree-loop-distribute-patterns -Wall -Wextra -Werror -Isrc -Isrc/vendor/include tests/test_freestanding.c src/string.c src/mmu.c src/dpc.c src/arena.c src/pmp.c src/lp_core.c src/power.c src/gpio.c src/gdma.c src/modem.c src/ble.c src/wifi.c src/ieee802154.c src/net.c src/tcp.c src/wifi_os_adapter.c -o $@

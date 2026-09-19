@@ -31,8 +31,11 @@
 /* PCR Peripheral Clock Distribution: Modem APB Configuration               */
 /* ========================================================================= */
 #define PCR_MODEM_APB_CONF_OFFSET            0x0108U
+#ifndef PCR_REG
+#define PCR_REG(offset)                      ((volatile uint32_t *)(uintptr_t)(PCR_BASE_ADDR + (offset)))
+#endif
 #ifndef PCR_MODEM_APB_CONF_REG
-#define PCR_MODEM_APB_CONF_REG               ((volatile uint32_t *)(PCR_BASE_ADDR + PCR_MODEM_APB_CONF_OFFSET))
+#define PCR_MODEM_APB_CONF_REG               PCR_REG(PCR_MODEM_APB_CONF_OFFSET)
 #endif
 #define PCR_MODEM_APB_CLK_EN_BIT             (1U << 0)
 #define PCR_MODEM_RST_EN_BIT                 (1U << 1)
@@ -265,21 +268,31 @@
 #define IEEE802154_CTRL_CFG_REG              IEEE802154_REG(IEEE802154_CTRL_CFG_OFFSET)
 
 /* ========================================================================= */
-/* MODEM RF Front-End & Baseband IQ Estimation MMIO Registers               */
+/* MODEM RF Front-End Base Address & Parameterized MMIO Accessor             */
 /* ========================================================================= */
-#define MODEM_FE_FREQ_STATUS_REG             ((volatile uint32_t *)0x600A00CCU)
+#define MODEM_FE_BASE_ADDR                   0x600A0000U
+#define MODEM_FE_REG(offset)                 ((volatile uint32_t *)(uintptr_t)(MODEM_FE_BASE_ADDR + (offset)))
+
+#define MODEM_FE_FREQ_STATUS_OFFSET          0x00CCU
+#define MODEM_FE_FREQ_STATUS_REG             MODEM_FE_REG(MODEM_FE_FREQ_STATUS_OFFSET)
 #define MODEM_FE_FREQ_LOCK_BIT               (1U << 8)
 #define MODEM_FE_FREQ_LOCK_TIMEOUT_US        10000U
 
-#define MODEM_FE_IQ_CTRL_REG                 ((volatile uint32_t *)0x600A0450U)
-#define MODEM_FE_IQ_TRIG_REG                 ((volatile uint32_t *)0x600A0454U)
-#define MODEM_FE_IQ_STAT_REG                 ((volatile uint32_t *)0x600A0458U)
+#define MODEM_FE_IQ_CTRL_OFFSET              0x0450U
+#define MODEM_FE_IQ_TRIG_OFFSET              0x0454U
+#define MODEM_FE_IQ_STAT_OFFSET              0x0458U
+#define MODEM_FE_IQ_CTRL_REG                 MODEM_FE_REG(MODEM_FE_IQ_CTRL_OFFSET)
+#define MODEM_FE_IQ_TRIG_REG                 MODEM_FE_REG(MODEM_FE_IQ_TRIG_OFFSET)
+#define MODEM_FE_IQ_STAT_REG                 MODEM_FE_REG(MODEM_FE_IQ_STAT_OFFSET)
 #define MODEM_FE_IQ_DONE_BIT                 (1U << 0)
 #define MODEM_FE_IQ_TIMEOUT_US               5000U
 
-#define MODEM_FE_IQ_RESULT_I_REG             ((volatile uint32_t *)0x600A0488U)
-#define MODEM_FE_IQ_RESULT_Q_REG             ((volatile uint32_t *)0x600A048CU)
-#define MODEM_FE_IQ_RESULT_PWR_REG           ((volatile uint32_t *)0x600A0490U)
+#define MODEM_FE_IQ_RESULT_I_OFFSET          0x0488U
+#define MODEM_FE_IQ_RESULT_Q_OFFSET          0x048CU
+#define MODEM_FE_IQ_RESULT_PWR_OFFSET        0x0490U
+#define MODEM_FE_IQ_RESULT_I_REG             MODEM_FE_REG(MODEM_FE_IQ_RESULT_I_OFFSET)
+#define MODEM_FE_IQ_RESULT_Q_REG             MODEM_FE_REG(MODEM_FE_IQ_RESULT_Q_OFFSET)
+#define MODEM_FE_IQ_RESULT_PWR_REG           MODEM_FE_REG(MODEM_FE_IQ_RESULT_PWR_OFFSET)
 
 /* ========================================================================= */
 /* Hardware Version Date Constants (Verified on ESP32-C6 Silicon)           */
@@ -349,6 +362,9 @@ bool modem_is_rf_synth_enabled(void);
 
 /* I2C Analog Master & SAR ADC Calibration APIs (Task 4) */
 modem_status_t modem_configure_i2c_analog_master(void);
+modem_status_t modem_bbpll_calibrate(void);
+bool modem_is_bbpll_calibrated(void);
+uint32_t modem_get_i2c_ana_mst_ana_conf0(void);
 modem_status_t modem_prime_sar_adc_calibration(void);
 uint32_t modem_get_i2c_ana_mst_link0_reg(void);
 uint32_t modem_get_i2c_ana_mst_link1_reg(void);

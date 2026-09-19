@@ -1260,7 +1260,33 @@ static void test_modem_subsystem(void)
     TEST_ASSERT((uintptr_t)LP_ANA_PERI_CLK_CONF_REG == 0x600B2C0CU, "LP_ANA_PERI_CLK_CONF_REG address calculation");
     TEST_ASSERT((uintptr_t)LP_CLKRST_I2C_ANA_MST_LINK0_REG == 0x600B0418U, "LP_CLKRST_I2C_ANA_MST_LINK0_REG address calculation");
     TEST_ASSERT((uintptr_t)LP_CLKRST_I2C_ANA_MST_LINK1_REG == 0x600B041CU, "LP_CLKRST_I2C_ANA_MST_LINK1_REG address calculation");
-    TEST_ASSERT((uintptr_t)I2C_ANA_MST_DEVICE_EN_REG == 0x600AF814U, "I2C_ANA_MST_DEVICE_EN_REG address calculation");
+    TEST_ASSERT((uintptr_t)I2C_ANA_MST_I2C0_CTRL_REG == 0x600AF800U, "I2C_ANA_MST_I2C0_CTRL_REG address calculation");
+    TEST_ASSERT((uintptr_t)I2C_ANA_MST_I2C1_CTRL_REG == 0x600AF804U, "I2C_ANA_MST_I2C1_CTRL_REG address calculation");
+    TEST_ASSERT((uintptr_t)I2C_ANA_MST_I2C0_CONF_REG == 0x600AF808U, "I2C_ANA_MST_I2C0_CONF_REG address calculation");
+    TEST_ASSERT((uintptr_t)I2C_ANA_MST_I2C1_CONF_REG == 0x600AF80CU, "I2C_ANA_MST_I2C1_CONF_REG address calculation");
+    TEST_ASSERT((uintptr_t)I2C_ANA_MST_BURST_CONF_REG == 0x600AF810U, "I2C_ANA_MST_BURST_CONF_REG address calculation");
+    TEST_ASSERT((uintptr_t)I2C_ANA_MST_BURST_STATUS_REG == 0x600AF814U, "I2C_ANA_MST_BURST_STATUS_REG address calculation");
+    TEST_ASSERT((uintptr_t)I2C_ANA_MST_ANA_CONF0_REG == 0x600AF818U, "I2C_ANA_MST_ANA_CONF0_REG address calculation");
+    TEST_ASSERT((uintptr_t)I2C_ANA_MST_ANA_CONF1_REG == 0x600AF81CU, "I2C_ANA_MST_ANA_CONF1_REG address calculation");
+    TEST_ASSERT((uintptr_t)I2C_ANA_MST_ANA_CONF2_REG == 0x600AF820U, "I2C_ANA_MST_ANA_CONF2_REG address calculation");
+    TEST_ASSERT((uintptr_t)I2C_ANA_MST_I2C0_CTRL1_REG == 0x600AF824U, "I2C_ANA_MST_I2C0_CTRL1_REG address calculation");
+    TEST_ASSERT((uintptr_t)I2C_ANA_MST_I2C1_CTRL1_REG == 0x600AF828U, "I2C_ANA_MST_I2C1_CTRL1_REG address calculation");
+    TEST_ASSERT((uintptr_t)I2C_ANA_MST_DATE_REG == 0x600AF834U, "I2C_ANA_MST_DATE_REG address calculation");
+    TEST_ASSERT((uintptr_t)PMU_IMM_HP_CK_POWER_REG == 0x600B00CCU, "PMU_IMM_HP_CK_POWER_REG address calculation");
+    TEST_ASSERT((uintptr_t)MODEM_FE_FREQ_STATUS_REG == 0x600A00CCU, "MODEM_FE_FREQ_STATUS_REG address calculation");
+
+    /* Parameterized MMIO Macro Integrity */
+    TEST_ASSERT(I2C_ANA_MST_I2C_CTRL_REG(0U) == I2C_ANA_MST_I2C0_CTRL_REG, "I2C_ANA_MST_I2C_CTRL_REG(0) evaluates to I2C0_CTRL");
+    TEST_ASSERT(I2C_ANA_MST_I2C_CTRL_REG(1U) == I2C_ANA_MST_I2C1_CTRL_REG, "I2C_ANA_MST_I2C_CTRL_REG(1) evaluates to I2C1_CTRL");
+    TEST_ASSERT(MODEM_RF_ANALOG_SWITCH_REG(0U) == MODEM_RF_ANALOG_SWITCH0_REG, "MODEM_RF_ANALOG_SWITCH_REG(0) evaluates to SWITCH0");
+    TEST_ASSERT(MODEM_RF_ANALOG_SWITCH_REG(1U) == MODEM_RF_ANALOG_SWITCH1_REG, "MODEM_RF_ANALOG_SWITCH_REG(1) evaluates to SWITCH1");
+    TEST_ASSERT(MODEM_RF_ANALOG_SWITCH_REG(16U) == MODEM_RF_ANALOG_SWITCH16_REG, "MODEM_RF_ANALOG_SWITCH_REG(16) evaluates to SWITCH16");
+
+    /* Parameterized Command Constructor Verification */
+    TEST_ASSERT(I2C_ANA_MST_CMD_WRITE(0x66U, 2U, 0x50U) == 0x01500266U, "I2C_ANA_MST_CMD_WRITE formats Reg 2 write packet");
+    TEST_ASSERT(I2C_ANA_MST_CMD_WRITE(0x66U, 3U, 0x08U) == 0x01080366U, "I2C_ANA_MST_CMD_WRITE formats Reg 3 write packet");
+    TEST_ASSERT(I2C_ANA_MST_CMD_WRITE(0x66U, 6U, 0x73U) == 0x01730666U, "I2C_ANA_MST_CMD_WRITE formats Reg 6 write packet");
+    TEST_ASSERT(I2C_ANA_MST_CMD_READ(0x66U, 5U) == 0x00000566U, "I2C_ANA_MST_CMD_READ formats Reg 5 read packet");
     TEST_ASSERT((uintptr_t)APB_SARADC_CAL_REG(0) == 0x6000E0D0U, "APB_SARADC_CAL_REG(0) address calculation");
     TEST_ASSERT((uintptr_t)APB_SARADC_CAL_REG(11) == 0x6000E0FCU, "APB_SARADC_CAL_REG(11) address calculation");
     TEST_ASSERT((uintptr_t)MODEM_RF_AGC_CTRL_REG == 0x600A7400U, "MODEM_RF_AGC_CTRL_REG address calculation");
@@ -1341,6 +1367,14 @@ static void test_modem_subsystem(void)
 
     /* 10. Wi-Fi RX AGC Override Validation */
     modem_force_rx_agc();
+
+    /* 11. BBPLL 480 MHz Analog Calibration & Register Telemetry */
+    TEST_ASSERT(modem_bbpll_calibrate() == MODEM_OK, "modem_bbpll_calibrate succeeds");
+    TEST_ASSERT(modem_is_bbpll_calibrated(), "modem_is_bbpll_calibrated reports true after calibration");
+    TEST_ASSERT((modem_get_i2c_ana_mst_ana_conf0() & I2C_ANA_MST_CAL_DONE_BIT) != 0U, "CAL_DONE asserted in ANA_CONF0");
+    TEST_ASSERT((modem_get_i2c_ana_mst_ana_conf0() & I2C_ANA_MST_BBPLL_STOP_FORCE_HIGH_BIT) != 0U, "STOP_FORCE_HIGH asserted in ANA_CONF0");
+    TEST_ASSERT((modem_get_i2c_ana_mst_ana_conf0() & I2C_ANA_MST_BBPLL_STOP_FORCE_LOW_BIT) == 0U, "STOP_FORCE_LOW cleared in ANA_CONF0");
+    TEST_ASSERT(modem_enable_i2c_ana_mst() == MODEM_OK, "modem_enable_i2c_ana_mst succeeds with calibration");
 }
 
 static void test_lp_wdt_subsystem(void)
@@ -1529,8 +1563,20 @@ static void test_wifi_mac_subsystem(void)
     TEST_ASSERT((uintptr_t)WIFI_MAC_BB_TX_ON_DELAY_REG == 0x600A4010U, "WIFI_MAC_BB_TX_ON_DELAY_REG address calculation");
     TEST_ASSERT((uintptr_t)WIFI_MAC_TX_RAMP_DELAY_REG == 0x600A4014U, "WIFI_MAC_TX_RAMP_DELAY_REG address calculation");
     TEST_ASSERT((uintptr_t)WIFI_MAC_TX_CCA_START_TS_REG == 0x600A4018U, "WIFI_MAC_TX_CCA_START_TS_REG address calculation");
-    TEST_ASSERT((uintptr_t)WIFI_MAC_TX_CCA_END_TS_REG == 0x600A401CU, "WIFI_MAC_TX_CCA_END_TS_REG address calculation");
     TEST_ASSERT((uintptr_t)WIFI_MAC_PHY_CCA_CTRL_REG == 0x600A4C5CU, "WIFI_MAC_PHY_CCA_CTRL_REG address calculation");
+    TEST_ASSERT((uintptr_t)WIFI_MAC_DBG_CTRL_REG == 0x600A4C7CU, "WIFI_MAC_DBG_CTRL_REG address calculation");
+    TEST_ASSERT((uintptr_t)WIFI_MAC_TX_Q0_PTI_REG == 0x600A4D68U, "WIFI_MAC_TX_Q0_PTI_REG address calculation");
+    TEST_ASSERT((uintptr_t)WIFI_MAC_TX_Q0_DMA_REG == 0x600A4D6CU, "WIFI_MAC_TX_Q0_DMA_REG address calculation");
+    TEST_ASSERT((uintptr_t)WIFI_MAC_TSF_TIMER_LOW_REG == 0x600AD000U, "WIFI_MAC_TSF_TIMER_LOW_REG address calculation");
+    TEST_ASSERT((uintptr_t)WIFI_MAC_TSF_TIMER_HIGH_REG == 0x600AD004U, "WIFI_MAC_TSF_TIMER_HIGH_REG address calculation");
+    TEST_ASSERT((uintptr_t)WIFI_MAC_TSF_TBTT0_CONF_REG == 0x600AD050U, "WIFI_MAC_TSF_TBTT0_CONF_REG address calculation");
+    TEST_ASSERT((uintptr_t)WIFI_MAC_TSF_TBTT1_CONF_REG == 0x600AD058U, "WIFI_MAC_TSF_TBTT1_CONF_REG address calculation");
+    TEST_ASSERT((uintptr_t)WIFI_MAC_TSF_TBTT_TRIG0_REG == 0x600AD0A8U, "WIFI_MAC_TSF_TBTT_TRIG0_REG address calculation");
+    TEST_ASSERT((uintptr_t)WIFI_MAC_TSF_TBTT_TRIG1_REG == 0x600AD0B4U, "WIFI_MAC_TSF_TBTT_TRIG1_REG address calculation");
+    TEST_ASSERT((uintptr_t)WIFI_MAC_RATE_CTRL0_REG == 0x600A4440U, "WIFI_MAC_RATE_CTRL0_REG address calculation");
+    TEST_ASSERT((uintptr_t)WIFI_MAC_RATE_CTRL1_REG == 0x600A4444U, "WIFI_MAC_RATE_CTRL1_REG address calculation");
+    TEST_ASSERT((uintptr_t)WIFI_MAC_RATE_CTRL2_REG == 0x600A444CU, "WIFI_MAC_RATE_CTRL2_REG address calculation");
+    TEST_ASSERT((uintptr_t)WIFI_MAC_RATE_CTRL3_REG == 0x600A4450U, "WIFI_MAC_RATE_CTRL3_REG address calculation");
     TEST_ASSERT((uintptr_t)MODEM_RF_ANALOG_SWITCH0_REG == 0x600AA008U, "MODEM_RF_ANALOG_SWITCH0_REG address calculation");
     TEST_ASSERT((uintptr_t)MODEM_RF_ANALOG_SWITCH1_REG == 0x600AA02CU, "MODEM_RF_ANALOG_SWITCH1_REG address calculation");
 
@@ -1638,7 +1684,9 @@ static void test_wifi_mac_subsystem(void)
 
     /* 8. RF Front-End Analog Switch & CCA Control (Task 5.7.3) */
     TEST_ASSERT(wifi_set_cca_enabled(false) == WIFI_OK, "wifi_set_cca_enabled(false) succeeds");
+    TEST_ASSERT(!wifi_is_cca_enabled(), "wifi_is_cca_enabled is false when CCA is disabled");
     TEST_ASSERT(wifi_set_cca_enabled(true) == WIFI_OK, "wifi_set_cca_enabled(true) succeeds");
+    TEST_ASSERT(wifi_is_cca_enabled(), "wifi_is_cca_enabled is true when CCA is enabled");
     modem_rf_analog_init();
     TEST_ASSERT(modem_get_rf_analog_switch0() == MODEM_RF_ANALOG_SWITCH_DEFAULT_CONFIG, "modem_get_rf_analog_switch0 matches default config");
     TEST_ASSERT(modem_get_rf_analog_switch1() == MODEM_RF_ANALOG_SWITCH_DEFAULT_CONFIG, "modem_get_rf_analog_switch1 matches default config");

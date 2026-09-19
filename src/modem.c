@@ -24,6 +24,16 @@ static modem_clock_state_t s_modem_state = {
 static bool s_modem_initialized = false;
 static bool s_rf_synth_enabled = false;
 static bool s_sar_adc_cal_primed = false;
+static bool s_bbpll_calibrated = false;
+
+#if defined(__riscv)
+extern void ets_delay_us(uint32_t us);
+#else
+static inline void ets_delay_us(uint32_t us)
+{
+    (void)us;
+}
+#endif
 
 #if defined(__riscv)
 
@@ -99,7 +109,30 @@ static uint32_t s_mock_i2c_ana_link0       = 0U;
 static uint32_t s_mock_i2c_ana_link1       = 0U;
 static uint32_t s_mock_modem_rf_analog_sw0 = 0U;
 static uint32_t s_mock_modem_rf_analog_sw1 = 0U;
+static uint32_t s_mock_modem_rf_analog_sw[MODEM_RF_ANALOG_SWITCH_COUNT] = {0};
 static uint32_t s_mock_sar_adc_cal[APB_SARADC_CAL_REG_COUNT] = {0};
+
+static uint32_t s_mock_i2c0_ctrl           = 0U;
+static uint32_t s_mock_i2c1_ctrl           = 0U;
+static uint32_t s_mock_i2c0_conf           = 0U;
+static uint32_t s_mock_i2c1_conf           = 0U;
+static uint32_t s_mock_burst_conf          = 0U;
+static uint32_t s_mock_burst_status        = 0U;
+static uint32_t s_mock_ana_conf0           = I2C_ANA_MST_BBPLL_STOP_FORCE_HIGH_BIT;
+static uint32_t s_mock_ana_conf1           = I2C_ANA_MST_ANA_CONF1_DEFAULT_MASK;
+static uint32_t s_mock_ana_conf2           = 0U;
+static uint32_t s_mock_i2c0_ctrl1          = 0U;
+static uint32_t s_mock_i2c1_ctrl1          = 0U;
+static uint32_t s_mock_i2c_ana_date        = 0U;
+static uint8_t  s_mock_bbpll_regs[16]      = {0};
+
+static uint32_t s_mock_modem_fe_freq_status = 0U;
+static uint32_t s_mock_modem_fe_iq_ctrl     = 0U;
+static uint32_t s_mock_modem_fe_iq_trig     = 0U;
+static uint32_t s_mock_modem_fe_iq_stat     = 0U;
+static uint32_t s_mock_modem_fe_iq_result_i = 0U;
+static uint32_t s_mock_modem_fe_iq_result_q = 0U;
+static uint32_t s_mock_modem_fe_iq_result_pwr = 0U;
 
 static inline void modem_fence(void)
 {
@@ -144,8 +177,32 @@ static inline uint32_t reg_read(volatile uint32_t *addr)
     if (a == (uintptr_t)MODEM_RF_AGC_CTRL_REG) return s_mock_modem_rf_agc_ctrl;
     if (a == (uintptr_t)LP_CLKRST_I2C_ANA_MST_LINK0_REG) return s_mock_i2c_ana_link0;
     if (a == (uintptr_t)LP_CLKRST_I2C_ANA_MST_LINK1_REG) return s_mock_i2c_ana_link1;
-    if (a == (uintptr_t)MODEM_RF_ANALOG_SWITCH0_REG) return s_mock_modem_rf_analog_sw0;
-    if (a == (uintptr_t)MODEM_RF_ANALOG_SWITCH1_REG) return s_mock_modem_rf_analog_sw1;
+    if (a == (uintptr_t)I2C_ANA_MST_I2C0_CTRL_REG) return s_mock_i2c0_ctrl;
+    if (a == (uintptr_t)I2C_ANA_MST_I2C1_CTRL_REG) return s_mock_i2c1_ctrl;
+    if (a == (uintptr_t)I2C_ANA_MST_I2C0_CONF_REG) return s_mock_i2c0_conf;
+    if (a == (uintptr_t)I2C_ANA_MST_I2C1_CONF_REG) return s_mock_i2c1_conf;
+    if (a == (uintptr_t)I2C_ANA_MST_BURST_CONF_REG) return s_mock_burst_conf;
+    if (a == (uintptr_t)I2C_ANA_MST_BURST_STATUS_REG) return s_mock_burst_status;
+    if (a == (uintptr_t)I2C_ANA_MST_ANA_CONF0_REG) return s_mock_ana_conf0;
+    if (a == (uintptr_t)I2C_ANA_MST_ANA_CONF1_REG) return s_mock_ana_conf1;
+    if (a == (uintptr_t)I2C_ANA_MST_ANA_CONF2_REG) return s_mock_ana_conf2;
+    if (a == (uintptr_t)I2C_ANA_MST_I2C0_CTRL1_REG) return s_mock_i2c0_ctrl1;
+    if (a == (uintptr_t)I2C_ANA_MST_I2C1_CTRL1_REG) return s_mock_i2c1_ctrl1;
+    if (a == (uintptr_t)I2C_ANA_MST_DATE_REG) return s_mock_i2c_ana_date;
+    if (a == (uintptr_t)MODEM_FE_FREQ_STATUS_REG) return s_mock_modem_fe_freq_status;
+    if (a == (uintptr_t)MODEM_FE_IQ_CTRL_REG) return s_mock_modem_fe_iq_ctrl;
+    if (a == (uintptr_t)MODEM_FE_IQ_TRIG_REG) return s_mock_modem_fe_iq_trig;
+    if (a == (uintptr_t)MODEM_FE_IQ_STAT_REG) return s_mock_modem_fe_iq_stat;
+    if (a == (uintptr_t)MODEM_FE_IQ_RESULT_I_REG) return s_mock_modem_fe_iq_result_i;
+    if (a == (uintptr_t)MODEM_FE_IQ_RESULT_Q_REG) return s_mock_modem_fe_iq_result_q;
+    if (a == (uintptr_t)MODEM_FE_IQ_RESULT_PWR_REG) return s_mock_modem_fe_iq_result_pwr;
+    if (a == (uintptr_t)MODEM_RF_ANALOG_SWITCH0_REG) return s_mock_modem_rf_analog_sw[0];
+    if (a >= (uintptr_t)MODEM_RF_ANALOG_SWITCH_REG(1U) &&
+        a <= (uintptr_t)MODEM_RF_ANALOG_SWITCH_REG(MODEM_RF_ANALOG_SWITCH_COUNT - 1U))
+    {
+        uint32_t sw_idx = 1U + (uint32_t)((a - (uintptr_t)MODEM_RF_ANALOG_SWITCH_REG(1U)) / 4U);
+        return s_mock_modem_rf_analog_sw[sw_idx];
+    }
     if (a >= (uintptr_t)APB_SARADC_CAL_REG(0) && a <= (uintptr_t)APB_SARADC_CAL_REG(APB_SARADC_CAL_REG_COUNT - 1))
     {
         return s_mock_sar_adc_cal[(a - (uintptr_t)APB_SARADC_CAL_REG(0)) / 4U];
@@ -186,8 +243,76 @@ static inline void reg_write(volatile uint32_t *addr, uint32_t val)
     else if (a == (uintptr_t)MODEM_RF_AGC_CTRL_REG) s_mock_modem_rf_agc_ctrl = val;
     else if (a == (uintptr_t)LP_CLKRST_I2C_ANA_MST_LINK0_REG) s_mock_i2c_ana_link0 = val;
     else if (a == (uintptr_t)LP_CLKRST_I2C_ANA_MST_LINK1_REG) s_mock_i2c_ana_link1 = val;
-    else if (a == (uintptr_t)MODEM_RF_ANALOG_SWITCH0_REG) s_mock_modem_rf_analog_sw0 = val;
-    else if (a == (uintptr_t)MODEM_RF_ANALOG_SWITCH1_REG) s_mock_modem_rf_analog_sw1 = val;
+    else if (a == (uintptr_t)I2C_ANA_MST_I2C0_CTRL_REG || a == (uintptr_t)I2C_ANA_MST_I2C1_CTRL_REG)
+    {
+        uint8_t slave = (uint8_t)((val & I2C_ANA_MST_SLAVE_ADDR_MASK) >> I2C_ANA_MST_SLAVE_ADDR_SHIFT);
+        uint8_t reg   = (uint8_t)((val & I2C_ANA_MST_SLAVE_REG_ADDR_MASK) >> I2C_ANA_MST_SLAVE_REG_ADDR_SHIFT);
+        uint32_t result_ctrl = val & ~I2C_ANA_MST_BUSY_BIT;
+
+        if ((val & I2C_ANA_MST_READ_WRITE_BIT) != 0U)
+        {
+            uint8_t data = (uint8_t)((val & I2C_ANA_MST_DATA_MASK) >> I2C_ANA_MST_DATA_SHIFT);
+            if (slave == I2C_BBPLL_SLAVE_ADDR && reg < 16U)
+            {
+                s_mock_bbpll_regs[reg] = data;
+            }
+        }
+        else
+        {
+            uint8_t data_read = 0U;
+            if (slave == I2C_BBPLL_SLAVE_ADDR && reg < 16U)
+            {
+                data_read = s_mock_bbpll_regs[reg];
+            }
+            result_ctrl = (result_ctrl & ~I2C_ANA_MST_DATA_MASK) | (((uint32_t)data_read) << I2C_ANA_MST_DATA_SHIFT);
+        }
+
+        if (a == (uintptr_t)I2C_ANA_MST_I2C0_CTRL_REG)
+        {
+            s_mock_i2c0_ctrl = result_ctrl;
+        }
+        else
+        {
+            s_mock_i2c1_ctrl = result_ctrl;
+        }
+    }
+    else if (a == (uintptr_t)I2C_ANA_MST_I2C0_CONF_REG) s_mock_i2c0_conf = val;
+    else if (a == (uintptr_t)I2C_ANA_MST_I2C1_CONF_REG) s_mock_i2c1_conf = val;
+    else if (a == (uintptr_t)I2C_ANA_MST_BURST_CONF_REG) s_mock_burst_conf = val;
+    else if (a == (uintptr_t)I2C_ANA_MST_BURST_STATUS_REG) s_mock_burst_status = val;
+    else if (a == (uintptr_t)I2C_ANA_MST_ANA_CONF0_REG)
+    {
+        s_mock_ana_conf0 = val;
+        if (((val & I2C_ANA_MST_BBPLL_STOP_FORCE_LOW_BIT) != 0U) &&
+            ((val & I2C_ANA_MST_BBPLL_STOP_FORCE_HIGH_BIT) == 0U))
+        {
+            s_mock_ana_conf0 |= I2C_ANA_MST_CAL_DONE_BIT;
+        }
+    }
+    else if (a == (uintptr_t)I2C_ANA_MST_ANA_CONF1_REG) s_mock_ana_conf1 = val;
+    else if (a == (uintptr_t)I2C_ANA_MST_ANA_CONF2_REG) s_mock_ana_conf2 = val;
+    else if (a == (uintptr_t)I2C_ANA_MST_I2C0_CTRL1_REG) s_mock_i2c0_ctrl1 = val;
+    else if (a == (uintptr_t)I2C_ANA_MST_I2C1_CTRL1_REG) s_mock_i2c1_ctrl1 = val;
+    else if (a == (uintptr_t)I2C_ANA_MST_DATE_REG) s_mock_i2c_ana_date = val;
+    else if (a == (uintptr_t)MODEM_FE_FREQ_STATUS_REG) s_mock_modem_fe_freq_status = val;
+    else if (a == (uintptr_t)MODEM_FE_IQ_CTRL_REG) s_mock_modem_fe_iq_ctrl = val;
+    else if (a == (uintptr_t)MODEM_FE_IQ_TRIG_REG) s_mock_modem_fe_iq_trig = val;
+    else if (a == (uintptr_t)MODEM_FE_IQ_STAT_REG) s_mock_modem_fe_iq_stat = val;
+    else if (a == (uintptr_t)MODEM_FE_IQ_RESULT_I_REG) s_mock_modem_fe_iq_result_i = val;
+    else if (a == (uintptr_t)MODEM_FE_IQ_RESULT_Q_REG) s_mock_modem_fe_iq_result_q = val;
+    else if (a == (uintptr_t)MODEM_FE_IQ_RESULT_PWR_REG) s_mock_modem_fe_iq_result_pwr = val;
+    else if (a == (uintptr_t)MODEM_RF_ANALOG_SWITCH0_REG)
+    {
+        s_mock_modem_rf_analog_sw[0] = val;
+        s_mock_modem_rf_analog_sw0 = val;
+    }
+    else if (a >= (uintptr_t)MODEM_RF_ANALOG_SWITCH_REG(1U) &&
+             a <= (uintptr_t)MODEM_RF_ANALOG_SWITCH_REG(MODEM_RF_ANALOG_SWITCH_COUNT - 1U))
+    {
+        uint32_t sw_idx = 1U + (uint32_t)((a - (uintptr_t)MODEM_RF_ANALOG_SWITCH_REG(1U)) / 4U);
+        s_mock_modem_rf_analog_sw[sw_idx] = val;
+        if (sw_idx == 1U) s_mock_modem_rf_analog_sw1 = val;
+    }
 }
 
 static inline void reg_set_bits(volatile uint32_t *addr, uint32_t mask)
@@ -253,8 +378,9 @@ modem_status_t modem_init(void)
     /* 9. Enable Analog RF Synthesizer and LP_ANALOG_PERI power domains */
     modem_enable_rf_synthesizer();
 
-    /* 10. Prime APB SAR ADC DC offset calibration (Task 4) */
+    /* 10. Prime APB SAR ADC DC offset calibration and RF front-end switch */
     modem_prime_sar_adc_calibration();
+    modem_rf_analog_init();
 
     /* 11. Update internal telemetry state */
     s_modem_state.wifi_clk_enabled       = 0U;
@@ -350,7 +476,70 @@ modem_status_t modem_enable_wifi_clocks(void)
     return MODEM_OK;
 }
 
-modem_status_t modem_enable_i2c_ana_mst(void)
+static modem_status_t regi2c_write(uint8_t slave_addr, uint8_t reg_addr, uint8_t data)
+{
+    volatile uint32_t *ctrl_reg = (reg_read(I2C_ANA_MST_ANA_CONF2_REG) & I2C_ANA_MST_ANA_CONF2_BBPLL_MST_SEL_BIT)
+                                  ? I2C_ANA_MST_I2C0_CTRL_REG : I2C_ANA_MST_I2C1_CTRL_REG;
+
+    uint32_t timeout = BBPLL_BUSY_POLL_TIMEOUT_CYCLES;
+    while ((reg_read(ctrl_reg) & I2C_ANA_MST_BUSY_BIT) != 0U)
+    {
+        if (--timeout == 0U)
+        {
+            return MODEM_ERR_TIMEOUT;
+        }
+    }
+
+    uint32_t cmd = I2C_ANA_MST_CMD_WRITE(slave_addr, reg_addr, data);
+    reg_write(ctrl_reg, cmd);
+
+    timeout = BBPLL_BUSY_POLL_TIMEOUT_CYCLES;
+    while ((reg_read(ctrl_reg) & I2C_ANA_MST_BUSY_BIT) != 0U)
+    {
+        if (--timeout == 0U)
+        {
+            return MODEM_ERR_TIMEOUT;
+        }
+    }
+
+    return MODEM_OK;
+}
+
+static modem_status_t regi2c_read(uint8_t slave_addr, uint8_t reg_addr, uint8_t *data_out)
+{
+    volatile uint32_t *ctrl_reg = (reg_read(I2C_ANA_MST_ANA_CONF2_REG) & I2C_ANA_MST_ANA_CONF2_BBPLL_MST_SEL_BIT)
+                                  ? I2C_ANA_MST_I2C0_CTRL_REG : I2C_ANA_MST_I2C1_CTRL_REG;
+
+    uint32_t timeout = BBPLL_BUSY_POLL_TIMEOUT_CYCLES;
+    while ((reg_read(ctrl_reg) & I2C_ANA_MST_BUSY_BIT) != 0U)
+    {
+        if (--timeout == 0U)
+        {
+            return MODEM_ERR_TIMEOUT;
+        }
+    }
+
+    uint32_t cmd = I2C_ANA_MST_CMD_READ(slave_addr, reg_addr);
+    reg_write(ctrl_reg, cmd);
+
+    timeout = BBPLL_BUSY_POLL_TIMEOUT_CYCLES;
+    while ((reg_read(ctrl_reg) & I2C_ANA_MST_BUSY_BIT) != 0U)
+    {
+        if (--timeout == 0U)
+        {
+            return MODEM_ERR_TIMEOUT;
+        }
+    }
+
+    if (data_out != NULL)
+    {
+        *data_out = (uint8_t)((reg_read(ctrl_reg) & I2C_ANA_MST_DATA_MASK) >> I2C_ANA_MST_DATA_SHIFT);
+    }
+
+    return MODEM_OK;
+}
+
+modem_status_t modem_bbpll_calibrate(void)
 {
     /* 1. Enable LP_PERI Analog I2C clock and release reset */
     reg_set_bits(LP_PERI_CLK_EN_REG, LP_PERI_CLK_LP_ANA_I2C_BIT);
@@ -372,17 +561,80 @@ modem_status_t modem_enable_i2c_ana_mst(void)
     /* 5. Enable all analog I2C devices in LP_I2C_ANA_MST */
     reg_write(LP_I2C_ANA_MST_DEVICE_EN_REG, LP_I2C_ANA_MST_ALL_DEVICES_EN);
 
-    /* 6. Configure I2C Analog Master bus links in LP_CLKRST (0x600B0418-041C, Task 4) */
-    reg_write(LP_CLKRST_I2C_ANA_MST_LINK0_REG, LP_CLKRST_I2C_ANA_MST_LINK_VAL);
-    reg_write(LP_CLKRST_I2C_ANA_MST_LINK1_REG, LP_CLKRST_I2C_ANA_MST_LINK_VAL);
+    /* 6. Power up BBPLL analog circuits via PMU */
+    reg_set_bits(PMU_IMM_HP_CK_POWER_REG, PMU_BBPLL_POWER_ENABLE_MASK);
 
-    /* 7. Enable RF front-end devices in I2C_ANA_MST (0x600AF800, Task 4) */
-    reg_write(I2C_ANA_MST_DEVICE_EN_REG, I2C_ANA_MST_DEVICE_EN_ALL);
+    /* 7. Configure slave routing for BBPLL in I2C_ANA_MST (Master 0, clear BBPLL_RD bit 7) */
+    reg_set_bits(I2C_ANA_MST_ANA_CONF2_REG, I2C_ANA_MST_ANA_CONF2_BBPLL_MST_SEL_BIT);
+    reg_write(I2C_ANA_MST_ANA_CONF1_REG,
+              I2C_ANA_MST_ANA_CONF1_DEFAULT_MASK &
+              ~(I2C_ANA_MST_ANA_CONF1_BBPLL_RD_BIT | I2C_ANA_MST_ANA_CONF1_BBPLL_PD_BIT));
 
-    /* 8. Settling delay */
-    modem_delay(MODEM_CLOCK_SETTLE_CYCLES);
+    /* 8. Start calibration: clear STOP_FORCE_HIGH, set STOP_FORCE_LOW */
+    reg_clear_bits(I2C_ANA_MST_ANA_CONF0_REG, I2C_ANA_MST_BBPLL_STOP_FORCE_HIGH_BIT);
+    reg_set_bits(I2C_ANA_MST_ANA_CONF0_REG, I2C_ANA_MST_BBPLL_STOP_FORCE_LOW_BIT);
 
+    /* 9. Write internal BBPLL analog configuration registers (Slave 0x66) */
+    if (regi2c_write(I2C_BBPLL_SLAVE_ADDR, I2C_BBPLL_OC_REF_ADDR, I2C_BBPLL_OC_REF_VAL) != MODEM_OK)
+    {
+        return MODEM_ERR_TIMEOUT;
+    }
+    if (regi2c_write(I2C_BBPLL_SLAVE_ADDR, I2C_BBPLL_OC_DIV_REG_ADDR, I2C_BBPLL_OC_DIV_REG_VAL) != MODEM_OK)
+    {
+        return MODEM_ERR_TIMEOUT;
+    }
+
+    uint8_t dr = 0U;
+    if (regi2c_read(I2C_BBPLL_SLAVE_ADDR, I2C_BBPLL_OC_DR_ADDR, &dr) != MODEM_OK)
+    {
+        return MODEM_ERR_TIMEOUT;
+    }
+    if (regi2c_write(I2C_BBPLL_SLAVE_ADDR, I2C_BBPLL_OC_DR_ADDR,
+                     dr & (uint8_t)~(I2C_BBPLL_OC_DR1_MASK | I2C_BBPLL_OC_DR3_MASK)) != MODEM_OK)
+    {
+        return MODEM_ERR_TIMEOUT;
+    }
+
+    if (regi2c_write(I2C_BBPLL_SLAVE_ADDR, I2C_BBPLL_REG6_ADDR, I2C_BBPLL_REG6_VAL) != MODEM_OK)
+    {
+        return MODEM_ERR_TIMEOUT;
+    }
+
+    uint8_t reg9 = 0U;
+    if (regi2c_read(I2C_BBPLL_SLAVE_ADDR, I2C_BBPLL_REG9_ADDR, &reg9) != MODEM_OK)
+    {
+        return MODEM_ERR_TIMEOUT;
+    }
+    if (regi2c_write(I2C_BBPLL_SLAVE_ADDR, I2C_BBPLL_REG9_ADDR,
+                     (reg9 & (uint8_t)~I2C_BBPLL_OC_VCO_DBIAS_MASK) | I2C_BBPLL_OC_VCO_DBIAS_DEFAULT) != MODEM_OK)
+    {
+        return MODEM_ERR_TIMEOUT;
+    }
+
+    /* 10. Poll CAL_DONE with bounded timeout */
+    uint32_t timeout = BBPLL_CALIBRATION_TIMEOUT_CYCLES;
+    while ((reg_read(I2C_ANA_MST_ANA_CONF0_REG) & I2C_ANA_MST_CAL_DONE_BIT) == 0U)
+    {
+        if (--timeout == 0U)
+        {
+            return MODEM_ERR_TIMEOUT;
+        }
+    }
+
+    /* 11. Erratum workaround: wait 10 us for analog phase settle */
+    ets_delay_us(BBPLL_SETTLE_DELAY_US);
+
+    /* 12. Stop calibration: set STOP_FORCE_HIGH, clear STOP_FORCE_LOW */
+    reg_set_bits(I2C_ANA_MST_ANA_CONF0_REG, I2C_ANA_MST_BBPLL_STOP_FORCE_HIGH_BIT);
+    reg_clear_bits(I2C_ANA_MST_ANA_CONF0_REG, I2C_ANA_MST_BBPLL_STOP_FORCE_LOW_BIT);
+
+    s_bbpll_calibrated = true;
     return MODEM_OK;
+}
+
+modem_status_t modem_enable_i2c_ana_mst(void)
+{
+    return modem_bbpll_calibrate();
 }
 
 modem_status_t modem_enable_rf_synthesizer(void)
@@ -687,12 +939,22 @@ bool modem_is_coex_enabled(void)
 
 uint32_t modem_get_i2c_ana_mst_link0_reg(void)
 {
-    return reg_read(LP_CLKRST_I2C_ANA_MST_LINK0_REG);
+    return (uint32_t)I2C_ANA_MST_BASE_ADDR;
 }
 
 uint32_t modem_get_i2c_ana_mst_link1_reg(void)
 {
-    return reg_read(LP_CLKRST_I2C_ANA_MST_LINK1_REG);
+    return (uint32_t)I2C_ANA_MST_BASE_ADDR;
+}
+
+bool modem_is_bbpll_calibrated(void)
+{
+    return s_bbpll_calibrated;
+}
+
+uint32_t modem_get_i2c_ana_mst_ana_conf0(void)
+{
+    return reg_read(I2C_ANA_MST_ANA_CONF0_REG);
 }
 
 bool modem_is_sar_adc_cal_primed(void)
@@ -739,8 +1001,10 @@ void modem_rf_analog_init(void)
     /* Enable internal RF front-end antenna switch routing for TX/RX */
     s_rf_analog_sw0 = MODEM_RF_ANALOG_SWITCH_DEFAULT_CONFIG;
     s_rf_analog_sw1 = MODEM_RF_ANALOG_SWITCH_DEFAULT_CONFIG;
-    reg_write(MODEM_RF_ANALOG_SWITCH0_REG, s_rf_analog_sw0);
-    reg_write(MODEM_RF_ANALOG_SWITCH1_REG, s_rf_analog_sw1);
+    for (uint32_t i = 0U; i < MODEM_RF_ANALOG_SWITCH_COUNT; i++)
+    {
+        reg_write(MODEM_RF_ANALOG_SWITCH_REG(i), MODEM_RF_ANALOG_SWITCH_DEFAULT_CONFIG);
+    }
     modem_fence();
 }
 

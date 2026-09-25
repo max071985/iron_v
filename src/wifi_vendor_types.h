@@ -90,11 +90,12 @@ typedef void*     QueueHandle_t;
 /* Cryptographic Provider Callback Structure (wpa_crypto_funcs_t)            */
 /* ========================================================================= */
 #define ESP_WIFI_CRYPTO_VERSION         0x00000001
+#define WPA_CRYPTO_FUNCS_NUM            11U
 
 typedef struct wpa_crypto_funcs_t {
     uint32_t size;
     uint32_t version;
-    void *funcs[11];
+    void *funcs[WPA_CRYPTO_FUNCS_NUM];
 } wpa_crypto_funcs_t;
 
 extern const wpa_crypto_funcs_t g_wifi_default_wpa_crypto_funcs;
@@ -255,6 +256,11 @@ extern wifi_osi_funcs_t g_wifi_osi_funcs;
 #define WIFI_DEFAULT_RX_BA_WIN          4
 #define WIFI_ESPNOW_MAX_ENCRYPT_NUM     0
 #define WIFI_TX_HETB_QUEUE_NUM          1
+#define WIFI_CSI_DISABLED               0
+#define WIFI_AMSDU_TX_DISABLED          0
+#define WIFI_NVS_DISABLED               0
+#define WIFI_NANO_DISABLED              0
+#define WIFI_RMAC_AUTO_RESET_INT_DEF    0
 
 #define CONFIG_FEATURE_FTM_INITIATOR_BIT (1ULL << 2)
 #define CONFIG_FEATURE_FTM_RESPONDER_BIT (1ULL << 3)
@@ -304,12 +310,12 @@ typedef struct {
     .rx_mgmt_buf_type = WIFI_DYNAMIC_RX_MGMT_BUF, \
     .rx_mgmt_buf_num = WIFI_RX_MGMT_BUF_NUM_DEF, \
     .cache_tx_buf_num = WIFI_CACHE_TX_BUFFER_NUM, \
-    .csi_enable = 0, \
+    .csi_enable = WIFI_CSI_DISABLED, \
     .ampdu_rx_enable = WIFI_AMPDU_RX_ENABLED, \
     .ampdu_tx_enable = WIFI_AMPDU_TX_ENABLED, \
-    .amsdu_tx_enable = 0, \
-    .nvs_enable = 0, \
-    .nano_enable = 0, \
+    .amsdu_tx_enable = WIFI_AMSDU_TX_DISABLED, \
+    .nvs_enable = WIFI_NVS_DISABLED, \
+    .nano_enable = WIFI_NANO_DISABLED, \
     .rx_ba_win = WIFI_DEFAULT_RX_BA_WIN, \
     .wifi_task_core_id = WIFI_TASK_CORE_ID, \
     .beacon_max_len = WIFI_SOFTAP_BEACON_MAX_LEN, \
@@ -320,7 +326,7 @@ typedef struct {
     .tx_hetb_queue_num = WIFI_TX_HETB_QUEUE_NUM, \
     .dump_hesigb_enable = false, \
     .privacy_enhancements = false, \
-    .rmac_auto_reset_int = 0, \
+    .rmac_auto_reset_int = WIFI_RMAC_AUTO_RESET_INT_DEF, \
     .wifi_task_stack_size = WIFI_TASK_STACK_SIZE, \
     .magic = WIFI_INIT_CONFIG_MAGIC \
 }

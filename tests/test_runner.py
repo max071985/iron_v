@@ -322,7 +322,7 @@ def run_suite():
     native_desc = ""
     if not os.path.exists(native_test_bin):
         comp = subprocess.run(
-            ["gcc", "-O2", "-fno-tree-loop-distribute-patterns", "-Wall", "-Wextra", "-Werror", "-Isrc", "tests/test_freestanding.c", "src/string.c", "src/dpc.c", "src/arena.c", "src/pmp.c", "src/lp_core.c", "src/power.c", "src/gpio.c", "src/gdma.c", "src/modem.c", "src/ble.c", "src/wifi.c", "src/ieee802154.c", "src/net.c", "src/tcp.c", "-o", native_test_bin],
+            ["gcc", "-O2", "-fno-tree-loop-distribute-patterns", "-Wall", "-Wextra", "-Werror", "-Isrc", "tests/test_freestanding.c", "src/string.c", "src/mmu.c", "src/dpc.c", "src/arena.c", "src/pmp.c", "src/lp_core.c", "src/power.c", "src/gpio.c", "src/gdma.c", "src/modem.c", "src/ble.c", "src/wifi.c", "src/ieee802154.c", "src/net.c", "src/tcp.c", "src/wifi_os_adapter.c", "src/wifi_regulatory.c", "src/wifi_ftm_cal.c", "src/wifi_phy_data.c", "-o", native_test_bin],
             capture_output=True, text=True
         )
         if comp.returncode != 0:

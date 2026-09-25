@@ -26,6 +26,8 @@ extern "C" {
 
 /* Maximum number of regulatory rules per domain in 2.4 GHz band */
 #define WIFI_MAX_REGULATORY_RULE_NUM     2U
+#define WIFI_REG_RULE_NUM_SINGLE         1U
+#define WIFI_REG_RULE_NUM_DUAL           2U
 
 /* 2.4 GHz 802.11 Channel Boundaries */
 #define WIFI_REG_CHAN_MIN                1U
@@ -95,7 +97,7 @@ typedef struct {
 
 /* Country code mapping structure (3 bytes packed: 2-byte ISO code + 1-byte regulatory type) */
 typedef struct __attribute__((packed)) {
-    char    cn[2];
+    char    cn[2] __attribute__((nonstring));
     uint8_t regulatory_type;
 } wifi_regdomain_t;
 

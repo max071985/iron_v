@@ -30,6 +30,10 @@
 #include "net.h"
 #include "tcp.h"
 #include "regs/lp_wdt.h"
+#include "wifi_vendor_types.h"
+#include "wifi_regulatory.h"
+#include "wifi_ftm_cal.h"
+#include "wifi_phy_data.h"
 
 /* Freestanding function aliases matching runtime naming conventions */
 static inline size_t s_strlen(const char *s)
@@ -1692,6 +1696,107 @@ static void test_wifi_mac_subsystem(void)
     TEST_ASSERT(modem_get_rf_analog_switch1() == MODEM_RF_ANALOG_SWITCH_DEFAULT_CONFIG, "modem_get_rf_analog_switch1 matches default config");
 }
 
+static void test_wifi_custom_stack_refactor(void)
+{
+    printf("  [TEST] Native Wi-Fi Stack Refactor & Regulatory/FTM/PHY Validation...\n");
+
+    /* 1. Wi-Fi Regulatory Country Domain Table Verification */
+    size_t reg_count = 0U;
+    bool found_default = false;
+    bool found_us = false;
+    bool found_jp = false;
+    bool found_sentinel = false;
+
+    for (size_t i = 0U; i < 500U; i++)
+    {
+        const wifi_regdomain_t *entry = &regdomain_table[i];
+        if (entry->cn[0] == '#' && entry->cn[1] == '#')
+        {
+            found_sentinel = true;
+            TEST_ASSERT(entry->regulatory_type == ESP_WIFI_REGULATORY_TYPE_MAX, "Sentinel regulatory type is TYPE_MAX");
+            reg_count = i;
+            break;
+        }
+        if (entry->cn[0] == '0' && entry->cn[1] == '1' && entry->regulatory_type == ESP_WIFI_REGULATORY_TYPE_DEFAULT)
+        {
+            found_default = true;
+        }
+        if (entry->cn[0] == 'U' && entry->cn[1] == 'S' && entry->regulatory_type == ESP_WIFI_REGULATORY_TYPE_FCC)
+        {
+            found_us = true;
+        }
+        if (entry->cn[0] == 'J' && entry->cn[1] == 'P' && entry->regulatory_type == ESP_WIFI_REGULATORY_TYPE_MIC)
+        {
+            found_jp = true;
+        }
+    }
+    TEST_ASSERT(found_sentinel, "Regulatory country table terminated by ## sentinel");
+    TEST_ASSERT(reg_count > 150U, "Regulatory country table contains comprehensive ISO country mappings (>150)");
+    TEST_ASSERT(found_default, "Regulatory table contains default country 01 -> TYPE_DEFAULT");
+    TEST_ASSERT(found_us, "Regulatory table maps US -> TYPE_FCC");
+    TEST_ASSERT(found_jp, "Regulatory table maps JP -> TYPE_MIC");
+
+    /* 2. Wi-Fi Regulatory Rule Data & Geometry Verification */
+    const wifi_regulatory_t *reg_def = &regulatory_data[ESP_WIFI_REGULATORY_TYPE_DEFAULT];
+    TEST_ASSERT(reg_def->n_reg_rules == WIFI_REG_RULE_NUM_SINGLE, "Default regulatory domain has 1 rule");
+    TEST_ASSERT(reg_def->reg_rules[0].start_channel == WIFI_REG_CHAN_MIN, "Default domain starts at channel 1");
+    TEST_ASSERT(reg_def->reg_rules[0].end_channel == WIFI_REG_CHAN_MAX_11, "Default domain ends at channel 11");
+    TEST_ASSERT(reg_def->reg_rules[0].max_bandwidth == WIFI_REG_BW_40M, "Default domain max bandwidth is 40MHz");
+    TEST_ASSERT(reg_def->reg_rules[0].max_eirp == WIFI_REG_EIRP_20DBM, "Default domain max EIRP is 20dBm");
+
+    const wifi_regulatory_t *reg_mic = &regulatory_data[ESP_WIFI_REGULATORY_TYPE_MIC];
+    TEST_ASSERT(reg_mic->n_reg_rules == WIFI_REG_RULE_NUM_DUAL, "Japan (MIC) domain has 2 rules");
+    TEST_ASSERT(reg_mic->reg_rules[0].start_channel == WIFI_REG_CHAN_MIN && reg_mic->reg_rules[0].end_channel == WIFI_REG_CHAN_MAX_13, "MIC rule 0 covers channels 1-13");
+    TEST_ASSERT(reg_mic->reg_rules[0].max_bandwidth == WIFI_REG_BW_40M, "MIC rule 0 max bandwidth is 40MHz");
+    TEST_ASSERT(reg_mic->reg_rules[1].start_channel == WIFI_REG_CHAN_MAX_14 && reg_mic->reg_rules[1].end_channel == WIFI_REG_CHAN_MAX_14, "MIC rule 1 covers channel 14");
+    TEST_ASSERT(reg_mic->reg_rules[1].max_bandwidth == WIFI_REG_BW_20M, "MIC rule 1 max bandwidth is 20MHz");
+
+    /* Validate all domain profiles are within bounds */
+    for (int t = 0; t < ESP_WIFI_REGULATORY_TYPE_MAX; t++)
+    {
+        const wifi_regulatory_t *prof = &regulatory_data[t];
+        TEST_ASSERT(prof->n_reg_rules >= WIFI_REG_RULE_NUM_SINGLE && prof->n_reg_rules <= WIFI_MAX_REGULATORY_RULE_NUM, "Profile rule count within bounds");
+        for (uint8_t r = 0U; r < prof->n_reg_rules; r++)
+        {
+            TEST_ASSERT(prof->reg_rules[r].start_channel >= WIFI_REG_CHAN_MIN, "Rule start channel valid");
+            TEST_ASSERT(prof->reg_rules[r].end_channel <= WIFI_REG_CHAN_MAX_14, "Rule end channel valid");
+            TEST_ASSERT(prof->reg_rules[r].start_channel <= prof->reg_rules[r].end_channel, "Rule channel span monotonic");
+            TEST_ASSERT(prof->reg_rules[r].max_bandwidth == WIFI_REG_BW_20M || prof->reg_rules[r].max_bandwidth == WIFI_REG_BW_40M, "Bandwidth valid");
+            TEST_ASSERT(prof->reg_rules[r].max_eirp >= WIFI_REG_EIRP_20DBM && prof->reg_rules[r].max_eirp <= WIFI_REG_EIRP_36DBM, "EIRP within 20-36 dBm");
+        }
+    }
+
+    /* 3. Fine Timing Measurement (FTM) Calibration Data Verification */
+    TEST_ASSERT(est_PHY_INIT_FTM_COMP_20_20U_MHZ == WIFI_FTM_CAL_INIT_20_20U_MHZ, "FTM INIT 20/20U initialized correctly");
+    TEST_ASSERT(est_PHY_INIT_FTM_COMP_20_20D_MHZ == WIFI_FTM_CAL_INIT_20_20D_MHZ, "FTM INIT 20/20D initialized correctly");
+    TEST_ASSERT(est_PHY_RESP_FTM_COMP_20_20U_MHZ == WIFI_FTM_CAL_RESP_20_20U_MHZ, "FTM RESP 20/20U initialized correctly");
+    TEST_ASSERT(est_PHY_RESP_FTM_COMP_20_20D_MHZ == WIFI_FTM_CAL_RESP_20_20D_MHZ, "FTM RESP 20/20D initialized correctly");
+    TEST_ASSERT(est_PHY_INIT_FTM_COMP_40_40U_MHZ == WIFI_FTM_CAL_INIT_40_40U_MHZ, "FTM INIT 40/40U initialized correctly");
+    TEST_ASSERT(est_PHY_INIT_FTM_COMP_40_40D_MHZ == WIFI_FTM_CAL_INIT_40_40D_MHZ, "FTM INIT 40/40D initialized correctly");
+    TEST_ASSERT(est_PHY_RESP_FTM_COMP_40_40U_MHZ == WIFI_FTM_CAL_RESP_40_40U_MHZ, "FTM RESP 40/40U initialized correctly");
+
+    /* Specific validation for ESP32-C6 40MHz channel 11 responder calibration constant */
+    TEST_ASSERT(est_PHY_RESP_FTM_COMP_40_40D_MHZ == 433U, "FTM RESP 40/40D matches ESP32-C6 silicon specification 433");
+    TEST_ASSERT(est_PHY_RESP_FTM_COMP_40_40D_MHZ_DIS == 433U, "FTM RESP 40/40D DIS matches ESP32-C6 silicon specification 433");
+
+    /* 4. Canonical PHY Initialization Data Verification */
+    TEST_ASSERT(sizeof(phy_init_data.params) == WIFI_PHY_INIT_DATA_LEN, "PHY init data table length is 128 bytes");
+    TEST_ASSERT(phy_init_data.params[0] == 0x0AU, "PHY init data version byte matches 0x0A");
+    TEST_ASSERT(phy_init_data.params[127] == 0x51U, "PHY init data checksum byte matches 0x51");
+    TEST_ASSERT(sizeof(esp_phy_init_data_t) == 128U, "esp_phy_init_data_t size is exactly 128 bytes");
+    TEST_ASSERT(sizeof(esp_phy_calibration_data_t) == (WIFI_PHY_CAL_VERSION_LEN + WIFI_PHY_CAL_MAC_LEN + WIFI_PHY_CAL_OPAQUE_LEN), "PHY calibration container geometry matches");
+
+    /* 5. Vendor Types, ABI Compatibility & OSAL Constants Verification */
+    TEST_ASSERT(ESP_WIFI_OS_ADAPTER_VERSION == 0x00000009U, "ESP_WIFI_OS_ADAPTER_VERSION matches ABI");
+    TEST_ASSERT(ESP_WIFI_OS_ADAPTER_MAGIC == 0xDEADBEAFU, "ESP_WIFI_OS_ADAPTER_MAGIC matches ABI");
+    TEST_ASSERT(WPA_CRYPTO_FUNCS_NUM == 11U, "WPA crypto function pointer slot count is 11");
+    TEST_ASSERT(sizeof(wpa_crypto_funcs_t) == (sizeof(uint32_t) * 2U + sizeof(void *) * WPA_CRYPTO_FUNCS_NUM), "wpa_crypto_funcs_t ABI layout matches");
+    TEST_ASSERT(WIFI_CSI_DISABLED == 0, "WIFI_CSI_DISABLED zero constant verified");
+    TEST_ASSERT(WIFI_AMSDU_TX_DISABLED == 0, "WIFI_AMSDU_TX_DISABLED zero constant verified");
+    TEST_ASSERT(WIFI_NVS_DISABLED == 0, "WIFI_NVS_DISABLED zero constant verified");
+    TEST_ASSERT(WIFI_RMAC_AUTO_RESET_INT_DEF == 0, "WIFI_RMAC_AUTO_RESET_INT_DEF zero constant verified");
+}
+
 static void test_ieee802154_subsystem(void)
 {
     printf("  [TEST] IEEE 802.15.4 Radio Transceiver Driver (Task 5.4)...\n");
@@ -2917,6 +3022,7 @@ int main(void)
     test_lp_wdt_subsystem();
     test_ble_gatt_subsystem();
     test_wifi_mac_subsystem();
+    test_wifi_custom_stack_refactor();
     test_ieee802154_subsystem();
     test_tcpip_subsystem();
 

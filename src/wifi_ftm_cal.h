@@ -59,8 +59,8 @@ extern "C" {
 /* 40 MHz FTM in 40 MHz PHY - Responder Calibration Constants */
 #define WIFI_FTM_CAL_RESP_40_40U_MHZ         436U /* Connected Responder in 40MHz (Ch 1) using 40MHz FTM */
 #define WIFI_FTM_CAL_RESP_40_40U_MHZ_DIS     436U /* Disconnected Responder in 40MHz (Ch 1) using 40MHz FTM */
-#define WIFI_FTM_CAL_RESP_40_40D_MHZ         434U /* Connected Responder in 40MHz (Ch 11) using 40MHz FTM */
-#define WIFI_FTM_CAL_RESP_40_40D_MHZ_DIS     434U /* Disconnected Responder in 40MHz (Ch 11) using 40MHz FTM */
+#define WIFI_FTM_CAL_RESP_40_40D_MHZ         433U /* Connected Responder in 40MHz (Ch 11) using 40MHz FTM */
+#define WIFI_FTM_CAL_RESP_40_40D_MHZ_DIS     433U /* Disconnected Responder in 40MHz (Ch 11) using 40MHz FTM */
 
 /* External symbols required by Espressif libpp.a (ftm_get_phy_comp) */
 extern uint16_t est_PHY_INIT_FTM_COMP_20_20U_MHZ;

@@ -5,8 +5,8 @@ Iron V enforces a strict separation of concerns between host-side static verific
 
 | Validation Tier | Execution Target | Invocations | Purpose & Scope |
 | :--- | :--- | :--- | :--- |
-| **Tier 1: Host Static & Unit** | Host Linux Workstation (x86_64) | `make do-test` | Verifies compiled ELF headers, segment permissions, 16-byte alignment, binary data/rodata initial values, and native C unit testing of `src/string.c`, `src/dpc.c`, `src/arena.c`, `src/pmp.c`, plus cross-module coroutine + SYSTIMER + DPC integration, static arena pool exhaustion, PMP chained TOR boundaries, HP_APM dynamic filters, and console line reader edge cases. |
-| **Tier 2: Physical Silicon** | ESP32-C6 RISC-V Silicon | `make flash && make monitor` -> `do-test` | Executes on-board bare-metal test suite in `src/test.c`. Performs volatile MMIO reads (`UART0`, `TIMG0`), RAM peek/poke mutations, and watchdog control. |
+| **Tier 1: Host Static & Unit** | Host Linux Workstation (x86_64) | `make test` | Verifies compiled ELF headers, segment permissions, 16-byte alignment, binary data/rodata initial values, and native C unit testing of `src/string.c`, `src/dpc.c`, `src/arena.c`, `src/pmp.c`, `src/wifi_regulatory.c`, `src/wifi_ftm_cal.c`, `src/wifi_phy_data.c`, cross-module coroutine + SYSTIMER + DPC integration, static arena pool exhaustion, PMP chained TOR boundaries, HP_APM dynamic filters, and console line reader edge cases. |
+| **Tier 2: Physical Silicon** | ESP32-C6 RISC-V Silicon | `./scripts/board-validation.py`<br>or `make flash && make monitor` -> `do-test` | Executes on-board bare-metal test suite in `src/test.c`. Performs volatile MMIO reads (`UART0`, `TIMG0`), RAM peek/poke mutations, watchdog control, GDMA descriptor ring transfers, and Wi-Fi baseband telemetry. |
 
 ## 2. Why Host Mocking Is Prohibited
 In embedded bare-metal systems, simulating RAM mutations using host Python dictionaries (`mem = {}`) or printing hardcoded register reads creates false confidence and masks memory corruption, bus faults, and cache coherency bugs.
@@ -15,7 +15,15 @@ In embedded bare-metal systems, simulating RAM mutations using host Python dicti
 - Host-compiled integration tests exercise genuine state machines, intrusive linked lists, ring buffers, bitmasks, and memory protection algorithms without simulating hardware side-effects.
 
 ## 3. On-Board Validation Procedure
-To execute Tier 2 validation on physical hardware:
+
+### Automated Hardware Validation
+To run the automated hardware validation harness over the Model Context Protocol (MCP) serial bridge:
+```bash
+./scripts/board-validation.py
+```
+This builds `firmware.bin`, flashes the connected ESP32-C6 target, runs `do-test`, checks all 33 on-chip assertions, and outputs JSON telemetry (`{"decision": "allow"}`).
+
+### Manual Hardware Validation
 1. Connect the ESP32-C6-DevKitC-1 board via USB-C.
 2. Flash the firmware:
    ```bash
@@ -29,3 +37,4 @@ To execute Tier 2 validation on physical hardware:
    ```text
    iron_v> do-test
    ```
+

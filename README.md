@@ -33,7 +33,6 @@ The runtime targets the official ESP32-C6-DevKitC-1 development board:
 iron-v/
 ├── Makefile                                     # Build, test, flash, and serial monitor automation
 ├── README.md                                    # Project documentation
-├── gen_headers.py                               # SVD-to-C header generation utility
 ├── ld/                                          # Linker scripts
 │   ├── link.ld                                  # Master Harvard-partitioned linker script
 │   └── rom/                                     # Espressif ROM symbol table linker scripts
@@ -42,6 +41,9 @@ iron-v/
 │   └── link.ld                                  # LP core memory map
 ├── libs/                                        # Vendor static libraries
 │   └── esp32c6/                                 # Static wireless and PHY libraries
+├── scripts/                                     # Automation & hardware validation scripts
+│   ├── board-validation.py                      # Physical silicon test runner via MCP server
+│   └── gen_headers.py                           # SVD-to-C header generation utility
 ├── src/                                         # Kernel and peripheral drivers
 │   ├── crt0.S                                   # Reset vector, CSR initialization, and C runtime boot
 │   ├── trap_entry.S / trap.c                    # Machine-mode trap entry, exception decoding, panic dump
@@ -57,12 +59,15 @@ iron-v/
 │   ├── gpio.c / gdma.c                          # GPIO Matrix routing and multi-channel GDMA engine
 │   ├── modem.c / ble.c / wifi.c / ieee802154.c  # Wireless baseband, BLE GAP/GATT, Wi-Fi 6, 802.15.4
 │   ├── net.c / tcp.c                            # Lightweight TCP/IP stack (IPv4, ARP, ICMP, UDP, TCP)
-│   ├── wifi_os_adapter.c                        # OS adaptation layer for vendor Wi-Fi libraries
-│   ├── regs/                                    # Register definition headers
-│   └── vendor/                                  # Regulatory and calibration tables
+│   ├── wifi_os_adapter.c                        # Freestanding OSAL for vendor Wi-Fi binary blobs
+│   ├── wifi_regulatory.c / wifi_regulatory.h    # Native 2.4 GHz regulatory rules and country mapping
+│   ├── wifi_ftm_cal.c / wifi_ftm_cal.h          # Native 802.11mc FTM timing calibration parameters
+│   ├── wifi_phy_data.c / wifi_phy_data.h        # Native canonical 128-byte PHY initialization parameters
+│   ├── wifi_vendor_types.h                      # Unified Wi-Fi binary blob types and OSAL dispatch
+│   └── regs/                                    # Register definition headers
 └── tests/                                       # Host unit testing and static analysis
     ├── README.md                                # Test suite overview
-    ├── test_freestanding.c                      # Host C unit test harness (466 assertions)
+    ├── test_freestanding.c                      # Host C unit test harness (466+ assertions)
     └── test_runner.py                           # Automated test runner and static ELF analysis
 ```
 
@@ -135,8 +140,10 @@ make monitor
 
 ---
 
-## Credits & Acknowledgments
+## Credits & Attribution
 
 - **[georgik/esp32-c6-swift-baremetal](https://github.com/georgik/esp32-c6-swift-baremetal)**: Reference implementation for bare-metal ESP32-C6 initialization, linker memory layouts, and ROM direct multi-segment image creation.
 - **[pdlsurya/esp32-riscv-bare-metal-sdk](https://github.com/pdlsurya/esp32-riscv-bare-metal-sdk)**: Reference architecture for freestanding RISC-V startup sequences, assembly vector tables, and bare-metal hardware driver design.
-- **[Espressif Systems](https://www.espressif.com/)**: ESP32-C6 Technical Reference Manual, CMSIS-SVD peripheral maps, ROM linker mappings, and vendor static Wi-Fi/PHY libraries.
+- **[Espressif Systems](https://www.espressif.com/)**:
+  - ESP32-C6 Technical Reference Manual, CMSIS-SVD peripheral maps, ROM linker mappings, and vendor static Wi-Fi/PHY closed-source libraries (`libnet80211.a`, `libpp.a`, `libphy.a`, `libcore.a`).
+  - Portions of the Wi-Fi subsystem design choices—specifically the 802.11 regulatory channel rules and EIRP power constraints (`src/wifi_regulatory.c`), Fine Timing Measurement (FTM) calibration tables (`src/wifi_ftm_cal.c`), canonical 128-byte PHY initialization parameters (`src/wifi_phy_data.c`), and OSAL structure layouts (`src/wifi_vendor_types.h`)—are adapted from the [ESP-IDF](https://github.com/espressif/esp-idf) framework (Copyright (c) Espressif Systems (Shanghai) PTE LTD), licensed under the **Apache License, Version 2.0**.

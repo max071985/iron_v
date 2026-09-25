@@ -136,10 +136,10 @@ mem_access_t check_mem_access(uint32_t addr)
     {
         /* Reject unmapped reserved peripheral holes (TRM Tab 5.3-2):
          * 0x60019000 - 0x6007FFFF (412 KB reserved hole, containing legacy USB 0x60043000)
-         * 0x6009A000 - 0x600A2FFF (36 KB reserved hole)
+         * 0x6009A000 - 0x600A2FFF (36 KB reserved hole, excluding MODEM_FE at 0x600A0000 - 0x600A0FFF)
          */
         if ((addr >= 0x60019000U && addr <= 0x6007FFFFU) ||
-            (addr >= 0x6009A000U && addr <= 0x600A2FFFU))
+            (addr >= 0x6009A000U && addr <= 0x600A2FFFU && (addr < MODEM_FE_BASE_ADDR || addr >= MODEM_FE_END_ADDR)))
         {
             return MEM_ACCESS_INVALID;
         }

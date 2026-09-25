@@ -1551,6 +1551,15 @@ static void shell_execute(char *input_buffer)
                 console_puts(wifi_get_ap_ssid());
                 console_puts("\r\n  Channel:     ");
                 put_dec((uint32_t)wifi_get_ap_channel());
+#if defined(__riscv)
+                int8_t tx_pwr = 0;
+                esp_wifi_get_max_tx_power(&tx_pwr);
+                console_puts("\r\n  Max TX Power: ");
+                put_dec((uint32_t)tx_pwr);
+                console_puts(" (");
+                put_dec((uint32_t)(tx_pwr / WIFI_TX_POWER_DBM_SCALE));
+                console_puts(" dBm)");
+#endif
                 console_puts("\r\n  CCA:         ");
                 console_puts(wifi_is_cca_enabled() ? "ENABLED\r\n" : "DISABLED (Bypassed)\r\n");
                 console_puts("  RF Switch 0: 0x");

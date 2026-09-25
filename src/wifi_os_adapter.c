@@ -1185,7 +1185,6 @@ static int phy_update_country_info_wrapper(const char *country)
 
 static int read_mac_wrapper(uint8_t *mac, unsigned int type)
 {
-    (void)type;
     uint32_t mac0 = *EFUSE_MAC_SYS_0_REG;
     uint32_t mac1 = *EFUSE_MAC_SYS_1_REG;
 
@@ -1195,6 +1194,18 @@ static int read_mac_wrapper(uint8_t *mac, unsigned int type)
     mac[3] = (uint8_t)((mac0 >> 16U) & 0xFFU);
     mac[4] = (uint8_t)((mac0 >> 8U) & 0xFFU);
     mac[5] = (uint8_t)(mac0 & 0xFFU);
+
+    if (type == 1U)
+    {
+        /* Derive distinct SoftAP MAC address (base MAC + 1 with carry propagation) */
+        uint32_t carry = 1U;
+        for (int i = (int)WIFI_MAC_ADDR_LEN - 1; i >= 0 && carry != 0U; i--)
+        {
+            uint32_t sum = (uint32_t)mac[i] + carry;
+            mac[i] = (uint8_t)(sum & 0xFFU);
+            carry = sum >> 8U;
+        }
+    }
     return 0;
 }
 
@@ -1287,7 +1298,7 @@ static int nvs_stub_get_u8(uint32_t handle, const char *key, uint8_t *out_val)
             strcmp(key, "sta.lowrate") == 0 ||
             strcmp(key, "lorate") == 0)
         {
-            *out_val = (uint8_t)WIFI_NVS_LOW_RATE_ENABLED;
+            *out_val = 0U;
             return 0;
         }
     }
@@ -1323,8 +1334,8 @@ static void coex_condition_set_wrapper(uint32_t type, bool dissatisfy) { (void)t
 static int coex_wifi_request_wrapper(uint32_t event, uint32_t latency, uint32_t duration) { (void)event; (void)latency; (void)duration; return 0; }
 static int coex_wifi_release_wrapper(uint32_t event) { (void)event; return 0; }
 static int coex_wifi_channel_set_wrapper(uint8_t primary, uint8_t secondary) { (void)primary; (void)secondary; return 0; }
-static int coex_event_duration_get_wrapper(uint32_t event, uint32_t *duration) { (void)event; if (duration) *duration = 0; return 0; }
-static int coex_pti_get_wrapper(uint32_t event, uint8_t *pti) { (void)event; if (pti) *pti = 0; return 0; }
+static int coex_event_duration_get_wrapper(uint32_t event, uint32_t *duration) { (void)event; (void)duration; return 0; }
+static int coex_pti_get_wrapper(uint32_t event, uint8_t *pti) { (void)event; (void)pti; return 0; }
 static void coex_schm_status_bit_clear_wrapper(uint32_t type, uint32_t status)
 {
     (void)type;

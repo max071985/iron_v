@@ -33,7 +33,6 @@ static int32_t s_vendor_init_err = -999;
 static volatile bool s_wifi_scan_done = false;
 static uint8_t s_wifi_channel = 1U;
 static int8_t s_wifi_rssi = 0;
-extern void wDev_enable_low_rate(void);
 extern uint8_t *g_wifi_nvs;
 #endif
 
@@ -1086,9 +1085,8 @@ wifi_status_t wifi_start_ap(const char *ssid, const char *password, uint8_t chan
             console_puts("\r\n");
         }
         esp_wifi_set_ps(WIFI_PS_NONE);
-        esp_wifi_set_protocol(WIFI_IF_AP, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
+        esp_wifi_set_protocol(WIFI_IF_AP, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N | WIFI_PROTOCOL_11AX);
         esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW20);
-        esp_wifi_set_max_tx_power(80);
 
         wifi_config_t ap_cfg;
         memset(&ap_cfg, 0, sizeof(ap_cfg));
@@ -1119,6 +1117,17 @@ wifi_status_t wifi_start_ap(const char *ssid, const char *password, uint8_t chan
         ap_cfg.ap.ssid_hidden = 0U;
         ap_cfg.ap.max_connection = WIFI_DEFAULT_AP_MAX_CONN;
         ap_cfg.ap.beacon_interval = WIFI_DEFAULT_AP_BEACON_INTERVAL_TU;
+        ap_cfg.ap.dtim_period = WIFI_DEFAULT_AP_DTIM_PERIOD;
+        ap_cfg.ap.csa_count = WIFI_DEFAULT_AP_CSA_COUNT;
+
+        wifi_country_t country = {
+            .cc = "01",
+            .schan = WIFI_MIN_CHANNEL,
+            .nchan = WIFI_MAX_CHANNEL,
+            .max_tx_power = WIFI_DEFAULT_COUNTRY_MAX_TX_PWR,
+            .policy = WIFI_COUNTRY_POLICY_MANUAL
+        };
+        esp_wifi_set_country(&country);
 
         esp_err_t err_cfg = esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
         if (err_cfg != 0)
@@ -1139,35 +1148,18 @@ wifi_status_t wifi_start_ap(const char *ssid, const char *password, uint8_t chan
         }
         esp_wifi_set_ps(WIFI_PS_NONE);
 
-        /* Enable 802.11b low rate (1 Mbps DSSS) beacon frames in MAC and PHY */
-        if (g_wifi_nvs != NULL)
-        {
-            g_wifi_nvs[WIFI_NVS_OFFSET_STA_LOW_RATE] = WIFI_NVS_LOW_RATE_ENABLED;
-            g_wifi_nvs[WIFI_NVS_OFFSET_AP_LOW_RATE]  = WIFI_NVS_LOW_RATE_ENABLED;
-        }
-        wDev_enable_low_rate();
-        esp_wifi_config_11b_rate(WIFI_IF_AP, false);
+        /* Assert Hardware Master RF Enable, initialize antenna switch telemetry, and enable CCA */
+        *MODEM_RF_ENABLE_REG |= MODEM_RF_ENABLE_MASTER_BIT;
+        modem_rf_analog_init();
+        wifi_set_cca_enabled(true);
 
-        /* Tune RF synthesizer to the SoftAP channel */
-        esp_err_t err_chan = esp_wifi_set_channel(s_wifi_ap_channel, WIFI_SECOND_CHAN_NONE);
-        if (err_chan != 0)
+        esp_err_t err_pwr = esp_wifi_set_max_tx_power(WIFI_DEFAULT_MAX_TX_POWER_INDEX);
+        if (err_pwr != 0)
         {
-            console_puts("[Wi-Fi] WARN: set_channel AP err=");
-            put_dec((uint32_t)err_chan);
+            console_puts("[Wi-Fi] WARN: set_max_tx_power err=");
+            put_dec((uint32_t)err_pwr);
             console_puts("\r\n");
         }
-
-        /* Assert Hardware Master RF Enable */
-        *MODEM_RF_ENABLE_REG |= MODEM_RF_ENABLE_MASTER_BIT;
-
-        wifi_country_t country = {
-            .cc = "01",
-            .schan = 1,
-            .nchan = 14,
-            .max_tx_power = 20,
-            .policy = WIFI_COUNTRY_POLICY_MANUAL
-        };
-        esp_wifi_set_country(&country);
 
         wifi_fence();
 

@@ -271,6 +271,8 @@
 /* MODEM RF Front-End Base Address & Parameterized MMIO Accessor             */
 /* ========================================================================= */
 #define MODEM_FE_BASE_ADDR                   0x600A0000U
+#define MODEM_FE_SIZE                        0x1000U
+#define MODEM_FE_END_ADDR                    (MODEM_FE_BASE_ADDR + MODEM_FE_SIZE)
 #define MODEM_FE_REG(offset)                 ((volatile uint32_t *)(uintptr_t)(MODEM_FE_BASE_ADDR + (offset)))
 
 #define MODEM_FE_FREQ_STATUS_OFFSET          0x00CCU

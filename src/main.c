@@ -30,7 +30,7 @@
 #include "ieee802154.h"
 #include "net.h"
 #include "tcp.h"
-#include "esp_private/wifi.h"
+#include "wifi_vendor_types.h"
 
 static void print_help(void)
 {

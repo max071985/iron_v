@@ -1,11 +1,24 @@
 /*
- * src/vendor/phy_init_data.c
- * Canonical PHY initialization parameters for ESP32-C6.
- * Extracted from ESP-IDF components/esp_phy/esp32c6/phy_init_data.c.
+ * src/wifi_phy_data.c
+ *
+ * Iron V Canonical PHY Initialization Parameters Implementation for ESP32-C6
+ *
+ * Design Choice Attribution:
+ * Canonical baseband RF and analog PHY initialization parameter array for ESP32-C6
+ * adapted from Espressif Systems' ESP-IDF PHY specifications
+ * (components/esp_phy/esp32c6/phy_init_data.c).
+ *
+ * Conforms to Iron V Project Standards:
+ * - Read-only static flash/ROM placement
+ * - Clean compilation: -Wall -Wextra -Werror compliant
  */
 
-#include "esp_phy_init.h"
+#include "wifi_phy_data.h"
 
+/*
+ * Canonical factory default PHY initialization byte table for ESP32-C6.
+ * Passed to register_chipv7_phy() during radio baseband bringup.
+ */
 const esp_phy_init_data_t phy_init_data = { {
     0x0a, 0x00, 0x50, 0x50, 0x50, 0x50, 0x50, 0x4c, 0x4c, 0x4c, 0x4c, 0x48, 0x44, 0x3c, 0x3c, 0x3c,
     0x4c, 0x4c, 0x4c, 0x48, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,

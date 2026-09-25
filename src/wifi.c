@@ -16,9 +16,8 @@
 #include "regs/modem_rf.h"
 
 #if defined(__riscv)
-#include "esp_wifi.h"
-#include "esp_wifi_he_types.h"
-#include "esp_private/wifi.h"
+#include "wifi_vendor_types.h"
+#include "wifi_regulatory.h"
 #include "wifi_os_adapter.h"
 #include "systimer.h"
 #include "task.h"
@@ -836,10 +835,6 @@ static volatile uint32_t s_sniffer_beacons = 0U;
 #define IEEE80211_MIN_MGMT_HEADER_LEN  24U
 #define IEEE80211_TAGGED_PARAM_OFFSET  36U
 
-typedef struct {
-    esp_wifi_rxctrl_t rx_ctrl;
-    uint8_t payload[0];
-} wifi_promiscuous_pkt_t;
 
 static void wifi_promiscuous_rx_callback(void *buf, wifi_promiscuous_pkt_type_t type)
 {

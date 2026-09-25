@@ -11,7 +11,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
-#include "esp_private/wifi_os_adapter.h"
+#include "wifi_vendor_types.h"
 
 #ifdef __cplusplus
 extern "C" {

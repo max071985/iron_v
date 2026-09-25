@@ -25,9 +25,8 @@
 #include "regs/efuse.h"
 #include "regs/lp_peri.h"
 #include "regs/modem_rf.h"
-#include "esp_phy_init.h"
-#include "esp_private/wifi.h"
-#include "esp_event.h"
+#include "wifi_phy_data.h"
+#include "wifi_vendor_types.h"
 #include "wdt.h"
 
 /* ========================================================================= */

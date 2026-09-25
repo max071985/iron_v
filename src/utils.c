@@ -72,12 +72,14 @@ int mini_vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
         if (*fmt == '%')
         {
             fmt++;
-            /* Optional zero padding width */
+            /* Optional flags */
+            int left_justify = 0;
             int pad_zero = 0;
             int width = 0;
-            if (*fmt == '0')
+            while (*fmt == '-' || *fmt == '+' || *fmt == ' ' || *fmt == '0')
             {
-                pad_zero = 1;
+                if (*fmt == '-') left_justify = 1;
+                else if (*fmt == '0') pad_zero = 1;
                 fmt++;
             }
             while (*fmt >= '0' && *fmt <= '9')
@@ -85,22 +87,46 @@ int mini_vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
                 width = (width * 10) + (*fmt - '0');
                 fmt++;
             }
+            if (*fmt == '.')
+            {
+                fmt++;
+                while (*fmt >= '0' && *fmt <= '9') fmt++;
+            }
+            while (*fmt == 'l' || *fmt == 'h' || *fmt == 'z') fmt++;
 
             if (*fmt == 's')
             {
                 const char *s = va_arg(ap, const char *);
                 if (s == NULL) s = "(null)";
+                int slen = 0;
+                while (s[slen] != '\0') slen++;
+                if (!left_justify)
+                {
+                    while (width > slen && written < max_chars)
+                    {
+                        buf[written++] = ' ';
+                        width--;
+                    }
+                }
                 while (*s != '\0' && written < max_chars)
                 {
                     buf[written++] = *s++;
+                }
+                if (left_justify)
+                {
+                    while (width > slen && written < max_chars)
+                    {
+                        buf[written++] = ' ';
+                        width--;
+                    }
                 }
             }
             else if (*fmt == 'd' || *fmt == 'i')
             {
                 int val = va_arg(ap, int);
-                if (val < 0)
+                int is_neg = (val < 0);
+                if (is_neg)
                 {
-                    if (written < max_chars) buf[written++] = '-';
                     val = -val;
                 }
                 char num_buf[16];
@@ -111,14 +137,26 @@ int mini_vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
                     num_buf[n_idx++] = (char)('0' + (val % 10));
                     val /= 10;
                 }
-                while (width > n_idx && written < max_chars)
+                if (is_neg) num_buf[n_idx++] = '-';
+                if (!left_justify)
                 {
-                    buf[written++] = pad_zero ? '0' : ' ';
-                    width--;
+                    while (width > n_idx && written < max_chars)
+                    {
+                        buf[written++] = pad_zero ? '0' : ' ';
+                        width--;
+                    }
                 }
                 for (int i = n_idx - 1; i >= 0 && written < max_chars; i--)
                 {
                     buf[written++] = num_buf[i];
+                }
+                if (left_justify)
+                {
+                    while (width > n_idx && written < max_chars)
+                    {
+                        buf[written++] = ' ';
+                        width--;
+                    }
                 }
             }
             else if (*fmt == 'u')
@@ -132,14 +170,25 @@ int mini_vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
                     num_buf[n_idx++] = (char)('0' + (val % 10U));
                     val /= 10U;
                 }
-                while (width > n_idx && written < max_chars)
+                if (!left_justify)
                 {
-                    buf[written++] = pad_zero ? '0' : ' ';
-                    width--;
+                    while (width > n_idx && written < max_chars)
+                    {
+                        buf[written++] = pad_zero ? '0' : ' ';
+                        width--;
+                    }
                 }
                 for (int i = n_idx - 1; i >= 0 && written < max_chars; i--)
                 {
                     buf[written++] = num_buf[i];
+                }
+                if (left_justify)
+                {
+                    while (width > n_idx && written < max_chars)
+                    {
+                        buf[written++] = ' ';
+                        width--;
+                    }
                 }
             }
             else if (*fmt == 'x' || *fmt == 'X' || *fmt == 'p')
@@ -154,14 +203,34 @@ int mini_vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
                     hex_buf[h_idx++] = hex_digits[val & 0x0FU];
                     val >>= 4U;
                 }
-                while (width > h_idx && written < max_chars)
+                if (!left_justify)
                 {
-                    buf[written++] = pad_zero ? '0' : ' ';
-                    width--;
+                    while (width > h_idx && written < max_chars)
+                    {
+                        buf[written++] = pad_zero ? '0' : ' ';
+                        width--;
+                    }
                 }
                 for (int i = h_idx - 1; i >= 0 && written < max_chars; i--)
                 {
                     buf[written++] = hex_buf[i];
+                }
+                if (left_justify)
+                {
+                    while (width > h_idx && written < max_chars)
+                    {
+                        buf[written++] = ' ';
+                        width--;
+                    }
+                }
+            }
+            else if (*fmt == 'f')
+            {
+                (void)va_arg(ap, double);
+                const char *fstr = "0.00";
+                while (*fstr != '\0' && written < max_chars)
+                {
+                    buf[written++] = *fstr++;
                 }
             }
             else if (*fmt == 'c')

@@ -50,6 +50,13 @@
 #define WIFI_MIN_CHANNEL                1U
 #define WIFI_MAX_CHANNEL                14U
 
+/* NVS Table Byte Offsets for IEEE 802.11b Low Rate Configuration */
+#define WIFI_NVS_OFFSET_STA_LOW_RATE    1185U
+#define WIFI_NVS_OFFSET_AP_LOW_RATE     1341U
+#define WIFI_NVS_STUB_DEFAULT_HANDLE    1U
+#define WIFI_NVS_LOW_RATE_ENABLED       1U
+#define WIFI_COEX_STATUS_DEFAULT        1U
+
 /* Fallback Event Identifiers for Host Simulation */
 #define WIFI_VENDOR_EVENT_AP_START       12
 #define WIFI_VENDOR_EVENT_AP_STOP        13

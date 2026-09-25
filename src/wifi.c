@@ -33,6 +33,8 @@ static int32_t s_vendor_init_err = -999;
 static volatile bool s_wifi_scan_done = false;
 static uint8_t s_wifi_channel = 1U;
 static int8_t s_wifi_rssi = 0;
+extern void wDev_enable_low_rate(void);
+extern uint8_t *g_wifi_nvs;
 #endif
 
 /* Baseband DMA linkage & RF timing telemetry tracking (Task 3) */
@@ -45,6 +47,7 @@ static uint32_t s_tx_cca_start_ts = 0U;
 static bool s_wifi_ap_running = false;
 static char s_wifi_ap_ssid[WIFI_MAX_SSID_LEN + 1U] = {0};
 static uint8_t s_wifi_ap_channel = WIFI_DEFAULT_AP_CHANNEL;
+static bool s_wifi_cca_enabled = true;
 
 /* ========================================================================= */
 /* Static Storage: Pre-Allocated Packet Descriptor Rings in HP SRAM DRAM    */
@@ -407,25 +410,19 @@ wifi_status_t wifi_init(void)
     /* 6. Bind GDMA Channel 1 Outlink to TX descriptor ring */
     gdma_outlink_set(WIFI_GDMA_CHANNEL, &s_tx_packet_ring[0].dma_desc);
 
-    /* 7. Link GDMA descriptor physical base address to Modem SYSCON / RF DMA linkage registers (Task 3) */
+    /* 7. Store telemetry references for descriptor rings and timing parameters.
+     * NOTE: Physical silicon tracing proved that 0x600AD000/0x600AD004 are the MAC's
+     * hardware 64-bit microsecond TSF timer, and 0x600A4010-0x600A401C are hardware
+     * BSSID filter registers. They must NEVER be overwritten with DRAM pointers or
+     * delay constants, as doing so destroys 802.11 TBTT timing and filters. */
     s_rf_dma_linkage_addr = (uint32_t)(uintptr_t)&s_rx_packet_ring[0].dma_desc;
-#if defined(__riscv)
-    *MODEM_DATA_RF_DMA_DESC_ADDR_REG = s_rf_dma_linkage_addr;
-    *MODEM_DATA_TX_DMA_DESC_ADDR_REG = (uint32_t)(uintptr_t)&s_tx_packet_ring[0].dma_desc;
-    *MODEM_RF_DMA_BUF_REG            = MODEM_DATA_BASE_ADDR;
-    wifi_fence();
-#endif
-
-    /* 8. Initialize baseband front-end TX/RX timing coordination delays (Task 3) */
     s_bb_tx_on_delay  = WIFI_MAC_DEFAULT_BB_TX_ON_DELAY_US;
     s_tx_ramp_delay   = WIFI_MAC_DEFAULT_TX_RAMP_DELAY_US;
     s_tx_cca_start_ts = WIFI_MAC_DEFAULT_TX_CCA_START_TS_US;
+
 #if defined(__riscv)
-    *WIFI_MAC_BB_TX_ON_DELAY_REG  = s_bb_tx_on_delay;
-    *WIFI_MAC_TX_RAMP_DELAY_REG   = s_tx_ramp_delay;
-    *WIFI_MAC_TX_CCA_START_TS_REG = s_tx_cca_start_ts;
-    *WIFI_MAC_TX_CCA_END_TS_REG   = WIFI_MAC_DEFAULT_TX_CCA_END_TS_US;
-    wifi_fence();
+    /* Ensure CCA is enabled so normal carrier sense and TBTT can proceed */
+    wifi_set_cca_enabled(true);
 #endif
 
     s_wifi_telemetry.state = WIFI_STATE_IDLE;
@@ -436,6 +433,7 @@ wifi_status_t wifi_init(void)
     {
         wifi_os_adapter_init();
         wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+        cfg.nvs_enable = 1;
         cfg.feature_caps &= ~(CONFIG_FEATURE_FTM_INITIATOR_BIT);
         console_puts("[wifi] calling esp_wifi_init_internal...\r\n");
         lp_wdt_feed();
@@ -453,6 +451,7 @@ wifi_status_t wifi_init(void)
         {
             esp_wifi_set_mode(WIFI_MODE_STA);
             esp_wifi_set_storage(WIFI_STORAGE_RAM);
+            esp_wifi_set_ps(WIFI_PS_NONE);
             esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N | WIFI_PROTOCOL_11AX);
 
             wifi_country_t country = {
@@ -472,7 +471,6 @@ wifi_status_t wifi_init(void)
             sta_cfg.sta.threshold.rssi = WIFI_DEFAULT_SCAN_RSSI_THRESHOLD;
             sta_cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
             esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
-            modem_force_rx_agc();
 
             esp_wifi_internal_reg_rxcb(WIFI_IF_STA, wifi_vendor_rx_callback);
             wifi_os_adapter_register_wpa_stubs();
@@ -725,8 +723,6 @@ wifi_status_t wifi_scan(const char *ssid, uint8_t channel, bool passive, uint32_
     uint32_t last_s = 0;
     uint16_t ap_num = 0U;
 
-    modem_force_rx_agc();
-
     while (1)
     {
         s_wifi_scan_done = false;
@@ -955,7 +951,6 @@ wifi_status_t wifi_sniffer(uint8_t channel, uint32_t duration_sec)
     }
 
     esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
-    modem_force_rx_agc();
 
     wifi_promiscuous_filter_t filter = {
         .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA
@@ -1083,7 +1078,14 @@ wifi_status_t wifi_start_ap(const char *ssid, const char *password, uint8_t chan
             esp_wifi_stop();
         }
 
-        esp_wifi_set_mode(WIFI_MODE_AP);
+        esp_err_t err_mode = esp_wifi_set_mode(WIFI_MODE_AP);
+        if (err_mode != 0)
+        {
+            console_puts("[Wi-Fi] WARN: set_mode AP err=");
+            put_dec((uint32_t)err_mode);
+            console_puts("\r\n");
+        }
+        esp_wifi_set_ps(WIFI_PS_NONE);
         esp_wifi_set_protocol(WIFI_IF_AP, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
         esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW20);
         esp_wifi_set_max_tx_power(80);
@@ -1118,11 +1120,56 @@ wifi_status_t wifi_start_ap(const char *ssid, const char *password, uint8_t chan
         ap_cfg.ap.max_connection = WIFI_DEFAULT_AP_MAX_CONN;
         ap_cfg.ap.beacon_interval = WIFI_DEFAULT_AP_BEACON_INTERVAL_TU;
 
-        esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
-        esp_wifi_start();
-        modem_force_rx_agc();
-        modem_force_tx_pa();
-        wifi_set_cca_enabled(false);
+        esp_err_t err_cfg = esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
+        if (err_cfg != 0)
+        {
+            console_puts("[Wi-Fi] WARN: set_config AP err=");
+            put_dec((uint32_t)err_cfg);
+            console_puts("\r\n");
+        }
+
+        console_puts("[Wi-Fi] Starting AP stack...\r\n");
+        esp_wifi_config_11b_rate(WIFI_IF_AP, false);
+        esp_err_t err_start = esp_wifi_start();
+        if (err_start != 0)
+        {
+            console_puts("[Wi-Fi] WARN: esp_wifi_start err=");
+            put_dec((uint32_t)err_start);
+            console_puts("\r\n");
+        }
+        esp_wifi_set_ps(WIFI_PS_NONE);
+
+        /* Enable 802.11b low rate (1 Mbps DSSS) beacon frames in MAC and PHY */
+        if (g_wifi_nvs != NULL)
+        {
+            g_wifi_nvs[WIFI_NVS_OFFSET_STA_LOW_RATE] = WIFI_NVS_LOW_RATE_ENABLED;
+            g_wifi_nvs[WIFI_NVS_OFFSET_AP_LOW_RATE]  = WIFI_NVS_LOW_RATE_ENABLED;
+        }
+        wDev_enable_low_rate();
+        esp_wifi_config_11b_rate(WIFI_IF_AP, false);
+
+        /* Tune RF synthesizer to the SoftAP channel */
+        esp_err_t err_chan = esp_wifi_set_channel(s_wifi_ap_channel, WIFI_SECOND_CHAN_NONE);
+        if (err_chan != 0)
+        {
+            console_puts("[Wi-Fi] WARN: set_channel AP err=");
+            put_dec((uint32_t)err_chan);
+            console_puts("\r\n");
+        }
+
+        /* Assert Hardware Master RF Enable */
+        *MODEM_RF_ENABLE_REG |= MODEM_RF_ENABLE_MASTER_BIT;
+
+        wifi_country_t country = {
+            .cc = "01",
+            .schan = 1,
+            .nchan = 14,
+            .max_tx_power = 20,
+            .policy = WIFI_COUNTRY_POLICY_MANUAL
+        };
+        esp_wifi_set_country(&country);
+
+        wifi_fence();
 
         uint64_t start_wait = systimer_get_us();
         while (!s_wifi_ap_running &&
@@ -1184,18 +1231,21 @@ uint8_t wifi_get_ap_channel(void)
 
 wifi_status_t wifi_set_cca_enabled(bool enabled)
 {
+    s_wifi_cca_enabled = enabled;
 #if defined(__riscv)
     if (!enabled)
     {
-        *WIFI_MAC_PHY_CCA_CTRL_REG |= WIFI_MAC_PHY_CCA_DISABLE_MASK;
+        /* Force hardware baseband to ignore CCA / carrier sense busy hold-off */
+        *WIFI_MAC_DBG_CTRL_REG |= WIFI_MAC_DBG_TB_IGNORE_CCA_ENABLE_BIT;
+        *WIFI_MAC_PHY_CCA_CTRL_REG &= ~WIFI_MAC_PHY_CCA_BUSY_FORCE_MASK;
     }
     else
     {
-        *WIFI_MAC_PHY_CCA_CTRL_REG &= ~WIFI_MAC_PHY_CCA_DISABLE_MASK;
+        /* Restore standard CCA carrier sense operation */
+        *WIFI_MAC_DBG_CTRL_REG &= ~WIFI_MAC_DBG_TB_IGNORE_CCA_ENABLE_BIT;
+        *WIFI_MAC_PHY_CCA_CTRL_REG &= ~WIFI_MAC_PHY_CCA_BUSY_FORCE_MASK;
     }
     wifi_fence();
-#else
-    (void)enabled;
 #endif
     return WIFI_OK;
 }
@@ -1203,8 +1253,9 @@ wifi_status_t wifi_set_cca_enabled(bool enabled)
 bool wifi_is_cca_enabled(void)
 {
 #if defined(__riscv)
-    return (*WIFI_MAC_PHY_CCA_CTRL_REG & WIFI_MAC_PHY_CCA_DISABLE_MASK) == 0U;
+    return ((*WIFI_MAC_DBG_CTRL_REG & WIFI_MAC_DBG_TB_IGNORE_CCA_ENABLE_BIT) == 0U) &&
+           ((*WIFI_MAC_PHY_CCA_CTRL_REG & WIFI_MAC_PHY_CCA_BUSY_FORCE_MASK) == 0U);
 #else
-    return true;
+    return s_wifi_cca_enabled;
 #endif
 }

@@ -24,6 +24,7 @@
 #include "io_constants.h"
 #include "regs/efuse.h"
 #include "regs/lp_peri.h"
+#include "regs/modem_rf.h"
 #include "esp_phy_init.h"
 #include "esp_private/wifi.h"
 #include "esp_event.h"
@@ -1165,6 +1166,10 @@ static void phy_enable_wrapper(void)
     }
 
     phy_wifi_enable_set(1U);
+#if defined(__riscv)
+    *MODEM_RF_ENABLE_REG |= MODEM_RF_ENABLE_MASTER_BIT;
+    asm volatile("fence" ::: "memory");
+#endif
 }
 
 static void phy_disable_wrapper(void)
@@ -1269,17 +1274,36 @@ static void log_write_wrapper(unsigned int level, const char *tag, const char *f
 
 #define ESP_ERR_NVS_NOT_FOUND 0x1102
 
-/* NVS stubs (WIFI_NVS_ENABLED = 0) */
+/* NVS stubs (WIFI_NVS_ENABLED = 1 via memory defaults) */
 static int nvs_stub_set_i8(uint32_t handle, const char *key, int8_t value) { (void)handle; (void)key; (void)value; return 0; }
 static int nvs_stub_get_i8(uint32_t handle, const char *key, int8_t *out_val) { (void)handle; (void)key; (void)out_val; return ESP_ERR_NVS_NOT_FOUND; }
 static int nvs_stub_set_u8(uint32_t handle, const char *key, uint8_t value) { (void)handle; (void)key; (void)value; return 0; }
-static int nvs_stub_get_u8(uint32_t handle, const char *key, uint8_t *out_val) { (void)handle; (void)key; (void)out_val; return ESP_ERR_NVS_NOT_FOUND; }
+static int nvs_stub_get_u8(uint32_t handle, const char *key, uint8_t *out_val)
+{
+    (void)handle;
+    if (key != NULL && out_val != NULL)
+    {
+        if (strcmp(key, "ap.lowrate") == 0 ||
+            strcmp(key, "sta.lowrate") == 0 ||
+            strcmp(key, "lorate") == 0)
+        {
+            *out_val = (uint8_t)WIFI_NVS_LOW_RATE_ENABLED;
+            return 0;
+        }
+    }
+    return ESP_ERR_NVS_NOT_FOUND;
+}
 static int nvs_stub_set_u16(uint32_t handle, const char *key, uint16_t value) { (void)handle; (void)key; (void)value; return 0; }
 static int nvs_stub_get_u16(uint32_t handle, const char *key, uint16_t *out_val) { (void)handle; (void)key; (void)out_val; return ESP_ERR_NVS_NOT_FOUND; }
 static int nvs_open_stub(const char *name, unsigned int open_mode, uint32_t *out_handle)
 {
-    (void)name; (void)open_mode; (void)out_handle;
-    return ESP_ERR_NVS_NOT_FOUND;
+    (void)name;
+    (void)open_mode;
+    if (out_handle != NULL)
+    {
+        *out_handle = (uint32_t)WIFI_NVS_STUB_DEFAULT_HANDLE;
+    }
+    return 0;
 }
 static void nvs_stub_void(uint32_t handle) { (void)handle; }
 static int nvs_stub_commit(uint32_t handle) { (void)handle; return 0; }
@@ -1287,20 +1311,34 @@ static int nvs_stub_set_blob(uint32_t handle, const char *key, const void *val, 
 static int nvs_stub_get_blob(uint32_t handle, const char *key, void *val, size_t *len) { (void)handle; (void)key; (void)val; (void)len; return ESP_ERR_NVS_NOT_FOUND; }
 static int nvs_stub_erase_key(uint32_t handle, const char *key) { (void)handle; (void)key; return 0; }
 
-/* Coexistence stubs */
+/* Coexistence stubs & state tracking */
+static uint32_t s_coex_status = WIFI_COEX_STATUS_DEFAULT;
+
 static int coex_init_wrapper(void) { return 0; }
 static void coex_deinit_wrapper(void) {}
 static int coex_enable_wrapper(void) { return 0; }
 static void coex_disable_wrapper(void) {}
-static uint32_t coex_status_get_wrapper(void) { return 0U; }
+static uint32_t coex_status_get_wrapper(void) { return s_coex_status; }
 static void coex_condition_set_wrapper(uint32_t type, bool dissatisfy) { (void)type; (void)dissatisfy; }
 static int coex_wifi_request_wrapper(uint32_t event, uint32_t latency, uint32_t duration) { (void)event; (void)latency; (void)duration; return 0; }
 static int coex_wifi_release_wrapper(uint32_t event) { (void)event; return 0; }
 static int coex_wifi_channel_set_wrapper(uint8_t primary, uint8_t secondary) { (void)primary; (void)secondary; return 0; }
 static int coex_event_duration_get_wrapper(uint32_t event, uint32_t *duration) { (void)event; if (duration) *duration = 0; return 0; }
 static int coex_pti_get_wrapper(uint32_t event, uint8_t *pti) { (void)event; if (pti) *pti = 0; return 0; }
-static void coex_schm_status_bit_clear_wrapper(uint32_t type, uint32_t status) { (void)type; (void)status; }
-static void coex_schm_status_bit_set_wrapper(uint32_t type, uint32_t status) { (void)type; (void)status; }
+static void coex_schm_status_bit_clear_wrapper(uint32_t type, uint32_t status)
+{
+    (void)type;
+    s_coex_status &= ~status;
+    if (s_coex_status == 0U)
+    {
+        s_coex_status = WIFI_COEX_STATUS_DEFAULT;
+    }
+}
+static void coex_schm_status_bit_set_wrapper(uint32_t type, uint32_t status)
+{
+    (void)type;
+    s_coex_status |= status;
+}
 static int coex_schm_interval_set_wrapper(uint32_t interval) { (void)interval; return 0; }
 static uint32_t coex_schm_interval_get_wrapper(void) { return 0U; }
 static uint8_t coex_schm_curr_period_get_wrapper(void) { return 0U; }
@@ -1581,8 +1619,6 @@ void __wrap_ram_set_chan_freq_sw_start(uint32_t chan)
         put_hex(*MODEM_FE_FREQ_STATUS_REG);
         console_puts("\r\n");
     }
-
-    modem_force_rx_agc();
 }
 
 /* ========================================================================= */

@@ -30,6 +30,7 @@
 #include "ieee802154.h"
 #include "net.h"
 #include "tcp.h"
+#include "esp_private/wifi.h"
 
 static void print_help(void)
 {
@@ -1215,21 +1216,7 @@ static void shell_execute(char *input_buffer)
         char *subcmd = input_buffer + 3;
         while (*subcmd == ' ') subcmd++;
 
-        if (strncmp(subcmd, "adv", 3) == 0)
-        {
-            ble_status_t st = ble_gap_start_advertising();
-            if (st == BLE_OK)
-            {
-                console_puts("BLE GAP Advertising started successfully (Connectable undirected, interval 100ms).\r\n");
-            }
-            else
-            {
-                console_puts("Failed to start BLE GAP Advertising. Status: ");
-                put_dec((uint32_t)-st);
-                console_puts("\r\n");
-            }
-        }
-        else if (strncmp(subcmd, "stop", 4) == 0)
+        if (strncmp(subcmd, "adv stop", 8) == 0 || strncmp(subcmd, "stop", 4) == 0)
         {
             ble_status_t st = ble_gap_stop_advertising();
             if (st == BLE_OK)
@@ -1239,6 +1226,20 @@ static void shell_execute(char *input_buffer)
             else
             {
                 console_puts("Failed to stop BLE GAP Advertising. Status: ");
+                put_dec((uint32_t)-st);
+                console_puts("\r\n");
+            }
+        }
+        else if (strncmp(subcmd, "adv start", 9) == 0 || strcmp(subcmd, "adv") == 0 || strncmp(subcmd, "adv ", 4) == 0)
+        {
+            ble_status_t st = ble_gap_start_advertising();
+            if (st == BLE_OK)
+            {
+                console_puts("BLE GAP Advertising started successfully (Connectable undirected, interval 100ms).\r\n");
+            }
+            else
+            {
+                console_puts("Failed to start BLE GAP Advertising. Status: ");
                 put_dec((uint32_t)-st);
                 console_puts("\r\n");
             }
@@ -1558,6 +1559,56 @@ static void shell_execute(char *input_buffer)
                 put_hex(modem_get_rf_analog_switch1());
                 console_puts("\r\n");
             }
+        }
+        else if (strncmp(subcmd, "diag", 4) == 0 || strncmp(subcmd, "lmac", 4) == 0)
+        {
+#if defined(__riscv)
+            extern void dbg_lmac_rxtx_statis_dump(void);
+            extern void dbg_lmac_hw_statis_dump(void);
+            extern void dbg_lmac_statis_dump(void);
+            esp_wifi_internal_set_log_level(WIFI_LOG_VERBOSE);
+            esp_wifi_internal_set_log_mod(WIFI_LOG_MODULE_ALL, 0xFFFFFFFFU, true);
+            console_puts("=== LMAC RX/TX Statistics Dump ===\r\n");
+            dbg_lmac_rxtx_statis_dump();
+            console_puts("=== LMAC Hardware Statistics Dump ===\r\n");
+            dbg_lmac_hw_statis_dump();
+            console_puts("=== LMAC General Statistics Dump ===\r\n");
+            dbg_lmac_statis_dump();
+#else
+            console_puts("LMAC diagnostics only available on target hardware.\r\n");
+#endif
+        }
+        else if (strncmp(subcmd, "tone", 4) == 0)
+        {
+#if defined(__riscv)
+            extern void phy_tx_tone(uint8_t chan, uint8_t atten, uint8_t mode);
+            char *p = subcmd + 4;
+            while (*p == ' ') p++;
+            uint8_t chan = 1U;
+            if (*p >= '0' && *p <= '9')
+            {
+                chan = (uint8_t)(*p - '0');
+                p++;
+                if (*p >= '0' && *p <= '9')
+                {
+                    chan = (uint8_t)(chan * 10U + (*p - '0'));
+                }
+            }
+            if (chan > 0U)
+            {
+                console_puts("Emitting CW carrier tone on channel ");
+                put_dec((uint32_t)chan);
+                console_puts("...\r\n");
+                phy_tx_tone(chan, 0U, 0U);
+            }
+            else
+            {
+                console_puts("Stopping CW carrier tone...\r\n");
+                phy_tx_tone(0U, 0U, 0U);
+            }
+#else
+            console_puts("PHY tone only available on target hardware.\r\n");
+#endif
         }
         else
         {

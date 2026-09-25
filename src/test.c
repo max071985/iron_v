@@ -134,6 +134,15 @@ mem_access_t check_mem_access(uint32_t addr)
     /* 7. Memory-Mapped I/O Peripheral Space (0x60000000 - 0x600D0000) */
     if (addr >= PERIPHERAL_MMIO_START_ADDR && addr < PERIPHERAL_MMIO_END_ADDR)
     {
+        /* Reject unmapped reserved peripheral holes (TRM Tab 5.3-2):
+         * 0x60019000 - 0x6007FFFF (412 KB reserved hole, containing legacy USB 0x60043000)
+         * 0x6009A000 - 0x600A2FFF (36 KB reserved hole)
+         */
+        if ((addr >= 0x60019000U && addr <= 0x6007FFFFU) ||
+            (addr >= 0x6009A000U && addr <= 0x600A2FFFU))
+        {
+            return MEM_ACCESS_INVALID;
+        }
         return MEM_ACCESS_MMIO;
     }
 
@@ -197,7 +206,7 @@ void run_validation_suite(void)
     /* ------------------------------------------------------------- */
     total_tests++;
     print_test_header(1, "Memory Section Topology & Monotonicity",
-                      "Verify SRAM section layout conforms to 0x40800000 architecture");
+                      "Verify SRAM section layout conforms to Harvard architecture (164KB IRAM / 348KB DRAM)");
     
     uint32_t stext = (uint32_t)_stext;
     uint32_t etext = (uint32_t)_etext;
@@ -209,7 +218,7 @@ void run_validation_suite(void)
     uint32_t ebss = (uint32_t)_ebss;
     uint32_t stack_top = (uint32_t)_stack_top;
 
-    uart_puts("  Expected:    0x40800000 == _stext < _srodata < _sdata < _sbss < _stack_top(0x40880000)\r\n");
+    uart_puts("  Expected:    0x40800000 == _stext < _etext <= 0x40828FFF, 0x40829000 <= _srodata < _stack_top(0x40880000)\r\n");
     uart_puts("  Actual:      _stext=");
     put_hex(stext);
     uart_puts(" _srodata=");
@@ -224,6 +233,8 @@ void run_validation_suite(void)
 
     int t1_pass = (stext == 0x40800000U) &&
                   (stext < etext) &&
+                  (etext <= 0x40828FFFU) &&
+                  (srodata >= 0x40829000U) &&
                   (etext <= srodata) &&
                   (srodata < erodata) &&
                   (erodata <= sdata) &&
@@ -362,19 +373,23 @@ void run_validation_suite(void)
     mem_access_t null_access = check_mem_access(0x00000000U);
     mem_access_t oob_sram = check_mem_access(0x40900000U);
     mem_access_t high_addr = check_mem_access(0xFFFFFFFCU);
+    mem_access_t legacy_usb = check_mem_access(0x60043000U);
 
-    uart_puts("  Expected:    Null=INVALID(0), OOB_SRAM=INVALID(0), HighAddr=INVALID(0)\r\n");
+    uart_puts("  Expected:    Null=INVALID(0), OOB_SRAM=INVALID(0), HighAddr=INVALID(0), Hole=INVALID(0)\r\n");
     uart_puts("  Actual:      Null=");
     put_dec((uint32_t)null_access);
     uart_puts(", OOB_SRAM=");
     put_dec((uint32_t)oob_sram);
     uart_puts(", HighAddr=");
     put_dec((uint32_t)high_addr);
+    uart_puts(", Hole=");
+    put_dec((uint32_t)legacy_usb);
     uart_puts("\r\n");
 
     int t6_pass = (null_access == MEM_ACCESS_INVALID) &&
                   (oob_sram == MEM_ACCESS_INVALID) &&
-                  (high_addr == MEM_ACCESS_INVALID);
+                  (high_addr == MEM_ACCESS_INVALID) &&
+                  (legacy_usb == MEM_ACCESS_INVALID);
     if (t6_pass) passed_tests++;
     print_result(t6_pass);
 
@@ -1284,8 +1299,8 @@ void run_validation_suite(void)
     int apm_init_ok = (apm_init() == APM_OK);
 
     /* 2. Configure PMP Region 0 over kernel data with read-only permission in User Mode */
-    /* DRAM data partition starts at HP_DRAM_START_ADDR; naturally aligned to 64KB (0x10000) */
-    uint32_t kernel_data_base = HP_DRAM_START_ADDR;
+    /* DRAM test window inside HP_DRAM; naturally aligned to 64KB (0x10000) for NAPOT */
+    uint32_t kernel_data_base = 0x40830000U;
     uint32_t kernel_data_len  = 65536U; /* 64 KB */
 
     pmp_region_cfg_t pmp_r0 = {

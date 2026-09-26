@@ -25,6 +25,7 @@
 #include "modem.h"
 #include "ble.h"
 #include "ble_gatt.h"
+#include "ble_npl.h"
 #include "wifi.h"
 #include "ieee802154.h"
 #include "net.h"
@@ -1406,6 +1407,15 @@ static void test_lp_wdt_subsystem(void)
     TEST_ASSERT(LP_WDT_WDTCONFIG0_WDT_EN_M == 0x80000000U, "LP_WDT_WDTCONFIG0_WDT_EN_M is bit 31");
 }
 
+static void npl_test_event_handler(struct ble_npl_event *ev)
+{
+    if (ev != NULL && ev->arg != NULL)
+    {
+        uint32_t *counter = (uint32_t *)ev->arg;
+        (*counter)++;
+    }
+}
+
 static void test_ble_gatt_subsystem(void)
 {
     printf("  [TEST] Bluetooth 5 (LE) Controller Driver & Minimal GATT Server (Task 5.2)...\n");
@@ -1550,6 +1560,125 @@ static void test_ble_gatt_subsystem(void)
     TEST_ASSERT(gatt_db_write(0x9999U, write_data, 10U) == GATT_ERR_INVALID_HANDLE, "Write invalid handle rejected");
     TEST_ASSERT(gatt_db_read(0x0001U, NULL, sizeof(read_buf), &read_len) == GATT_ERR_INVALID_ARG, "Read with NULL buffer rejected");
     TEST_ASSERT(gatt_db_write(0x000FU, NULL, 10U) == GATT_ERR_INVALID_ARG, "Write with NULL data rejected");
+
+    /* 8. NimBLE Porting Layer (NPL) Bare-Metal Event Queue & FIFO Ordering */
+    struct ble_npl_eventq test_q;
+    ble_npl_eventq_init(&test_q);
+    TEST_ASSERT(ble_npl_eventq_is_empty(&test_q) == true, "New event queue is initially empty");
+
+    uint32_t c1 = 0U, c2 = 0U, c3 = 0U;
+    struct ble_npl_event ev1, ev2, ev3;
+    ble_npl_event_init(&ev1, npl_test_event_handler, &c1);
+    ble_npl_event_init(&ev2, npl_test_event_handler, &c2);
+    ble_npl_event_init(&ev3, npl_test_event_handler, &c3);
+
+    TEST_ASSERT(ble_npl_event_is_queued(&ev1) == false, "ev1 not queued before put");
+    TEST_ASSERT(ble_npl_event_get_arg(&ev1) == &c1, "ev1 arg points to c1");
+
+    ble_npl_eventq_put(&test_q, &ev1);
+    ble_npl_eventq_put(&test_q, &ev2);
+    ble_npl_eventq_put(&test_q, &ev3);
+
+    TEST_ASSERT(ble_npl_event_is_queued(&ev1) == true, "ev1 is marked queued");
+    TEST_ASSERT(ble_npl_event_is_queued(&ev2) == true, "ev2 is marked queued");
+    TEST_ASSERT(ble_npl_event_is_queued(&ev3) == true, "ev3 is marked queued");
+    TEST_ASSERT(ble_npl_eventq_is_empty(&test_q) == false, "test_q is not empty");
+    TEST_ASSERT(test_q.count == 3U, "Queue count is 3");
+
+    /* Verify strict FIFO dequeue order */
+    struct ble_npl_event *popped = ble_npl_eventq_get(&test_q, 0U);
+    TEST_ASSERT(popped == &ev1, "First dequeued event is ev1 (FIFO)");
+    TEST_ASSERT(ble_npl_event_is_queued(&ev1) == false, "ev1 unqueued after pop");
+    ble_npl_event_run(popped);
+    TEST_ASSERT(c1 == 1U, "ev1 callback executed, c1 incremented to 1");
+
+    popped = ble_npl_eventq_get(&test_q, 0U);
+    TEST_ASSERT(popped == &ev2, "Second dequeued event is ev2 (FIFO)");
+    ble_npl_event_run(popped);
+    TEST_ASSERT(c2 == 1U, "ev2 callback executed, c2 incremented to 1");
+
+    popped = ble_npl_eventq_get(&test_q, 0U);
+    TEST_ASSERT(popped == &ev3, "Third dequeued event is ev3 (FIFO)");
+    ble_npl_event_run(popped);
+    TEST_ASSERT(c3 == 1U, "ev3 callback executed, c3 incremented to 1");
+
+    TEST_ASSERT(ble_npl_eventq_get(&test_q, 0U) == NULL, "Empty queue returns NULL on get");
+    TEST_ASSERT(ble_npl_eventq_is_empty(&test_q) == true, "Queue is empty after all events popped");
+
+    /* Test event queue removal */
+    ble_npl_eventq_put(&test_q, &ev1);
+    ble_npl_eventq_put(&test_q, &ev2);
+    ble_npl_eventq_put(&test_q, &ev3);
+    ble_npl_eventq_remove(&test_q, &ev2);
+    TEST_ASSERT(ble_npl_event_is_queued(&ev2) == false, "ev2 removed and marked not queued");
+    TEST_ASSERT(test_q.count == 2U, "Queue count decremented to 2");
+
+    popped = ble_npl_eventq_get(&test_q, 0U);
+    TEST_ASSERT(popped == &ev1, "Dequeued event after middle removal is ev1");
+    popped = ble_npl_eventq_get(&test_q, 0U);
+    TEST_ASSERT(popped == &ev3, "Dequeued event after middle removal is ev3");
+    TEST_ASSERT(ble_npl_eventq_get(&test_q, 0U) == NULL, "Queue empty after removing ev2 and getting ev1, ev3");
+
+    /* 9. NPL Critical Section Nesting Depth */
+    TEST_ASSERT(ble_npl_hw_get_critical_depth() == 0U, "Initial critical depth is 0");
+    TEST_ASSERT(ble_npl_hw_is_in_critical() == false, "Initially not in critical section");
+
+    uint32_t ctx_outer = ble_npl_hw_enter_critical();
+    TEST_ASSERT(ble_npl_hw_get_critical_depth() == 1U, "Critical depth 1 after outer enter");
+    TEST_ASSERT(ble_npl_hw_is_in_critical() == true, "In critical section at depth 1");
+
+    uint32_t ctx_inner = ble_npl_hw_enter_critical();
+    TEST_ASSERT(ble_npl_hw_get_critical_depth() == 2U, "Critical depth 2 after nested enter");
+
+    ble_npl_hw_exit_critical(ctx_inner);
+    TEST_ASSERT(ble_npl_hw_get_critical_depth() == 1U, "Critical depth 1 after inner exit");
+    TEST_ASSERT(ble_npl_hw_is_in_critical() == true, "Still in critical section at depth 1");
+
+    ble_npl_hw_exit_critical(ctx_outer);
+    TEST_ASSERT(ble_npl_hw_get_critical_depth() == 0U, "Critical depth 0 after outer exit");
+    TEST_ASSERT(ble_npl_hw_is_in_critical() == false, "No longer in critical section");
+
+    /* 10. Software Callout Timers & Background Service */
+    struct ble_npl_callout test_co;
+    uint32_t co_fire_count = 0U;
+    TEST_ASSERT(ble_npl_callout_init(&test_co, ble_npl_eventq_dflt_get(), npl_test_event_handler, &co_fire_count) == BLE_NPL_OK, "callout_init succeeds");
+    TEST_ASSERT(ble_npl_callout_is_active(&test_co) == false, "Callout initially inactive");
+
+    TEST_ASSERT(ble_npl_callout_reset(&test_co, 50U) == BLE_NPL_OK, "callout_reset for 50 ticks succeeds");
+    TEST_ASSERT(ble_npl_callout_is_active(&test_co) == true, "Callout is active after reset");
+    TEST_ASSERT(ble_npl_callout_get_ticks(&test_co) >= 50U, "Callout expiration timestamp recorded");
+
+    /* Advance time and service background */
+    ble_npl_time_delay(50U);
+    ble_npl_service_background();
+    TEST_ASSERT(co_fire_count == 1U, "Callout callback fired via ble_npl_service_background");
+    TEST_ASSERT(ble_npl_callout_is_active(&test_co) == false, "Callout inactive after expiration");
+
+    /* Test callout stop */
+    ble_npl_callout_reset(&test_co, 100U);
+    TEST_ASSERT(ble_npl_callout_is_active(&test_co) == true, "Callout active after second reset");
+    ble_npl_callout_stop(&test_co);
+    TEST_ASSERT(ble_npl_callout_is_active(&test_co) == false, "Callout inactive after stop");
+
+    /* 11. Mutex & Semaphore Synchronization */
+    struct ble_npl_mutex test_mu;
+    TEST_ASSERT(ble_npl_mutex_init(&test_mu) == BLE_NPL_OK, "mutex_init succeeds");
+    TEST_ASSERT(ble_npl_mutex_pend(&test_mu, 0U) == BLE_NPL_OK, "mutex_pend succeeds when unlocked");
+    TEST_ASSERT(ble_npl_mutex_pend(&test_mu, 0U) == BLE_NPL_ETIMEOUT, "mutex_pend fails with timeout when locked");
+    TEST_ASSERT(ble_npl_mutex_release(&test_mu) == BLE_NPL_OK, "mutex_release succeeds");
+    TEST_ASSERT(ble_npl_mutex_pend(&test_mu, 0U) == BLE_NPL_OK, "mutex_pend succeeds after release");
+    ble_npl_mutex_release(&test_mu);
+
+    struct ble_npl_sem test_sem;
+    TEST_ASSERT(ble_npl_sem_init(&test_sem, 2U) == BLE_NPL_OK, "sem_init with 2 tokens succeeds");
+    TEST_ASSERT(ble_npl_sem_get_count(&test_sem) == 2U, "Initial token count is 2");
+    TEST_ASSERT(ble_npl_sem_pend(&test_sem, 0U) == BLE_NPL_OK, "First pend consumes token");
+    TEST_ASSERT(ble_npl_sem_get_count(&test_sem) == 1U, "Token count is 1");
+    TEST_ASSERT(ble_npl_sem_pend(&test_sem, 0U) == BLE_NPL_OK, "Second pend consumes token");
+    TEST_ASSERT(ble_npl_sem_get_count(&test_sem) == 0U, "Token count is 0");
+    TEST_ASSERT(ble_npl_sem_pend(&test_sem, 0U) == BLE_NPL_ETIMEOUT, "Third pend times out");
+    TEST_ASSERT(ble_npl_sem_release(&test_sem) == BLE_NPL_OK, "sem_release increments token");
+    TEST_ASSERT(ble_npl_sem_get_count(&test_sem) == 1U, "Token count restored to 1");
 }
 
 static void test_wifi_mac_subsystem(void)

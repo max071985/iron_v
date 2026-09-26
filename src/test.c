@@ -23,6 +23,7 @@
 #include "modem.h"
 #include "ble.h"
 #include "ble_gatt.h"
+#include "ble_npl.h"
 #include "wifi.h"
 #include "ieee802154.h"
 #include "net.h"
@@ -31,6 +32,16 @@
 /* Route all test output to unified dual-console multiplexer */
 #define uart_puts console_puts
 #define uart_putc console_putc
+
+static void test_onchip_npl_cb(struct ble_npl_event *ev)
+{
+    if (ev != NULL && ev->arg != NULL)
+    {
+        uint32_t *flag = (uint32_t *)ev->arg;
+        (*flag) = 1U;
+    }
+}
+
 
 /* TEST 28 Static Allocation in HP SRAM DRAM */
 static dma_descriptor_t s_test_desc0 __attribute__((aligned(4)));
@@ -2034,9 +2045,44 @@ void run_validation_suite(void)
     int gap_pass = gap_adv_start_ok && gap_state_adv_ok && hw_adv_active_ok &&
                    gap_adv_stop_ok && gap_state_std_ok && hw_adv_stopped_ok;
 
+    /* 6. Validate NimBLE Porting Layer (NPL) Bare-Metal Event Queue & Critical Sections */
+    struct ble_npl_eventq onchip_evq;
+    ble_npl_eventq_init(&onchip_evq);
+    int evq_empty_init = ble_npl_eventq_is_empty(&onchip_evq);
+
+    uint32_t onchip_ev_flag = 0U;
+    struct ble_npl_event onchip_ev;
+    ble_npl_event_init(&onchip_ev, test_onchip_npl_cb, &onchip_ev_flag);
+    int ev_init_ok = (!ble_npl_event_is_queued(&onchip_ev)) && (ble_npl_event_get_arg(&onchip_ev) == &onchip_ev_flag);
+
+    ble_npl_eventq_put(&onchip_evq, &onchip_ev);
+    int ev_queued_ok = ble_npl_event_is_queued(&onchip_ev) && (!ble_npl_eventq_is_empty(&onchip_evq));
+
+    struct ble_npl_event *popped_ev = ble_npl_eventq_get(&onchip_evq, 0U);
+    int ev_pop_ok = (popped_ev == &onchip_ev) && (!ble_npl_event_is_queued(&onchip_ev)) && ble_npl_eventq_is_empty(&onchip_evq);
+    if (popped_ev != NULL)
+    {
+        ble_npl_event_run(popped_ev);
+    }
+    int ev_exec_ok = (onchip_ev_flag == 1U);
+
+    /* Critical Section nesting check */
+    uint32_t c_depth0 = ble_npl_hw_get_critical_depth();
+    uint32_t c_ctx1 = ble_npl_hw_enter_critical();
+    uint32_t c_depth1 = ble_npl_hw_get_critical_depth();
+    uint32_t c_ctx2 = ble_npl_hw_enter_critical();
+    uint32_t c_depth2 = ble_npl_hw_get_critical_depth();
+    ble_npl_hw_exit_critical(c_ctx2);
+    uint32_t c_depth3 = ble_npl_hw_get_critical_depth();
+    ble_npl_hw_exit_critical(c_ctx1);
+    uint32_t c_depth4 = ble_npl_hw_get_critical_depth();
+    int crit_nest_ok = (c_depth0 == 0U) && (c_depth1 == 1U) && (c_depth2 == 2U) && (c_depth3 == 1U) && (c_depth4 == 0U);
+
+    int npl_pass = evq_empty_init && ev_init_ok && ev_queued_ok && ev_pop_ok && ev_exec_ok && crit_nest_ok;
+
     wdt_feed();
 
-    uart_puts("  Expected:    Init=1, MAC=1, HCIReset=1, BoundedTime=1, GATT=1, GAPAdv=1, HWAdv=1\r\n");
+    uart_puts("  Expected:    Init=1, MAC=1, HCIReset=1, BoundedTime=1, GATT=1, GAPAdv=1, HWAdv=1, NPL=1\r\n");
     uart_puts("  Actual:      Init=");
     put_dec(ble_init_ok);
     uart_puts(", MAC=");
@@ -2051,6 +2097,8 @@ void run_validation_suite(void)
     put_dec(gap_pass);
     uart_puts(", HWAdv=");
     put_dec(hw_adv_active_ok && hw_adv_stopped_ok);
+    uart_puts(", NPL=");
+    put_dec(npl_pass);
     uart_puts("\r\n");
 
     uart_puts("  Diag: BD_ADDR=");
@@ -2067,7 +2115,7 @@ void run_validation_suite(void)
     put_hex(evt_buf[6]);
     uart_puts("\r\n");
 
-    int t30_pass = ble_init_ok && mac_ok && hci_reset_pass && latency_bounded && gatt_pass && gap_pass;
+    int t30_pass = ble_init_ok && mac_ok && hci_reset_pass && latency_bounded && gatt_pass && gap_pass && npl_pass;
     if (t30_pass) passed_tests++;
     print_result(t30_pass);
 

@@ -25,6 +25,7 @@
 #include "modem.h"
 #include "ble.h"
 #include "ble_gatt.h"
+#include "ble_npl.h"
 #include "wifi.h"
 #include "wifi_os_adapter.h"
 #include "ieee802154.h"
@@ -1330,6 +1331,12 @@ static void shell_execute(char *input_buffer)
             console_puts("  GATT Database:     ");
             put_dec(gatt_db_get_count());
             console_puts(" attributes (0x1800 GAP, 0x180A DevInfo, 0xFFE0 Custom)\r\n");
+            console_puts("  NPL Event Queue:   ");
+            put_dec(ble_npl_get_processed_count());
+            console_puts(" events processed\r\n");
+            console_puts("  NPL Active Timers: ");
+            put_dec(ble_npl_get_active_callout_count());
+            console_puts("\r\n");
         }
     }
     else if (strncmp(input_buffer, "wifi", 4) == 0 && (input_buffer[4] == ' ' || input_buffer[4] == '\0'))
@@ -2162,6 +2169,7 @@ void main(void)
         dpc_process_all();
         tcp_tick();
         wifi_os_adapter_poll();
+        ble_npl_service_background();
         shell_tick();
         task_yield();
     }

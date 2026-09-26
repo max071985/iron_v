@@ -42,6 +42,22 @@ static bool s_ble_initialized = false;
 static uint8_t s_active_adv_data[31];
 static uint8_t s_active_adv_len = 0U;
 
+static struct ble_npl_callout s_ble_adv_callout;
+
+static void ble_adv_callout_cb(struct ble_npl_event *ev)
+{
+    (void)ev;
+    if (s_ble_telemetry.state == BLE_STATE_ADVERTISING)
+    {
+        /* Pulse bare-metal Link Layer hardware advertising trigger */
+        ble_hw_start_advertising();
+        s_ble_telemetry.tx_packets++;
+
+        /* Rearm callout for next advertising interval (100 ms) */
+        ble_npl_callout_reset(&s_ble_adv_callout, ble_npl_time_ms_to_ticks32(BLE_ADV_INTERVAL_DEFAULT_MS));
+    }
+}
+
 /* ========================================================================= */
 /* Static Storage: GATT Database                                             */
 /* ========================================================================= */
@@ -273,7 +289,10 @@ ble_status_t ble_init(void)
     s_ble_telemetry.adv_start_count = 0U;
     s_ble_telemetry.adv_stop_count = 0U;
 
-    /* 5. Initialize static GATT attribute database */
+    /* 5. Initialize NimBLE NPL advertising callout */
+    ble_npl_callout_init(&s_ble_adv_callout, ble_npl_eventq_dflt_get(), ble_adv_callout_cb, NULL);
+
+    /* 6. Initialize static GATT attribute database */
     gatt_db_init();
 
     s_ble_initialized = true;
@@ -608,11 +627,15 @@ ble_status_t ble_gap_start_advertising(void)
         return status;
     }
 
-    return ble_hw_start_advertising();
+    ble_status_t hw_st = ble_hw_start_advertising();
+    ble_npl_callout_reset(&s_ble_adv_callout, ble_npl_time_ms_to_ticks32(BLE_ADV_INTERVAL_DEFAULT_MS));
+    return hw_st;
 }
 
 ble_status_t ble_gap_stop_advertising(void)
 {
+    ble_npl_callout_stop(&s_ble_adv_callout);
+
     uint8_t disable_pkt[5];
     disable_pkt[0] = HCI_PKT_TYPE_CMD;
     disable_pkt[1] = (uint8_t)(HCI_OPCODE_LE_SET_ADV_ENABLE & 0xFFU);

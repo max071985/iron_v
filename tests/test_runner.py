@@ -322,7 +322,7 @@ def run_suite():
     native_desc = ""
     if not os.path.exists(native_test_bin):
         comp = subprocess.run(
-            ["gcc", "-O2", "-fno-tree-loop-distribute-patterns", "-Wall", "-Wextra", "-Werror", "-Isrc", "tests/test_freestanding.c", "src/string.c", "src/mmu.c", "src/dpc.c", "src/arena.c", "src/pmp.c", "src/lp_core.c", "src/power.c", "src/gpio.c", "src/gdma.c", "src/modem.c", "src/ble.c", "src/wifi.c", "src/ieee802154.c", "src/net.c", "src/tcp.c", "src/wifi_os_adapter.c", "src/wifi_regulatory.c", "src/wifi_ftm_cal.c", "src/wifi_phy_data.c", "-o", native_test_bin],
+            ["gcc", "-O2", "-fno-tree-loop-distribute-patterns", "-Wall", "-Wextra", "-Werror", "-Isrc", "tests/test_freestanding.c", "src/string.c", "src/mmu.c", "src/dpc.c", "src/arena.c", "src/pmp.c", "src/lp_core.c", "src/power.c", "src/gpio.c", "src/gdma.c", "src/modem.c", "src/ble.c", "src/ble_npl.c", "src/wifi.c", "src/ieee802154.c", "src/net.c", "src/tcp.c", "src/wifi_os_adapter.c", "src/wifi_regulatory.c", "src/wifi_ftm_cal.c", "src/wifi_phy_data.c", "-o", native_test_bin],
             capture_output=True, text=True
         )
         if comp.returncode != 0:
@@ -942,7 +942,18 @@ def run_suite():
         "gatt_db_find_by_handle",
         "gatt_db_find_by_uuid",
         "gatt_db_read",
-        "gatt_db_write"
+        "gatt_db_write",
+        "ble_npl_event_init",
+        "ble_npl_eventq_init",
+        "ble_npl_eventq_put",
+        "ble_npl_eventq_get",
+        "ble_npl_callout_init",
+        "ble_npl_callout_reset",
+        "ble_npl_callout_stop",
+        "ble_npl_time_get",
+        "ble_npl_hw_enter_critical",
+        "ble_npl_hw_exit_critical",
+        "ble_npl_service_background"
     ]
     found_ble_syms = [s for s in ble_syms if s in symbols]
     all_ble_found = len(found_ble_syms) == len(ble_syms)

@@ -348,6 +348,7 @@ modem_status_t modem_enable_all_clocks(void);
 /* Coexistence low-power clock controls */
 modem_status_t modem_enable_coexistence(void);
 modem_status_t modem_disable_coexistence(void);
+bool modem_validate_coexistence(void);
 
 /* Telemetry and state query APIs */
 modem_status_t modem_get_clock_state(modem_clock_state_t *state);

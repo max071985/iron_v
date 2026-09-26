@@ -359,6 +359,7 @@ modem_status_t modem_init(void)
     /* 5. Configure RF Coexistence Low-Power Clock (Select XTAL source) */
     reg_set_bits(MODEM_LPCON_COEX_LP_CLK_CONF_REG, MODEM_LPCON_CLK_COEX_LP_SEL_XTAL_BIT);
     reg_set_bits(MODEM_LPCON_CLK_CONF_REG, MODEM_LPCON_CLK_COEX_EN_BIT);
+    reg_clear_bits(MODEM_LPCON_RST_CONF_REG, MODEM_LPCON_RST_COEX_BIT);
 
     /* 6. Enable common modem security accelerator and base BLE timer clocks */
     modem_enable_i2c_ana_mst();
@@ -879,15 +880,30 @@ modem_status_t modem_enable_coexistence(void)
 {
     reg_set_bits(MODEM_LPCON_COEX_LP_CLK_CONF_REG, MODEM_LPCON_CLK_COEX_LP_SEL_XTAL_BIT);
     reg_set_bits(MODEM_LPCON_CLK_CONF_REG, MODEM_LPCON_CLK_COEX_EN_BIT);
+    reg_clear_bits(MODEM_LPCON_RST_CONF_REG, MODEM_LPCON_RST_COEX_BIT);
     s_modem_state.coexistence_enabled = 1U;
     return MODEM_OK;
 }
 
 modem_status_t modem_disable_coexistence(void)
 {
+    reg_set_bits(MODEM_LPCON_RST_CONF_REG, MODEM_LPCON_RST_COEX_BIT);
     reg_clear_bits(MODEM_LPCON_CLK_CONF_REG, MODEM_LPCON_CLK_COEX_EN_BIT);
     s_modem_state.coexistence_enabled = 0U;
     return MODEM_OK;
+}
+
+bool modem_validate_coexistence(void)
+{
+    uint32_t lpcon_clk = reg_read(MODEM_LPCON_CLK_CONF_REG);
+    uint32_t coex_clk = reg_read(MODEM_LPCON_COEX_LP_CLK_CONF_REG);
+    uint32_t rst_conf = reg_read(MODEM_LPCON_RST_CONF_REG);
+
+    bool clk_en = ((lpcon_clk & MODEM_LPCON_CLK_COEX_EN_BIT) != 0U);
+    bool xtal_sel = ((coex_clk & MODEM_LPCON_CLK_COEX_LP_SEL_XTAL_BIT) != 0U);
+    bool rst_cleared = ((rst_conf & MODEM_LPCON_RST_COEX_BIT) == 0U);
+
+    return (clk_en && xtal_sel && rst_cleared && (s_modem_state.coexistence_enabled != 0U));
 }
 
 /* ========================================================================= */

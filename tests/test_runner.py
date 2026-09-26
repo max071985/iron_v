@@ -901,7 +901,8 @@ def run_suite():
         "modem_is_wifi_enabled",
         "modem_is_ble_enabled",
         "modem_is_ieee802154_enabled",
-        "modem_is_coex_enabled"
+        "modem_is_coex_enabled",
+        "modem_validate_coexistence"
     ]
     found_modem_syms = [s for s in modem_syms if s in symbols]
     all_modem_found = len(found_modem_syms) == len(modem_syms)

@@ -35,6 +35,7 @@
 #include "wifi_regulatory.h"
 #include "wifi_ftm_cal.h"
 #include "wifi_phy_data.h"
+#include "test.h"
 
 /* Freestanding function aliases matching runtime naming conventions */
 static inline size_t s_strlen(const char *s)
@@ -1255,6 +1256,7 @@ static void test_modem_subsystem(void)
 
     TEST_ASSERT((uintptr_t)MODEM_LPCON_COEX_LP_CLK_CONF_REG == 0x600AF008U, "MODEM_LPCON_COEX_LP_CLK_CONF_REG address calculation");
     TEST_ASSERT((uintptr_t)MODEM_LPCON_CLK_CONF_REG == 0x600AF018U, "MODEM_LPCON_CLK_CONF_REG address calculation");
+    TEST_ASSERT((uintptr_t)MODEM_LPCON_RST_CONF_REG == 0x600AF024U, "MODEM_LPCON_RST_CONF_REG address calculation");
     TEST_ASSERT((uintptr_t)MODEM_LPCON_DATE_REG == 0x600AF02CU, "MODEM_LPCON_DATE_REG address calculation");
 
     TEST_ASSERT((uintptr_t)IEEE802154_COMMAND_REG == 0x600A3000U, "IEEE802154_COMMAND_REG address calculation");
@@ -1357,8 +1359,10 @@ static void test_modem_subsystem(void)
     /* 8. Coexistence Clock Transitions */
     TEST_ASSERT(modem_disable_coexistence() == MODEM_OK, "modem_disable_coexistence succeeds");
     TEST_ASSERT(!modem_is_coex_enabled(), "modem_is_coex_enabled reports false");
+    TEST_ASSERT(!modem_validate_coexistence(), "modem_validate_coexistence reports false when coex disabled");
     TEST_ASSERT(modem_enable_coexistence() == MODEM_OK, "modem_enable_coexistence succeeds");
     TEST_ASSERT(modem_is_coex_enabled(), "modem_is_coex_enabled reports true");
+    TEST_ASSERT(modem_validate_coexistence(), "modem_validate_coexistence reports true when coex enabled");
 
     /* 9. Orchestrated Wireless Subsystems Activation (TEST 29 Stimulus) */
     TEST_ASSERT(modem_enable_all_clocks() == MODEM_OK, "modem_enable_all_clocks succeeds");
@@ -3123,6 +3127,119 @@ static void test_console_line_reader_edge_cases(void)
     TEST_ASSERT(out[0] == '\0', "Empty line output is empty string");
 }
 
+static void test_multi_protocol_coex_and_soak_subsystem(void)
+{
+    printf("  [TEST] Multi-Protocol RF Coexistence Arbiter & Stability Soak Engine (Task 6)...\n");
+
+    /* 1. Register Architecture & Offsets */
+    TEST_ASSERT((uintptr_t)MODEM_LPCON_RST_CONF_REG == 0x600AF024U, "MODEM_LPCON_RST_CONF_REG address calculation");
+    TEST_ASSERT((uintptr_t)MODEM_LPCON_COEX_LP_CLK_CONF_REG == 0x600AF008U, "MODEM_LPCON_COEX_LP_CLK_CONF_REG address calculation");
+    TEST_ASSERT((uintptr_t)MODEM_LPCON_CLK_CONF_REG == 0x600AF018U, "MODEM_LPCON_CLK_CONF_REG address calculation");
+
+    /* 2. Coexistence Bitfield Mask Constants */
+    TEST_ASSERT(MODEM_LPCON_CLK_COEX_EN_BIT == (1U << 1), "MODEM_LPCON_CLK_COEX_EN_BIT is bit 1");
+    TEST_ASSERT(MODEM_LPCON_CLK_COEX_LP_SEL_XTAL_BIT == (1U << 2), "MODEM_LPCON_CLK_COEX_LP_SEL_XTAL_BIT is bit 2");
+    TEST_ASSERT(MODEM_LPCON_RST_COEX_BIT == (1U << 1), "MODEM_LPCON_RST_COEX_BIT is bit 1");
+
+    /* 3. Multi-Protocol Clock Gating & Coexistence Arbiter Synchronization */
+    TEST_ASSERT(modem_init() == MODEM_OK, "modem_init succeeds for coex validation");
+    TEST_ASSERT(modem_validate_coexistence(), "modem_validate_coexistence reports true after modem_init");
+
+    /* Test RF Coexistence with All Three Wireless Protocols Active */
+    TEST_ASSERT(modem_enable_wifi_clocks() == MODEM_OK, "modem_enable_wifi_clocks succeeds");
+    TEST_ASSERT(modem_enable_ble_clocks() == MODEM_OK, "modem_enable_ble_clocks succeeds");
+    TEST_ASSERT(modem_enable_ieee802154_clocks() == MODEM_OK, "modem_enable_ieee802154_clocks succeeds");
+    TEST_ASSERT(modem_validate_coexistence(), "modem_validate_coexistence reports true with Wi-Fi, BLE, 15.4 all active");
+
+    modem_clock_state_t cs;
+    TEST_ASSERT(modem_get_clock_state(&cs) == MODEM_OK, "modem_get_clock_state succeeds");
+    TEST_ASSERT(cs.wifi_clk_enabled == 1U, "Wi-Fi clock active in coex state");
+    TEST_ASSERT(cs.ble_clk_enabled == 1U, "BLE clock active in coex state");
+    TEST_ASSERT(cs.ieee802154_clk_enabled == 1U, "802.15.4 clock active in coex state");
+    TEST_ASSERT(cs.coexistence_enabled == 1U, "Coexistence arbiter active in coex state");
+
+    /* Verify deassertion / reassertion */
+    TEST_ASSERT(modem_disable_coexistence() == MODEM_OK, "modem_disable_coexistence succeeds");
+    TEST_ASSERT(!modem_validate_coexistence(), "modem_validate_coexistence reports false when disabled");
+    TEST_ASSERT(!modem_is_coex_enabled(), "modem_is_coex_enabled reports false");
+
+    TEST_ASSERT(modem_enable_coexistence() == MODEM_OK, "modem_enable_coexistence re-enables arbiter");
+    TEST_ASSERT(modem_validate_coexistence(), "modem_validate_coexistence reports true after re-enable");
+    TEST_ASSERT(modem_is_coex_enabled(), "modem_is_coex_enabled reports true");
+
+    /* 4. Soak Telemetry Data Geometry & Defaults */
+    TEST_ASSERT(TEST_SOAK_DEFAULT_CYCLES == 5U, "TEST_SOAK_DEFAULT_CYCLES is 5");
+    TEST_ASSERT(TEST_SOAK_DEFAULT_DELAY_MS == 50U, "TEST_SOAK_DEFAULT_DELAY_MS is 50");
+    TEST_ASSERT(sizeof(test_suite_result_t) == 16U, "sizeof(test_suite_result_t) is 16 bytes");
+    TEST_ASSERT(sizeof(test_soak_telemetry_t) >= 64U, "sizeof(test_soak_telemetry_t) has complete telemetry fields");
+
+    /* 5. Simulated Soak Benchmark Loop Verifying Zero Heap Leaks & Zero DPC Drops */
+    arena_init();
+    dpc_init();
+
+    /* Snapshot baseline memory */
+    arena_pool_stats_t sm_baseline;
+    arena_pool_stats_t md_baseline;
+    arena_get_pool_stats(ARENA_POOL_SMALL, &sm_baseline);
+    arena_get_pool_stats(ARENA_POOL_MEDIUM, &md_baseline);
+    TEST_ASSERT(sm_baseline.active_count == 0U, "Baseline small pool has 0 active blocks");
+    TEST_ASSERT(md_baseline.active_count == 0U, "Baseline medium pool has 0 active blocks");
+    TEST_ASSERT(arena_scratch_mark() == 0U, "Baseline scratch arena has 0 allocated bytes");
+
+    /* Execute simulated soak cycles */
+    const uint32_t SOAK_SIM_CYCLES = 10U;
+    uint32_t soak_completed = 0U;
+    uint32_t soak_failed = 0U;
+
+    for (uint32_t cycle = 1U; cycle <= SOAK_SIM_CYCLES; cycle++)
+    {
+        /* 5a. Allocate and deallocate blocks simulating workload */
+        void *p1 = arena_alloc_pool(ARENA_POOL_SMALL);
+        void *p2 = arena_alloc_pool(ARENA_POOL_MEDIUM);
+        void *sc = arena_scratch_alloc(128U);
+        TEST_ASSERT(p1 != NULL && p2 != NULL && sc != NULL, "Soak cycle allocation succeeds");
+
+        /* 5b. Exercise DPC queue */
+        int enq_res = dpc_enqueue(DPC_TYPE_TEST_EVENT, cycle, 0U, NULL);
+        TEST_ASSERT(enq_res == 0, "DPC enqueue succeeds");
+        TEST_ASSERT(dpc_get_size() == 1U, "DPC queue holds 1 event");
+
+        /* Dequeue DPC without dropping */
+        dpc_event_t ent;
+        TEST_ASSERT(dpc_dequeue(&ent) == 0, "DPC dequeue succeeds");
+        TEST_ASSERT(dpc_get_drop_count() == 0U, "DPC drop count remains 0");
+
+        /* Free allocations cleanly */
+        arena_free(p1);
+        arena_free(p2);
+        arena_scratch_reset(0U);
+
+        /* 5c. Assert zero heap leak invariant */
+        arena_pool_stats_t sm_cur;
+        arena_pool_stats_t md_cur;
+        arena_get_pool_stats(ARENA_POOL_SMALL, &sm_cur);
+        arena_get_pool_stats(ARENA_POOL_MEDIUM, &md_cur);
+        size_t sc_cur = arena_scratch_mark();
+
+        bool mem_clean = (sm_cur.active_count == 0U) &&
+                         (md_cur.active_count == 0U) &&
+                         (sc_cur == 0U);
+        bool coex_valid = modem_validate_coexistence();
+
+        if (mem_clean && (dpc_get_drop_count() == 0U) && coex_valid)
+        {
+            soak_completed++;
+        }
+        else
+        {
+            soak_failed++;
+        }
+    }
+
+    TEST_ASSERT(soak_completed == SOAK_SIM_CYCLES, "All simulated soak cycles complete with zero leak");
+    TEST_ASSERT(soak_failed == 0U, "Zero failed cycles during simulated soak");
+}
+
 int main(void)
 {
     printf("======================================================================\n");
@@ -3161,6 +3278,7 @@ int main(void)
     test_pmp_chained_tor_and_locked_regions();
     test_apm_dynamic_reconfiguration();
     test_console_line_reader_edge_cases();
+    test_multi_protocol_coex_and_soak_subsystem();
 
     printf("======================================================================\n");
     if (g_assert_failures == 0)

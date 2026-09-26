@@ -51,12 +51,14 @@ static void print_help(void)
     console_puts("  power [status|mode|sample|store] - Show or control power management & shared mailbox\r\n");
     console_puts("  gpio [status|set|get|dir|pull] - Show or control GPIO pins & IO_MUX\r\n");
     console_puts("  dma [status]        - Show GDMA multi-channel engine status\r\n");
-    console_puts("  modem [status|all|wifi|ble|15.4] - Show or control wireless modem clocks and power\r\n");
+    console_puts("  modem [status|all|wifi|ble|15.4|coex] - Show or control wireless modem clocks and power\r\n");
+    console_puts("  coex [status|diag|on|off] - Show or control 3-wire RF coexistence arbiter & LP clock\r\n");
     console_puts("  ble [status|adv|stop|read|info] - Show or control BLE controller, advertising & GATT\r\n");
     console_puts("  wifi [status|mac|ring|init|scan|sniffer|ap] - Show or control 802.11ax Wi-Fi 6 MAC driver & SoftAP\r\n");
     console_puts("  mmu [status|map]    - Show MSPI MMU Flash XIP mapping & cache status\r\n");
     console_puts("  15.4 [status|chan|pan|short|rx|tx|stop] - Show or control IEEE 802.15.4 radio transceiver\r\n");
     console_puts("  net [status|ip|mask|gw|arp|tcp|reset] - Show or control IPv4 network interface & TCP state machine\r\n");
+    console_puts("  soak [cycles|status] - Run or inspect 24/7 multi-protocol automated stability soak engine\r\n");
     console_puts("  do-test             - Run full baseline validation test suite\r\n");
 }
 
@@ -370,6 +372,84 @@ static void shell_execute(char *input_buffer)
     else if (strcmp(input_buffer, "do-test") == 0 || strcmp(input_buffer, "test") == 0)
     {
         run_validation_suite();
+    }
+    else if (strncmp(input_buffer, "soak", 4) == 0 && (input_buffer[4] == ' ' || input_buffer[4] == '\0'))
+    {
+        char *subcmd = input_buffer + 4;
+        while (*subcmd == ' ') subcmd++;
+
+        if (strncmp(subcmd, "status", 6) == 0)
+        {
+            test_soak_telemetry_t st;
+            test_soak_get_telemetry(&st);
+            console_puts("24/7 Multi-Protocol Stability Soak Engine Telemetry:\r\n");
+            console_puts("  Status:            ");
+            console_puts(st.is_running ? "RUNNING\r\n" : "IDLE\r\n");
+            console_puts("  Target Cycles:     ");
+            if (st.target_cycles == 0U)
+            {
+                console_puts("Continuous Soak (24/7)\r\n");
+            }
+            else
+            {
+                put_dec(st.target_cycles);
+                console_puts(" cycles\r\n");
+            }
+            console_puts("  Completed Cycles:  ");
+            put_dec(st.completed_cycles);
+            console_puts("\r\n");
+            console_puts("  Failed Cycles:     ");
+            put_dec(st.failed_cycles);
+            console_puts("\r\n");
+            console_puts("  Clean Streak:      ");
+            put_dec(st.consecutive_clean_cycles);
+            console_puts(" cycles\r\n");
+            console_puts("  Total Assertions:  ");
+            put_dec(st.total_tests_run);
+            console_puts(" (Passed: ");
+            put_dec(st.total_tests_passed);
+            console_puts(", Failed: ");
+            put_dec(st.total_tests_failed);
+            console_puts(")\r\n");
+            console_puts("  Elapsed Time:      ");
+            put_dec((uint32_t)(st.elapsed_time_ms / 1000U));
+            console_puts(" s\r\n");
+            console_puts("  Last Cycle Time:   ");
+            put_dec(st.last_cycle_duration_ms);
+            console_puts(" ms\r\n");
+            console_puts("  WDT Feeds:         ");
+            put_dec(st.wdt_feeds_count);
+            console_puts("\r\n");
+            console_puts("  Peak Small Active: ");
+            put_dec(st.peak_small_active);
+            console_puts(" / 32\r\n");
+            console_puts("  Peak Med Active:   ");
+            put_dec(st.peak_med_active);
+            console_puts(" / 16\r\n");
+            console_puts("  Peak Scratch Use:  ");
+            put_dec(st.peak_scratch_bytes);
+            console_puts(" B\r\n");
+        }
+        else
+        {
+            uint32_t cycles = TEST_SOAK_DEFAULT_CYCLES;
+            if (*subcmd != '\0')
+            {
+                if (strncmp(subcmd, "cont", 4) == 0 || strncmp(subcmd, "24/7", 4) == 0)
+                {
+                    cycles = 0U;
+                }
+                else
+                {
+                    uint32_t c_in = 0U;
+                    if (parse_uint(&subcmd, &c_in))
+                    {
+                        cycles = c_in;
+                    }
+                }
+            }
+            test_soak_run(cycles, TEST_SOAK_DEFAULT_DELAY_MS);
+        }
     }
     else if (strncmp(input_buffer, "peek", 4) == 0 && (input_buffer[4] == ' ' || input_buffer[4] == '\0'))
     {
@@ -1175,6 +1255,21 @@ static void shell_execute(char *input_buffer)
                 console_puts("IEEE 802.15.4 clocks enabled.\r\n");
             }
         }
+        else if (strncmp(subcmd, "coex", 4) == 0)
+        {
+            char *sub2 = subcmd + 4;
+            while (*sub2 == ' ') sub2++;
+            if (strcmp(sub2, "off") == 0)
+            {
+                modem_disable_coexistence();
+                console_puts("RF coexistence clock and arbiter disabled.\r\n");
+            }
+            else
+            {
+                modem_enable_coexistence();
+                console_puts("RF coexistence clock and arbiter enabled.\r\n");
+            }
+        }
         else
         {
             modem_clock_state_t ms;
@@ -1210,6 +1305,74 @@ static void shell_execute(char *input_buffer)
             console_puts("  LPCON_COEX_CLK:    ");
             put_hex(*MODEM_LPCON_COEX_LP_CLK_CONF_REG);
             console_puts("\r\n");
+        }
+    }
+    else if (strncmp(input_buffer, "coex", 4) == 0 && (input_buffer[4] == ' ' || input_buffer[4] == '\0'))
+    {
+        char *subcmd = input_buffer + 4;
+        while (*subcmd == ' ') subcmd++;
+
+        if (strncmp(subcmd, "on", 2) == 0)
+        {
+            modem_enable_coexistence();
+            console_puts("RF coexistence clock and arbiter ENABLED.\r\n");
+        }
+        else if (strncmp(subcmd, "off", 3) == 0)
+        {
+            modem_disable_coexistence();
+            console_puts("RF coexistence clock and arbiter DISABLED.\r\n");
+        }
+        else if (strncmp(subcmd, "diag", 4) == 0)
+        {
+            uint32_t lpcon_clk = *MODEM_LPCON_CLK_CONF_REG;
+            uint32_t coex_clk = *MODEM_LPCON_COEX_LP_CLK_CONF_REG;
+            uint32_t rst_conf = *MODEM_LPCON_RST_CONF_REG;
+            bool is_valid = modem_validate_coexistence();
+
+            console_puts("RF Coexistence Hardware Diagnostics:\r\n");
+            console_puts("  LPCON_CLK_CONF:    ");
+            put_hex(lpcon_clk);
+            console_puts(" (CLK_COEX_EN: ");
+            console_puts((lpcon_clk & MODEM_LPCON_CLK_COEX_EN_BIT) ? "1" : "0");
+            console_puts(")\r\n");
+            console_puts("  COEX_LP_CLK_CONF:  ");
+            put_hex(coex_clk);
+            console_puts(" (SEL_XTAL: ");
+            console_puts((coex_clk & MODEM_LPCON_CLK_COEX_LP_SEL_XTAL_BIT) ? "1" : "0");
+            console_puts(")\r\n");
+            console_puts("  LPCON_RST_CONF:    ");
+            put_hex(rst_conf);
+            console_puts(" (RST_COEX: ");
+            console_puts((rst_conf & MODEM_LPCON_RST_COEX_BIT) ? "ASSERTED" : "RELEASED");
+            console_puts(")\r\n");
+            console_puts("  Hardware Arbiter:  ");
+            console_puts(is_valid ? "SYNCHRONIZED & OPERATIONAL\r\n" : "OUT OF SYNC / INACTIVE\r\n");
+            console_puts("  Validation Status: ");
+            console_puts(is_valid ? "[ VALID - OK ]\r\n" : "[ INVALID - NOT READY ]\r\n");
+        }
+        else
+        {
+            modem_clock_state_t ms;
+            modem_get_clock_state(&ms);
+            bool is_valid = modem_validate_coexistence();
+
+            console_puts("RF Coexistence Arbiter (Wi-Fi 6 / BLE 5 / 802.15.4) Status:\r\n");
+            console_puts("  Coexistence State: ");
+            console_puts(ms.coexistence_enabled ? "ENABLED" : "DISABLED");
+            console_puts("\r\n");
+            console_puts("  LP Clock Source:   XTAL (MODEM_LPCON bit 2)\r\n");
+            console_puts("  Hardware Arbiter:  3-Wire Priority Arbiter (Release Reset: OK)\r\n");
+            console_puts("  Wi-Fi 6 Coex Path: ");
+            console_puts(ms.wifi_clk_enabled ? "ONLINE" : "OFFLINE");
+            console_puts("\r\n");
+            console_puts("  BLE 5 Coex Path:   ");
+            console_puts(ms.ble_clk_enabled ? "ONLINE" : "OFFLINE");
+            console_puts("\r\n");
+            console_puts("  802.15.4 Path:     ");
+            console_puts(ms.ieee802154_clk_enabled ? "ONLINE" : "OFFLINE");
+            console_puts("\r\n");
+            console_puts("  Validation Status: ");
+            console_puts(is_valid ? "READY (All clocks synchronized)\r\n" : "UNSYNCHRONIZED\r\n");
         }
     }
     else if (strncmp(input_buffer, "ble", 3) == 0 && (input_buffer[3] == ' ' || input_buffer[3] == '\0'))

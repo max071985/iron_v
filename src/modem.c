@@ -707,8 +707,11 @@ modem_status_t modem_enable_ble_clocks(void)
         modem_init();
     }
 
-    /* 1. Assert BLE timer and Bluetooth APB clocks */
-    reg_set_bits(MODEM_SYSCON_CLK_CONF_REG, MODEM_CLK_BLE_TIMER_EN_BIT);
+    /* 1. Assert BLE timer, modem security, and Bluetooth APB clocks */
+    reg_set_bits(MODEM_SYSCON_CLK_CONF_REG,
+                 MODEM_CLK_BLE_TIMER_EN_BIT |
+                 MODEM_CLK_MODEM_SEC_EN_BIT |
+                 MODEM_CLK_MODEM_SEC_APB_EN_BIT);
     reg_set_bits(MODEM_SYSCON_CLK_CONF1_REG,
                  MODEM_CLK_BT_APB_EN_BIT |
                  MODEM_CLK_BT_EN_BIT);
@@ -719,10 +722,15 @@ modem_status_t modem_enable_ble_clocks(void)
     /* 3. Clear Bluetooth subsystem resets */
     reg_clear_bits(MODEM_SYSCON_MODEM_RST_CONF_REG,
                    MODEM_RST_BLE_TIMER_BIT |
+                   MODEM_RST_MODEM_SEC_BIT |
                    MODEM_RST_BTMAC_BIT |
                    MODEM_RST_BTMAC_APB_BIT |
                    MODEM_RST_BTBB_BIT |
                    MODEM_RST_BTBB_APB_BIT);
+
+    /* 4. Enable Analog RF Synthesizer and RF analog routing */
+    modem_enable_rf_synthesizer();
+    modem_rf_analog_init();
 
     s_modem_state.ble_clk_enabled = 1U;
     return MODEM_OK;
@@ -733,6 +741,7 @@ modem_status_t modem_disable_ble_clocks(void)
     /* 1. Assert Bluetooth subsystem resets */
     reg_set_bits(MODEM_SYSCON_MODEM_RST_CONF_REG,
                  MODEM_RST_BLE_TIMER_BIT |
+                 MODEM_RST_MODEM_SEC_BIT |
                  MODEM_RST_BTMAC_BIT |
                  MODEM_RST_BTMAC_APB_BIT |
                  MODEM_RST_BTBB_BIT |
@@ -742,6 +751,10 @@ modem_status_t modem_disable_ble_clocks(void)
     modem_delay(MODEM_CLOCK_SETTLE_CYCLES);
 
     /* 3. Gate off clock enable bits */
+    reg_clear_bits(MODEM_SYSCON_CLK_CONF_REG,
+                   MODEM_CLK_BLE_TIMER_EN_BIT |
+                   MODEM_CLK_MODEM_SEC_EN_BIT |
+                   MODEM_CLK_MODEM_SEC_APB_EN_BIT);
     reg_clear_bits(MODEM_SYSCON_CLK_CONF1_REG,
                    MODEM_CLK_BT_APB_EN_BIT |
                    MODEM_CLK_BT_EN_BIT);

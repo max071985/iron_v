@@ -121,6 +121,10 @@
 #define BLE_ADV_INT_MAX_DEFAULT         CONFIG_BLE_ADV_INTERVAL_MAX
 #define BLE_ADV_CHANNEL_MAP_DEFAULT     CONFIG_BLE_ADV_CHANNEL_MAP
 #define BLE_ADV_INTERVAL_DEFAULT_MS     100U
+#define BLE_ADV_PRIMARY_CH_37           37U
+#define BLE_ADV_PRIMARY_CH_38           38U
+#define BLE_ADV_PRIMARY_CH_39           39U
+#define BLE_ADV_PRIMARY_CH_COUNT        3U
 
 
 /* ========================================================================= */

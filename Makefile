@@ -67,7 +67,7 @@ src/lp_firmware_image.h: lp_core/lp_firmware.bin
 
 
 firmware.elf: src/lp_firmware_image.h $(SRCS)
-	$(CC) $(CFLAGS) $(LDFLAGS) $(filter-out src/lp_firmware_image.h,$^) -Wl,--start-group -lnet80211 -lpp -lphy -lcore -Wl,--end-group -lgcc -o $@
+	$(CC) $(CFLAGS) $(LDFLAGS) $(filter-out src/lp_firmware_image.h,$^) -Wl,--start-group -lnet80211 -lpp -lphy -lcore -lbtbb -Wl,--end-group -lgcc -o $@
 
 firmware.bin: firmware.elf
 	esptool --chip esp32c6 elf2image --flash-mode dio --flash-size 8MB --flash-freq 80m -o $@ $<

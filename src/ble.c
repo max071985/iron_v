@@ -199,6 +199,19 @@ static void ble_read_hardware_mac(uint8_t *out_addr)
 /* Bare-Metal Link Layer Hardware Driver                                     */
 /* ========================================================================= */
 
+#if defined(__riscv)
+extern void *g_phyFuns;
+extern void bt_bb_v2_init_cmplx(uint8_t version_print);
+extern void bt_set_chn(uint8_t chan);
+
+static uint8_t s_adv_chn_idx = 0U;
+static const uint8_t s_adv_channels[BLE_ADV_PRIMARY_CH_COUNT] = {
+    BLE_ADV_PRIMARY_CH_37,
+    BLE_ADV_PRIMARY_CH_38,
+    BLE_ADV_PRIMARY_CH_39
+};
+#endif
+
 ble_status_t ble_hw_init(void)
 {
     /* 1. Poll status register with timeout until stable */
@@ -223,6 +236,9 @@ ble_status_t ble_hw_init(void)
             prev_status = cur_status;
         }
     }
+
+    /* 2. Initialize Bluetooth Baseband hardware */
+    bt_bb_v2_init_cmplx(0U);
 #else
     volatile uint32_t status = *BLE_LL_STATUS_REG;
     (void)status;
@@ -240,6 +256,16 @@ ble_status_t ble_hw_start_advertising(void)
     cmd &= BLE_LL_CMD_TRIG_CLR_MASK;
     cmd |= BLE_LL_CMD_START_ADV_BIT;
     *BLE_LL_CMD_REG = cmd;
+
+#if defined(__riscv)
+    if (g_phyFuns != NULL)
+    {
+        uint8_t ch = s_adv_channels[s_adv_chn_idx];
+        s_adv_chn_idx = (s_adv_chn_idx + 1U) % BLE_ADV_PRIMARY_CH_COUNT;
+        bt_set_chn(ch);
+    }
+#endif
+
     ble_fence();
     return BLE_OK;
 }

@@ -70,6 +70,7 @@ static wifi_telemetry_t s_wifi_telemetry = {
 };
 
 static bool s_wifi_initialized = false;
+static uint32_t s_tx_ring_tail = 0U;
 
 /* ========================================================================= */
 /* Memory & Hardware Synchronization Barrier                                 */
@@ -151,6 +152,7 @@ wifi_status_t wifi_tx_ring_init(void)
         s_tx_packet_ring[i].dma_desc.next_descriptor = &s_tx_packet_ring[next_idx].dma_desc;
     }
 
+    s_tx_ring_tail = 0U;
     wifi_fence();
     return WIFI_OK;
 }
@@ -543,7 +545,7 @@ wifi_status_t wifi_tx_packet(const uint8_t *payload, uint16_t len)
         wifi_init();
     }
 
-    uint32_t tail = s_wifi_telemetry.rx_ring_tail;
+    uint32_t tail = s_tx_ring_tail;
     net_packet_t *tx_pkt = &s_tx_packet_ring[tail % WIFI_TX_RING_COUNT];
 
     /* Guard against buffer collision */
@@ -563,9 +565,14 @@ wifi_status_t wifi_tx_packet(const uint8_t *payload, uint16_t len)
     /* Trigger GDMA Channel 1 Outlink */
     gdma_outlink_restart(WIFI_GDMA_CHANNEL);
 
+    /* In freestanding synchronous transmission, release buffer back to CPU ownership */
+    wifi_fence();
+    tx_pkt->dma_desc.owner = DMA_OWNER_CPU;
+    wifi_fence();
+
     s_wifi_telemetry.tx_packets++;
     s_wifi_telemetry.tx_bytes += (uint32_t)len;
-    s_wifi_telemetry.rx_ring_tail = (tail + 1U) % WIFI_TX_RING_COUNT;
+    s_tx_ring_tail = (tail + 1U) % WIFI_TX_RING_COUNT;
 
     return WIFI_OK;
 }

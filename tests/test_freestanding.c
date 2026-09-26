@@ -1783,9 +1783,16 @@ static void test_wifi_mac_subsystem(void)
     TEST_ASSERT(wifi_tx_packet(tx_frame, 2048U) == WIFI_ERR_INVALID_ARG, "wifi_tx_packet rejects length > 1536");
     TEST_ASSERT(wifi_tx_packet(tx_frame, sizeof(tx_frame)) == WIFI_OK, "wifi_tx_packet succeeds");
 
+    /* Transmit multiple packets exceeding TX ring capacity (8 descriptors) to verify circular reuse without stall */
+    for (uint32_t p = 0; p < 16U; p++)
+    {
+        TEST_ASSERT(wifi_tx_packet(tx_frame, sizeof(tx_frame)) == WIFI_OK, "wifi_tx_packet succeeds beyond TX ring capacity (circular wraparound)");
+    }
+
     TEST_ASSERT(wifi_get_telemetry(&telem) == WIFI_OK, "wifi_get_telemetry succeeds");
-    TEST_ASSERT(telem.tx_packets >= 1U, "tx_packets telemetry incremented");
-    TEST_ASSERT(telem.tx_bytes >= sizeof(tx_frame), "tx_bytes telemetry incremented");
+    TEST_ASSERT(telem.tx_packets >= 17U, "tx_packets telemetry incremented across wraparound");
+    TEST_ASSERT(telem.tx_bytes >= (17U * sizeof(tx_frame)), "tx_bytes telemetry incremented across wraparound");
+    TEST_ASSERT(telem.ring_full_drops == 0U, "Zero TX ring full drops during continuous transmission");
 
     /* 7. SoftAP Broadcasting Functionality (Task 5.7.2) */
     TEST_ASSERT(!wifi_is_ap_active(), "SoftAP is initially inactive");

@@ -48,16 +48,16 @@
 /* ========================================================================= */
 
 #ifndef CONFIG_NET_IP_OCTET_1
-#define CONFIG_NET_IP_OCTET_1               10U
+#define CONFIG_NET_IP_OCTET_1               192U
 #endif
 #ifndef CONFIG_NET_IP_OCTET_2
-#define CONFIG_NET_IP_OCTET_2               0U
+#define CONFIG_NET_IP_OCTET_2               168U
 #endif
 #ifndef CONFIG_NET_IP_OCTET_3
-#define CONFIG_NET_IP_OCTET_3               0U
+#define CONFIG_NET_IP_OCTET_3               1U
 #endif
 #ifndef CONFIG_NET_IP_OCTET_4
-#define CONFIG_NET_IP_OCTET_4               100U
+#define CONFIG_NET_IP_OCTET_4               1U
 #endif
 
 #ifndef CONFIG_NET_NETMASK_OCTET_1
@@ -74,29 +74,29 @@
 #endif
 
 #ifndef CONFIG_NET_GATEWAY_OCTET_1
-#define CONFIG_NET_GATEWAY_OCTET_1          10U
+#define CONFIG_NET_GATEWAY_OCTET_1          192U
 #endif
 #ifndef CONFIG_NET_GATEWAY_OCTET_2
-#define CONFIG_NET_GATEWAY_OCTET_2          0U
+#define CONFIG_NET_GATEWAY_OCTET_2          168U
 #endif
 #ifndef CONFIG_NET_GATEWAY_OCTET_3
-#define CONFIG_NET_GATEWAY_OCTET_3          0U
+#define CONFIG_NET_GATEWAY_OCTET_3          1U
 #endif
 #ifndef CONFIG_NET_GATEWAY_OCTET_4
-#define CONFIG_NET_GATEWAY_OCTET_4          138U
+#define CONFIG_NET_GATEWAY_OCTET_4          1U
 #endif
 
 #ifndef CONFIG_NET_DNS_OCTET_1
-#define CONFIG_NET_DNS_OCTET_1              10U
+#define CONFIG_NET_DNS_OCTET_1              192U
 #endif
 #ifndef CONFIG_NET_DNS_OCTET_2
-#define CONFIG_NET_DNS_OCTET_2              0U
+#define CONFIG_NET_DNS_OCTET_2              168U
 #endif
 #ifndef CONFIG_NET_DNS_OCTET_3
-#define CONFIG_NET_DNS_OCTET_3              0U
+#define CONFIG_NET_DNS_OCTET_3              1U
 #endif
 #ifndef CONFIG_NET_DNS_OCTET_4
-#define CONFIG_NET_DNS_OCTET_4              138U
+#define CONFIG_NET_DNS_OCTET_4              1U
 #endif
 
 /* Convenience IPv4 Address Packing Macro */
@@ -159,7 +159,7 @@
 /* ========================================================================= */
 
 #ifndef CONFIG_WIFI_SSID
-#define CONFIG_WIFI_SSID                    "IronV-C6"
+#define CONFIG_WIFI_SSID                    "IronV-AP"
 #endif
 
 #ifndef CONFIG_WIFI_PASSPHRASE
@@ -195,7 +195,7 @@
 #endif
 
 #ifndef CONFIG_BLE_AUTO_START_ADV
-#define CONFIG_BLE_AUTO_START_ADV           1U
+#define CONFIG_BLE_AUTO_START_ADV           0U
 #endif
 
 /* Advertising Interval in 0.625 ms units (160 * 0.625 = 100 ms) */

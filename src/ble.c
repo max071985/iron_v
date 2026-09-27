@@ -14,6 +14,7 @@
 #include "modem.h"
 #include "interrupt.h"
 #include "string.h"
+#include "wifi.h"
 
 /* ========================================================================= */
 /* Static Storage: HCI Packet Queue & Telemetry                              */
@@ -258,7 +259,7 @@ ble_status_t ble_hw_start_advertising(void)
     *BLE_LL_CMD_REG = cmd;
 
 #if defined(__riscv)
-    if (g_phyFuns != NULL)
+    if (g_phyFuns != NULL && !wifi_is_ap_active())
     {
         uint8_t ch = s_adv_channels[s_adv_chn_idx];
         s_adv_chn_idx = (s_adv_chn_idx + 1U) % BLE_ADV_PRIMARY_CH_COUNT;

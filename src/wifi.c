@@ -1135,7 +1135,7 @@ wifi_status_t wifi_start_ap(const char *ssid, const char *password, uint8_t chan
             console_puts("\r\n");
         }
         esp_wifi_set_ps(WIFI_PS_NONE);
-        esp_wifi_set_protocol(WIFI_IF_AP, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N | WIFI_PROTOCOL_11AX);
+        esp_wifi_set_protocol(WIFI_IF_AP, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
         esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW20);
 
         wifi_config_t ap_cfg;

@@ -112,6 +112,7 @@ static tcp_status_t tcp_send_segment(tcp_pcb_t *pcb, uint8_t flags,
     if (wst == WIFI_OK)
     {
         s_tcp_telemetry.bytes_tx += payload_len;
+        net_notify_tx_packet(total_frame_len, true);
         return TCP_OK;
     }
 
@@ -238,14 +239,27 @@ tcp_status_t tcp_write(tcp_pcb_t *pcb, const void *data, uint16_t len)
         return TCP_OK;
     }
 
-    uint8_t flags = TCP_FLAG_ACK | TCP_FLAG_PSH;
-    tcp_status_t st = tcp_send_segment(pcb, flags, data, len);
-    if (st == TCP_OK)
+    const uint8_t *ptr = (const uint8_t *)data;
+    uint16_t rem = len;
+    while (rem > 0U)
     {
-        pcb->snd_nxt += len;
-        pcb->last_activity_ms = tcp_time_ms();
+        uint16_t chunk = (rem > TCP_DEFAULT_MSS) ? TCP_DEFAULT_MSS : rem;
+        uint8_t flags = TCP_FLAG_ACK;
+        if (chunk == rem)
+        {
+            flags |= TCP_FLAG_PSH;
+        }
+        tcp_status_t st = tcp_send_segment(pcb, flags, ptr, chunk);
+        if (st != TCP_OK)
+        {
+            return st;
+        }
+        pcb->snd_nxt += chunk;
+        ptr += chunk;
+        rem -= chunk;
     }
-    return st;
+    pcb->last_activity_ms = tcp_time_ms();
+    return TCP_OK;
 }
 
 tcp_status_t tcp_close(tcp_pcb_t *pcb)
@@ -440,8 +454,11 @@ tcp_status_t tcp_input(const uint8_t *ip_packet, uint16_t ip_len)
         case TCP_STATE_SYN_RECEIVED:
             if ((flags & TCP_FLAG_SYN) != 0U)
             {
-                /* Retransmit SYN+ACK on duplicate SYN */
+                /* Retransmit SYN+ACK on duplicate SYN using initial sequence number (snd_una) */
+                uint32_t saved_nxt = match->snd_nxt;
+                match->snd_nxt = match->snd_una;
                 tcp_send_segment(match, TCP_FLAG_SYN | TCP_FLAG_ACK, NULL, 0U);
+                match->snd_nxt = saved_nxt;
                 break;
             }
             if ((flags & TCP_FLAG_ACK) != 0U)

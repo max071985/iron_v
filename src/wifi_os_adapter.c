@@ -48,6 +48,7 @@ static uint8_t s_wifi_heap[WIFI_HEAP_SIZE] __attribute__((aligned(16)));
 static wifi_block_t *s_heap_head = NULL;
 static size_t s_allocated_bytes = 0U;
 static size_t s_peak_bytes = 0U;
+static void wifi_timer_invalidate_handle(void *ptr);
 
 static void wifi_heap_init(void)
 {
@@ -192,6 +193,9 @@ void wifi_osi_free(void *ptr)
         }
         wifi_heap_coalesce();
     }
+
+    /* Invalidate any timer tracker referencing freed memory */
+    wifi_timer_invalidate_handle(ptr);
 
     interrupt_global_restore(prev_mstatus);
 }
@@ -855,51 +859,46 @@ typedef struct _ETSTIMER_ {
     void                 *timer_arg;    /**< timer callback argument (4 bytes) */
 } ETSTimer;
 
+/* Memory validator to guarantee function pointers are in executable memory */
+static inline bool is_valid_instruction_address(uintptr_t addr)
+{
+    if ((addr & 1U) != 0U) return false;
+    if (addr >= 0x40000000U && addr < 0x40060000U) return true; /* ROM */
+    if (addr >= 0x40800000U && addr < 0x40860000U) return true; /* IRAM / HP SRAM */
+    if (addr >= 0x42000000U && addr < 0x42800000U) return true; /* Flash XIP text */
+    return false;
+}
+
 typedef struct {
-    ETSTimer *ets_timer;
-    uint64_t expire_us;
-    uint32_t period_us;
-    bool repeat;
-    bool active;
+    void         *timer_handle;  /* Opaque handle passed by caller */
+    ETSTimerFunc  fn;            /* Validated callback function pointer */
+    void         *arg;           /* Callback argument */
+    uint64_t      expire_us;     /* Expiration timestamp in microseconds */
+    uint32_t      period_us;     /* Period in microseconds */
+    bool          repeat;        /* Periodic timer */
+    bool          active;        /* Arm status */
 } wifi_timer_tracker_t;
 
 static wifi_timer_tracker_t s_timer_trackers[WIFI_MAX_ACTIVE_TIMERS];
 
 static void timer_setfn_wrapper(void *ptimer, void *pfunction, void *parg)
 {
-    if (ptimer != NULL)
-    {
-        ETSTimer *t = (ETSTimer *)ptimer;
-        t->timer_func = (ETSTimerFunc)pfunction;
-        t->timer_arg = parg;
-        t->timer_next = NULL;
-        t->timer_expire = 0U;
-        t->timer_period = 0U;
-
-        uint32_t prev = interrupt_global_save_and_disable();
-        for (uint32_t i = 0U; i < WIFI_MAX_ACTIVE_TIMERS; i++)
-        {
-            if (s_timer_trackers[i].ets_timer == t)
-            {
-                s_timer_trackers[i].active = false;
-                break;
-            }
-        }
-        interrupt_global_restore(prev);
-    }
-}
-
-static void timer_arm_us_wrapper(void *ptimer, uint32_t us, bool repeat)
-{
     if (ptimer == NULL) return;
+
+    /* Maintain ETSTimer internal struct for compatibility */
     ETSTimer *t = (ETSTimer *)ptimer;
+    t->timer_func = (ETSTimerFunc)pfunction;
+    t->timer_arg = parg;
+    t->timer_next = NULL;
+    t->timer_expire = 0U;
+    t->timer_period = 0U;
 
     uint32_t prev = interrupt_global_save_and_disable();
     wifi_timer_tracker_t *slot = NULL;
 
     for (uint32_t i = 0U; i < WIFI_MAX_ACTIVE_TIMERS; i++)
     {
-        if (s_timer_trackers[i].ets_timer == t)
+        if (s_timer_trackers[i].timer_handle == ptimer)
         {
             slot = &s_timer_trackers[i];
             break;
@@ -910,7 +909,7 @@ static void timer_arm_us_wrapper(void *ptimer, uint32_t us, bool repeat)
     {
         for (uint32_t i = 0U; i < WIFI_MAX_ACTIVE_TIMERS; i++)
         {
-            if (!s_timer_trackers[i].active && s_timer_trackers[i].ets_timer == NULL)
+            if (s_timer_trackers[i].timer_handle == NULL)
             {
                 slot = &s_timer_trackers[i];
                 break;
@@ -932,11 +931,71 @@ static void timer_arm_us_wrapper(void *ptimer, uint32_t us, bool repeat)
 
     if (slot != NULL)
     {
-        slot->ets_timer = t;
-        slot->expire_us = systimer_get_us() + (uint64_t)us;
-        slot->period_us = us;
-        slot->repeat = repeat;
-        slot->active = true;
+        slot->timer_handle = ptimer;
+        slot->fn = (ETSTimerFunc)pfunction;
+        slot->arg = parg;
+        slot->active = false;
+        slot->repeat = false;
+        slot->period_us = 0U;
+        slot->expire_us = 0ULL;
+    }
+    interrupt_global_restore(prev);
+}
+
+static void timer_arm_us_wrapper(void *ptimer, uint32_t us, bool repeat)
+{
+    if (ptimer == NULL) return;
+
+    uint32_t prev = interrupt_global_save_and_disable();
+    wifi_timer_tracker_t *slot = NULL;
+
+    for (uint32_t i = 0U; i < WIFI_MAX_ACTIVE_TIMERS; i++)
+    {
+        if (s_timer_trackers[i].timer_handle == ptimer)
+        {
+            slot = &s_timer_trackers[i];
+            break;
+        }
+    }
+
+    if (slot == NULL)
+    {
+        ETSTimer *t = (ETSTimer *)ptimer;
+        if (t != NULL && is_valid_instruction_address((uintptr_t)t->timer_func))
+        {
+            for (uint32_t i = 0U; i < WIFI_MAX_ACTIVE_TIMERS; i++)
+            {
+                if (s_timer_trackers[i].timer_handle == NULL || !s_timer_trackers[i].active)
+                {
+                    slot = &s_timer_trackers[i];
+                    slot->timer_handle = ptimer;
+                    slot->fn = t->timer_func;
+                    slot->arg = t->timer_arg;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (slot != NULL)
+    {
+        if (slot->fn == NULL || !is_valid_instruction_address((uintptr_t)slot->fn))
+        {
+            ETSTimer *t = (ETSTimer *)ptimer;
+            if (t != NULL && is_valid_instruction_address((uintptr_t)t->timer_func))
+            {
+                slot->fn = t->timer_func;
+                slot->arg = t->timer_arg;
+            }
+        }
+
+        if (slot->fn != NULL && is_valid_instruction_address((uintptr_t)slot->fn))
+        {
+            slot->expire_us = systimer_get_us() + (uint64_t)us;
+            slot->period_us = us;
+            slot->repeat = repeat;
+            slot->active = true;
+        }
     }
     interrupt_global_restore(prev);
 }
@@ -949,15 +1008,13 @@ static void timer_arm_wrapper(void *timer, uint32_t tmout_ms, bool repeat)
 static void timer_disarm_wrapper(void *timer)
 {
     if (timer == NULL) return;
-    ETSTimer *t = (ETSTimer *)timer;
 
     uint32_t prev = interrupt_global_save_and_disable();
     for (uint32_t i = 0U; i < WIFI_MAX_ACTIVE_TIMERS; i++)
     {
-        if (s_timer_trackers[i].ets_timer == t)
+        if (s_timer_trackers[i].timer_handle == timer)
         {
             s_timer_trackers[i].active = false;
-            break;
         }
     }
     interrupt_global_restore(prev);
@@ -966,19 +1023,41 @@ static void timer_disarm_wrapper(void *timer)
 static void timer_done_wrapper(void *ptimer)
 {
     if (ptimer == NULL) return;
-    ETSTimer *t = (ETSTimer *)ptimer;
 
     uint32_t prev = interrupt_global_save_and_disable();
     for (uint32_t i = 0U; i < WIFI_MAX_ACTIVE_TIMERS; i++)
     {
-        if (s_timer_trackers[i].ets_timer == t)
+        if (s_timer_trackers[i].timer_handle == ptimer)
         {
             s_timer_trackers[i].active = false;
-            s_timer_trackers[i].ets_timer = NULL;
-            break;
+            s_timer_trackers[i].timer_handle = NULL;
+            s_timer_trackers[i].fn = NULL;
+            s_timer_trackers[i].arg = NULL;
+            s_timer_trackers[i].expire_us = 0ULL;
+            s_timer_trackers[i].period_us = 0U;
+            s_timer_trackers[i].repeat = false;
         }
     }
     interrupt_global_restore(prev);
+}
+
+static void wifi_timer_invalidate_handle(void *ptr)
+{
+    if (ptr == NULL) return;
+
+    for (uint32_t i = 0U; i < WIFI_MAX_ACTIVE_TIMERS; i++)
+    {
+        if (s_timer_trackers[i].timer_handle == ptr)
+        {
+            s_timer_trackers[i].active = false;
+            s_timer_trackers[i].timer_handle = NULL;
+            s_timer_trackers[i].fn = NULL;
+            s_timer_trackers[i].arg = NULL;
+            s_timer_trackers[i].expire_us = 0ULL;
+            s_timer_trackers[i].period_us = 0U;
+            s_timer_trackers[i].repeat = false;
+        }
+    }
 }
 
 static bool s_in_poll = false;
@@ -996,11 +1075,12 @@ void wifi_os_adapter_poll(void)
     for (uint32_t i = 0U; i < WIFI_MAX_ACTIVE_TIMERS; i++)
     {
         uint32_t prev = interrupt_global_save_and_disable();
-        if (s_timer_trackers[i].active && s_timer_trackers[i].ets_timer != NULL && now_us >= s_timer_trackers[i].expire_us)
+        if (s_timer_trackers[i].active &&
+            s_timer_trackers[i].fn != NULL &&
+            now_us >= s_timer_trackers[i].expire_us)
         {
-            ETSTimer *t = s_timer_trackers[i].ets_timer;
-            ETSTimerFunc fn = t->timer_func;
-            void *arg = t->timer_arg;
+            ETSTimerFunc fn = s_timer_trackers[i].fn;
+            void *arg = s_timer_trackers[i].arg;
 
             if (s_timer_trackers[i].repeat && s_timer_trackers[i].period_us > 0U)
             {
@@ -1012,7 +1092,8 @@ void wifi_os_adapter_poll(void)
             }
 
             interrupt_global_restore(prev);
-            if (fn != NULL)
+
+            if (is_valid_instruction_address((uintptr_t)fn))
             {
                 fn(arg);
             }
@@ -1724,7 +1805,7 @@ static int s_wpa_sta_rx_eapol(uint8_t *src_addr, uint8_t *buf, uint32_t len)
 static bool s_wpa_sta_in_4way(void) { return false; }
 static void *s_wpa_ap_init(void) { return NULL; }
 static bool s_wpa_ap_deinit(void *data) { (void)data; return true; }
-static bool s_wpa_ap_join(wpa_station_join_param_t *j) { (void)j; return false; }
+static bool s_wpa_ap_join(wpa_station_join_param_t *j) { (void)j; return true; }
 static bool s_wpa_ap_remove(uint8_t *b) { (void)b; return false; }
 static uint8_t *s_wpa_ap_get_ie(size_t *len) { if (len) *len = 0; return NULL; }
 static bool s_wpa_ap_rx_eapol(void *h, void *sm, uint8_t *d, size_t l) { (void)h; (void)sm; (void)d; (void)l; return false; }
@@ -1836,6 +1917,7 @@ void put_hex(uint32_t val) { (void)val; }
 void put_dec(uint32_t val) { (void)val; }
 void wifi_os_adapter_poll(void) {}
 void wifi_os_adapter_register_wpa_stubs(void) {}
+static void wifi_timer_invalidate_handle(void *ptr) { (void)ptr; }
 
 #endif /* defined(__riscv) */
 
@@ -1849,7 +1931,9 @@ void wifi_os_adapter_init(void)
     /* 2. Clear timer tracker slots */
     for (uint32_t i = 0U; i < WIFI_MAX_ACTIVE_TIMERS; i++)
     {
-        s_timer_trackers[i].ets_timer = NULL;
+        s_timer_trackers[i].timer_handle = NULL;
+        s_timer_trackers[i].fn = NULL;
+        s_timer_trackers[i].arg = NULL;
         s_timer_trackers[i].active = false;
         s_timer_trackers[i].expire_us = 0ULL;
         s_timer_trackers[i].period_us = 0U;

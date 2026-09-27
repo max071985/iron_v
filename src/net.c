@@ -66,24 +66,23 @@ net_status_t net_init(void)
         s_net_config.ip      = NET_DEFAULT_IP;
         s_net_config.netmask = NET_DEFAULT_NETMASK;
         s_net_config.gateway = NET_DEFAULT_GATEWAY;
-
-        /* Extract authentic Station MAC from Wi-Fi subsystem if available */
-        uint8_t mac_buf[ETH_ADDR_LEN] = {0};
-        if (wifi_get_mac_addr(mac_buf) == WIFI_OK)
-        {
-            memcpy(s_net_config.mac, mac_buf, ETH_ADDR_LEN);
-        }
-        else
-        {
-            s_net_config.mac[0] = 0x40U;
-            s_net_config.mac[1] = 0x4CU;
-            s_net_config.mac[2] = 0xCAU;
-            s_net_config.mac[3] = 0x45U;
-            s_net_config.mac[4] = 0x1EU;
-            s_net_config.mac[5] = 0x14U;
-        }
-
         s_net_initialized = true;
+    }
+
+    /* Extract authentic Station MAC from Wi-Fi subsystem if available */
+    uint8_t mac_buf[ETH_ADDR_LEN] = {0};
+    if (wifi_get_mac_addr(mac_buf) == WIFI_OK)
+    {
+        memcpy(s_net_config.mac, mac_buf, ETH_ADDR_LEN);
+    }
+    else
+    {
+        s_net_config.mac[0] = 0x40U;
+        s_net_config.mac[1] = 0x4CU;
+        s_net_config.mac[2] = 0xCAU;
+        s_net_config.mac[3] = 0x45U;
+        s_net_config.mac[4] = 0x1EU;
+        s_net_config.mac[5] = 0x14U;
     }
 
     return NET_OK;
@@ -94,6 +93,22 @@ net_status_t net_reset_defaults(void)
     s_net_config.ip      = NET_DEFAULT_IP;
     s_net_config.netmask = NET_DEFAULT_NETMASK;
     s_net_config.gateway = NET_DEFAULT_GATEWAY;
+
+    uint8_t mac_buf[ETH_ADDR_LEN] = {0};
+    if (wifi_get_mac_addr(mac_buf) == WIFI_OK)
+    {
+        memcpy(s_net_config.mac, mac_buf, ETH_ADDR_LEN);
+    }
+    else
+    {
+        s_net_config.mac[0] = 0x40U;
+        s_net_config.mac[1] = 0x4CU;
+        s_net_config.mac[2] = 0xCAU;
+        s_net_config.mac[3] = 0x45U;
+        s_net_config.mac[4] = 0x1EU;
+        s_net_config.mac[5] = 0x14U;
+    }
+
     return NET_OK;
 }
 
@@ -151,6 +166,27 @@ net_status_t net_get_telemetry(net_telemetry_t *out_telemetry)
 
     *out_telemetry = s_net_telemetry;
     return NET_OK;
+}
+
+net_status_t net_get_arp_entry(uint32_t index, arp_entry_t *out_entry)
+{
+    if (out_entry == NULL || index >= ARP_TABLE_CAPACITY)
+    {
+        return NET_ERR_INVALID_ARG;
+    }
+
+    *out_entry = s_arp_table[index];
+    return NET_OK;
+}
+
+void net_notify_tx_packet(uint16_t frame_len, bool is_tcp)
+{
+    s_net_telemetry.tx_packets++;
+    s_net_telemetry.tx_bytes += frame_len;
+    if (is_tcp)
+    {
+        s_net_telemetry.tcp_tx++;
+    }
 }
 
 /* ========================================================================= */

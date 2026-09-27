@@ -2118,18 +2118,25 @@ static void shell_execute(char *input_buffer)
             console_puts("  -----+-----------------+-------------------+--------\r\n");
             for (uint32_t i = 0; i < ARP_TABLE_CAPACITY; i++)
             {
-                net_config_t cfg;
-                net_get_config(&cfg);
+                arp_entry_t entry;
                 console_puts("    ");
                 put_dec(i);
                 console_puts("  | ");
-                if (i == 0)
+                if (net_get_arp_entry(i, &entry) == NET_OK && entry.valid)
                 {
-                    char gw_s[NET_IP_STR_BUF_LEN];
-                    net_ip_to_str(cfg.gateway, gw_s, sizeof(gw_s));
-                    console_puts(gw_s);
-                    for (size_t k = strlen(gw_s); k < 15; k++) console_putc(' ');
-                    console_puts(" | ff:ff:ff:ff:ff:ff | GATEWAY\r\n");
+                    char ip_s[NET_IP_STR_BUF_LEN];
+                    net_ip_to_str(entry.ip, ip_s, sizeof(ip_s));
+                    console_puts(ip_s);
+                    for (size_t k = strlen(ip_s); k < 15; k++) console_putc(' ');
+                    console_puts(" | ");
+                    const char hex_chars[] = "0123456789abcdef";
+                    for (int m = 0; m < 6; m++)
+                    {
+                        console_putc(hex_chars[(entry.mac[m] >> 4) & 0x0F]);
+                        console_putc(hex_chars[entry.mac[m] & 0x0F]);
+                        if (m < 5) console_putc(':');
+                    }
+                    console_puts(" | DYNAMIC\r\n");
                 }
                 else
                 {

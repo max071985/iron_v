@@ -17,6 +17,8 @@
 
 #if defined(__riscv)
 #include "systimer.h"
+#include "console.h"
+#include "utils.h"
 static inline uint64_t http_get_uptime_ms(void)
 {
     return systimer_get_ms();
@@ -563,6 +565,14 @@ static net_status_t http_tcp_recv_cb(void *arg, tcp_pcb_t *pcb, const uint8_t *d
         return NET_ERR_INVALID_ARG;
     }
 
+#if defined(__riscv)
+    console_puts("[HTTP] ");
+    for (size_t i = 0U; i < len && data[i] != '\r' && data[i] != '\n' && i < 64U; i++) {
+        console_putc((char)data[i]);
+    }
+    console_puts("\r\n");
+#endif
+
     arena_scratch_mark_t mark = arena_scratch_mark();
     char *tx_buf = (char *)arena_scratch_alloc(HTTP_RESPONSE_BUF_SIZE);
     if (tx_buf == NULL)
@@ -578,6 +588,11 @@ static net_status_t http_tcp_recv_cb(void *arg, tcp_pcb_t *pcb, const uint8_t *d
     if (out_len > 0U)
     {
         tcp_write(pcb, tx_buf, (uint16_t)out_len);
+#if defined(__riscv)
+        console_puts("[HTTP] Sent response: ");
+        put_dec((uint32_t)out_len);
+        console_puts(" bytes\r\n");
+#endif
     }
 
     arena_scratch_reset(mark);
@@ -594,6 +609,10 @@ static net_status_t http_tcp_accept_cb(void *arg, tcp_pcb_t *newpcb)
     {
         return NET_ERR_INVALID_ARG;
     }
+
+#if defined(__riscv)
+    console_puts("[HTTP] Client connected\r\n");
+#endif
 
     newpcb->recv_cb = http_tcp_recv_cb;
     return NET_OK;

@@ -10,6 +10,7 @@
 
 #include "net.h"
 #include "tcp.h"
+#include "dhcp.h"
 #include "wifi.h"
 #include "string.h"
 
@@ -595,6 +596,26 @@ net_status_t net_input(const uint8_t *frame, uint16_t len)
         else if (ip->protocol == IPV4_PROTO_UDP)
         {
             s_net_telemetry.udp_rx++;
+            if (len >= (ETH_HDR_LEN + ihl + UDP_HDR_LEN))
+            {
+                const udp_header_t *udp = (const udp_header_t *)(frame + ETH_HDR_LEN + ihl);
+                uint16_t dest_port = NET_NTOHS(udp->dest_port);
+                uint16_t udp_len = NET_NTOHS(udp->length);
+                if (udp_len >= UDP_HDR_LEN && len >= (ETH_HDR_LEN + ihl + udp_len))
+                {
+                    const uint8_t *payload = (const uint8_t *)udp + UDP_HDR_LEN;
+                    uint16_t payload_len = (uint16_t)(udp_len - UDP_HDR_LEN);
+
+                    if (dest_port == DHCP_SERVER_PORT)
+                    {
+                        dhcp_process_packet(frame, payload, payload_len);
+                    }
+                    else if (dest_port == DNS_SERVER_PORT)
+                    {
+                        dns_process_packet(frame, payload, payload_len);
+                    }
+                }
+            }
             return NET_OK;
         }
 
@@ -657,7 +678,7 @@ net_status_t net_send_udp(uint32_t dest_ip, uint16_t src_port, uint16_t dest_por
     ip->src_ip            = NET_HTONL(s_net_config.ip);
     ip->dest_ip           = NET_HTONL(dest_ip);
     ip->checksum          = 0U;
-    ip->checksum          = net_ipv4_checksum(ip);
+    ip->checksum          = NET_HTONS(net_ipv4_checksum(ip));
 
     /* UDP Header */
     udp->src_port  = NET_HTONS(src_port);

@@ -12,6 +12,8 @@
 #include "gdma.h"
 #include "modem.h"
 #include "string.h"
+#include "net.h"
+#include "dhcp.h"
 #include "regs/wifi_mac.h"
 #include "regs/modem_rf.h"
 
@@ -357,6 +359,7 @@ void wifi_handle_vendor_event(int32_t event_id, void *event_data)
             put_dec((uint32_t)stadisconn->aid);
             console_puts(" reason=");
             put_dec((uint32_t)stadisconn->reason);
+            dhcp_release_lease(stadisconn->mac);
         }
         console_puts("\r\n");
     }
@@ -473,6 +476,7 @@ wifi_status_t wifi_init(void)
             esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
 
             esp_wifi_internal_reg_rxcb(WIFI_IF_STA, wifi_vendor_rx_callback);
+            esp_wifi_internal_reg_rxcb(WIFI_IF_AP, wifi_vendor_rx_callback);
             wifi_os_adapter_register_wpa_stubs();
             s_vendor_wifi_inited = true;
         }
@@ -574,7 +578,29 @@ wifi_status_t wifi_tx_packet(const uint8_t *payload, uint16_t len)
     s_wifi_telemetry.tx_bytes += (uint32_t)len;
     s_tx_ring_tail = (tail + 1U) % WIFI_TX_RING_COUNT;
 
+#if defined(__riscv)
+    if (s_vendor_wifi_inited && (s_wifi_ap_running || s_wifi_telemetry.state == WIFI_STATE_CONNECTED || s_wifi_telemetry.state == WIFI_STATE_ACTIVE))
+    {
+        wifi_interface_t ifx = s_wifi_ap_running ? WIFI_IF_AP : WIFI_IF_STA;
+        esp_wifi_internal_tx(ifx, (void *)payload, len);
+    }
+#endif
+
     return WIFI_OK;
+}
+
+void wifi_poll_rx_traffic(void)
+{
+    net_packet_t *pkt = NULL;
+    uint16_t len = 0U;
+    while (wifi_rx_poll(&pkt, &len) == WIFI_OK)
+    {
+        if (pkt != NULL && len > 0U)
+        {
+            net_input(pkt->payload, len);
+        }
+        wifi_rx_release(pkt);
+    }
 }
 
 /* ========================================================================= */
@@ -594,6 +620,28 @@ wifi_status_t wifi_get_mac_addr(uint8_t *out_mac)
     }
 
     memcpy(out_mac, s_wifi_telemetry.mac_addr, WIFI_MAC_ADDR_LEN);
+    return WIFI_OK;
+}
+
+wifi_status_t wifi_get_ap_mac_addr(uint8_t *out_mac)
+{
+    if (out_mac == NULL)
+    {
+        return WIFI_ERR_INVALID_ARG;
+    }
+
+#if defined(__riscv)
+    if (s_vendor_wifi_inited)
+    {
+        if (esp_wifi_get_mac(WIFI_IF_AP, out_mac) == 0)
+        {
+            return WIFI_OK;
+        }
+    }
+#endif
+
+    memcpy(out_mac, s_wifi_telemetry.mac_addr, WIFI_MAC_ADDR_LEN);
+    out_mac[5] = (uint8_t)(out_mac[5] + 1U);
     return WIFI_OK;
 }
 
@@ -1141,6 +1189,7 @@ wifi_status_t wifi_start_ap(const char *ssid, const char *password, uint8_t chan
 
         console_puts("[Wi-Fi] Starting AP stack...\r\n");
         esp_wifi_config_11b_rate(WIFI_IF_AP, false);
+        esp_wifi_internal_reg_rxcb(WIFI_IF_AP, wifi_vendor_rx_callback);
         esp_err_t err_start = esp_wifi_start();
         if (err_start != 0)
         {

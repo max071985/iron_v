@@ -829,6 +829,8 @@ esp_err_t esp_wifi_get_config(wifi_interface_t interface, wifi_config_t *conf);
 esp_err_t esp_wifi_internal_reg_rxcb(wifi_interface_t ifx, wifi_rxcb_t fn);
 void      esp_wifi_internal_free_rx_buffer(void *eb);
 esp_err_t esp_wifi_internal_set_sta_ip(void);
+esp_err_t esp_wifi_internal_tx(wifi_interface_t ifx, void *buffer, uint16_t len);
+esp_err_t esp_wifi_get_mac(wifi_interface_t ifx, uint8_t mac[6]);
 esp_err_t esp_wifi_start(void);
 esp_err_t esp_wifi_stop(void);
 esp_err_t esp_wifi_scan_start(const wifi_scan_config_t *config, bool block);

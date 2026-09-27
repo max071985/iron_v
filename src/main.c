@@ -32,6 +32,7 @@
 #include "net.h"
 #include "tcp.h"
 #include "http_server.h"
+#include "dhcp.h"
 #include "wifi_vendor_types.h"
 
 static void print_help(void)
@@ -59,6 +60,7 @@ static void print_help(void)
     console_puts("  mmu [status|map]    - Show MSPI MMU Flash XIP mapping & cache status\r\n");
     console_puts("  15.4 [status|chan|pan|short|rx|tx|stop] - Show or control IEEE 802.15.4 radio transceiver\r\n");
     console_puts("  net [status|ip|mask|gw|arp|tcp|reset] - Show or control IPv4 network interface & TCP state machine\r\n");
+    console_puts("  dhcp [status]       - Show DHCP server leases and captive portal telemetry\r\n");
     console_puts("  http [status|routes|start|stop] - Show or control zero-allocation local REST/HTTP server\r\n");
     console_puts("  soak [cycles|status] - Run or inspect 24/7 multi-protocol automated stability soak engine\r\n");
     console_puts("  do-test             - Run full baseline validation test suite\r\n");
@@ -2239,6 +2241,37 @@ static void shell_execute(char *input_buffer)
             console_puts(" (RFC 1071 Validation OK)\r\n");
         }
     }
+    else if (strncmp(input_buffer, "dhcp", 4) == 0 && (input_buffer[4] == ' ' || input_buffer[4] == '\0'))
+    {
+        dhcp_telemetry_t dt;
+        dhcp_get_telemetry(&dt);
+        console_puts("Freestanding DHCP & DNS Captive Portal Status:\r\n");
+        console_puts("  Discover Rx:   "); put_dec(dt.discover_rx); console_puts("\r\n");
+        console_puts("  Offer Tx:      "); put_dec(dt.offer_tx); console_puts("\r\n");
+        console_puts("  Request Rx:    "); put_dec(dt.request_rx); console_puts("\r\n");
+        console_puts("  Ack Tx:        "); put_dec(dt.ack_tx); console_puts("\r\n");
+        console_puts("  Nak Tx:        "); put_dec(dt.nak_tx); console_puts("\r\n");
+        console_puts("  Release Rx:    "); put_dec(dt.release_rx); console_puts("\r\n");
+        console_puts("  DNS Queries:   "); put_dec(dt.dns_queries_rx); console_puts("\r\n");
+        console_puts("  DNS Replies:   "); put_dec(dt.dns_replies_tx); console_puts("\r\n");
+        console_puts("  Active Leases: "); put_dec(dt.active_leases); console_puts("\r\n");
+        for (uint32_t i = 0U; i < DHCP_MAX_LEASES; i++)
+        {
+            const dhcp_lease_t *l = dhcp_get_lease(i);
+            if (l != NULL && l->active)
+            {
+                console_puts("    Slot "); put_dec(i);
+                console_puts(": IP=192.168.1."); put_dec(l->ip & 0xFFU);
+                console_puts(" MAC=");
+                for (int m = 0; m < 6; m++)
+                {
+                    put_hex(l->mac[m]);
+                    if (m < 5) console_putc(':');
+                }
+                console_puts("\r\n");
+            }
+        }
+    }
     else if (strncmp(input_buffer, "http", 4) == 0 && (input_buffer[4] == ' ' || input_buffer[4] == '\0'))
     {
         char *subcmd = input_buffer + 4;
@@ -2410,6 +2443,17 @@ void main(void)
     http_server_init();
     http_server_start(HTTP_SERVER_DEFAULT_PORT);
 
+    /* Initialize Freestanding DHCP Server & DNS Captive Portal */
+    dhcp_init();
+
+#if CONFIG_BLE_AUTO_START_ADV
+    ble_gap_start_advertising();
+#endif
+
+#if CONFIG_WIFI_AUTO_START_AP
+    wifi_start_ap(CONFIG_WIFI_SSID, NULL, CONFIG_WIFI_CHANNEL);
+#endif
+
     console_puts("\r\n");
     print_info();
 
@@ -2423,6 +2467,7 @@ void main(void)
         dpc_process_all();
         tcp_tick();
         wifi_os_adapter_poll();
+        wifi_poll_rx_traffic();
         ble_npl_service_background();
         shell_tick();
         task_yield();

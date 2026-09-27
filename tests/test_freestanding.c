@@ -30,6 +30,7 @@
 #include "ieee802154.h"
 #include "net.h"
 #include "tcp.h"
+#include "dhcp.h"
 #include "regs/lp_wdt.h"
 #include "wifi_vendor_types.h"
 #include "wifi_regulatory.h"
@@ -2267,6 +2268,146 @@ static void test_http_server_subsystem(void)
     TEST_ASSERT(http_server_is_running() == false, "Server reports stopped");
 }
 
+static void test_dhcp_dns_subsystem(void)
+{
+    printf("  [TEST] Freestanding DHCP Server & DNS Captive Portal Subsystem...\n");
+
+    /* 1. Protocol & Port Constants */
+    TEST_ASSERT(DHCP_SERVER_PORT == 67U, "DHCP server port is 67");
+    TEST_ASSERT(DHCP_CLIENT_PORT == 68U, "DHCP client port is 68");
+    TEST_ASSERT(DNS_SERVER_PORT == 53U, "DNS server port is 53");
+    TEST_ASSERT(DHCP_MAGIC_COOKIE == 0x63825363U, "DHCP magic cookie matches RFC 2131");
+    TEST_ASSERT(DHCP_DEFAULT_LEASE_TIME_SEC == 86400U, "Default lease time is 86400s (24h)");
+    TEST_ASSERT(DHCP_MAX_LEASES == 4U, "DHCP pool capacity is 4");
+
+    /* 2. Subsystem Lifecycle & Reset */
+    TEST_ASSERT(dhcp_init() == DHCP_OK, "dhcp_init succeeds");
+    dhcp_telemetry_t dt;
+    TEST_ASSERT(dhcp_get_telemetry(&dt) == DHCP_OK, "dhcp_get_telemetry succeeds");
+    TEST_ASSERT(dt.active_leases == 0U, "Initial active leases is 0");
+    TEST_ASSERT(dt.discover_rx == 0U, "Initial discover_rx is 0");
+
+    /* 3. Synthetic DHCPDISCOVER Processing */
+    uint8_t client_mac[6] = { 0x56, 0xC7, 0xE1, 0x1F, 0x63, 0x7C };
+    uint8_t disc_frame[ETH_HDR_LEN + IPV4_MIN_HDR_LEN + UDP_HDR_LEN + sizeof(dhcp_packet_t)];
+    memset(disc_frame, 0, sizeof(disc_frame));
+
+    ethernet_header_t *eth = (ethernet_header_t *)disc_frame;
+    ipv4_header_t *ip = (ipv4_header_t *)(disc_frame + ETH_HDR_LEN);
+    udp_header_t *udp = (udp_header_t *)(disc_frame + ETH_HDR_LEN + IPV4_MIN_HDR_LEN);
+    dhcp_packet_t *dhcp = (dhcp_packet_t *)(disc_frame + ETH_HDR_LEN + IPV4_MIN_HDR_LEN + UDP_HDR_LEN);
+
+    memset(eth->dest_mac, 0xFF, ETH_ADDR_LEN);
+    memcpy(eth->src_mac, client_mac, ETH_ADDR_LEN);
+    eth->ethertype = NET_HTONS(ETHERTYPE_IPV4);
+
+    ip->ver_ihl = IPV4_VER_IHL_DEFAULT;
+    ip->total_len = NET_HTONS(IPV4_MIN_HDR_LEN + UDP_HDR_LEN + 250U);
+    ip->protocol = IPV4_PROTO_UDP;
+    ip->ttl = 64U;
+    ip->src_ip = 0U;
+    ip->dest_ip = 0xFFFFFFFFU;
+    ip->checksum = 0U;
+    ip->checksum = NET_HTONS(net_ipv4_checksum(ip));
+
+    udp->src_port = NET_HTONS(DHCP_CLIENT_PORT);
+    udp->dest_port = NET_HTONS(DHCP_SERVER_PORT);
+    udp->length = NET_HTONS(UDP_HDR_LEN + 250U);
+
+    dhcp->op = DHCP_OP_BOOTREQUEST;
+    dhcp->htype = DHCP_HTYPE_ETHERNET;
+    dhcp->hlen = DHCP_HLEN_ETHERNET;
+    dhcp->xid = 0x3903F326U;
+    memcpy(dhcp->chaddr, client_mac, 6);
+    dhcp->magic_cookie = NET_HTONL(DHCP_MAGIC_COOKIE);
+
+    uint8_t *opts = dhcp->options;
+    opts[0] = DHCP_OPT_MSG_TYPE;
+    opts[1] = 1U;
+    opts[2] = DHCP_MSG_DISCOVER;
+    opts[3] = DHCP_OPT_END;
+
+    uint16_t frame_len = (uint16_t)(ETH_HDR_LEN + IPV4_MIN_HDR_LEN + UDP_HDR_LEN + 250U);
+    TEST_ASSERT(net_input(disc_frame, frame_len) == NET_OK, "net_input handles DHCPDISCOVER");
+    dhcp_get_telemetry(&dt);
+    TEST_ASSERT(dt.discover_rx == 1U, "Telemetry discover_rx incremented to 1");
+    TEST_ASSERT(dt.offer_tx == 1U, "Telemetry offer_tx incremented to 1");
+    const dhcp_lease_t *lease0 = dhcp_get_lease(0);
+    TEST_ASSERT(lease0 != NULL && lease0->active, "Lease 0 allocated");
+    TEST_ASSERT(lease0->ip == DHCP_DEFAULT_BASE_IP, "Lease 0 assigned 192.168.1.2");
+
+    /* 4. Synthetic DHCPREQUEST Processing */
+    opts[2] = DHCP_MSG_REQUEST;
+    opts[3] = DHCP_OPT_REQUESTED_IP;
+    opts[4] = 4U;
+    opts[5] = (uint8_t)(DHCP_DEFAULT_BASE_IP >> 24U);
+    opts[6] = (uint8_t)(DHCP_DEFAULT_BASE_IP >> 16U);
+    opts[7] = (uint8_t)(DHCP_DEFAULT_BASE_IP >> 8U);
+    opts[8] = (uint8_t)(DHCP_DEFAULT_BASE_IP & 0xFFU);
+    opts[9] = DHCP_OPT_SERVER_ID;
+    opts[10] = 4U;
+    opts[11] = (uint8_t)(DHCP_DEFAULT_GATEWAY >> 24U);
+    opts[12] = (uint8_t)(DHCP_DEFAULT_GATEWAY >> 16U);
+    opts[13] = (uint8_t)(DHCP_DEFAULT_GATEWAY >> 8U);
+    opts[14] = (uint8_t)(DHCP_DEFAULT_GATEWAY & 0xFFU);
+    opts[15] = DHCP_OPT_END;
+
+    TEST_ASSERT(net_input(disc_frame, frame_len) == NET_OK, "net_input handles DHCPREQUEST");
+    dhcp_get_telemetry(&dt);
+    TEST_ASSERT(dt.request_rx == 1U, "Telemetry request_rx incremented to 1");
+    TEST_ASSERT(dt.ack_tx == 1U, "Telemetry ack_tx incremented to 1");
+    TEST_ASSERT(dt.active_leases == 1U, "Active leases count is 1");
+
+    /* 5. Synthetic DNS Query Processing (Captive Portal) */
+    uint8_t dns_frame[128];
+    memset(dns_frame, 0, sizeof(dns_frame));
+    ethernet_header_t *d_eth = (ethernet_header_t *)dns_frame;
+    ipv4_header_t *d_ip = (ipv4_header_t *)(dns_frame + ETH_HDR_LEN);
+    udp_header_t *d_udp = (udp_header_t *)(dns_frame + ETH_HDR_LEN + IPV4_MIN_HDR_LEN);
+    dns_header_t *d_dns = (dns_header_t *)(dns_frame + ETH_HDR_LEN + IPV4_MIN_HDR_LEN + UDP_HDR_LEN);
+
+    memcpy(d_eth->src_mac, client_mac, ETH_ADDR_LEN);
+    d_eth->ethertype = NET_HTONS(ETHERTYPE_IPV4);
+    d_ip->ver_ihl = IPV4_VER_IHL_DEFAULT;
+    d_ip->protocol = IPV4_PROTO_UDP;
+    d_ip->src_ip = NET_HTONL(DHCP_DEFAULT_BASE_IP);
+    d_ip->dest_ip = NET_HTONL(DHCP_DEFAULT_GATEWAY);
+    d_ip->ttl = 64U;
+
+    d_udp->src_port = NET_HTONS(54321U);
+    d_udp->dest_port = NET_HTONS(DNS_SERVER_PORT);
+
+    d_dns->id = NET_HTONS(0xABCDU);
+    d_dns->flags = NET_HTONS(0x0100U); /* Standard query */
+    d_dns->qdcount = NET_HTONS(1U);
+
+    /* Question: "apple" (5) "com" (3) 0 */
+    uint8_t *q = dns_frame + ETH_HDR_LEN + IPV4_MIN_HDR_LEN + UDP_HDR_LEN + sizeof(dns_header_t);
+    q[0] = 5; q[1] = 'a'; q[2] = 'p'; q[3] = 'p'; q[4] = 'l'; q[5] = 'e';
+    q[6] = 3; q[7] = 'c'; q[8] = 'o'; q[9] = 'm';
+    q[10] = 0; /* root */
+    q[11] = 0x00; q[12] = 0x01; /* QTYPE A */
+    q[13] = 0x00; q[14] = 0x01; /* QCLASS IN */
+
+    uint16_t dns_payload_len = (uint16_t)(sizeof(dns_header_t) + 15U);
+    d_udp->length = NET_HTONS(UDP_HDR_LEN + dns_payload_len);
+    d_ip->total_len = NET_HTONS(IPV4_MIN_HDR_LEN + UDP_HDR_LEN + dns_payload_len);
+    d_ip->checksum = 0U;
+    d_ip->checksum = NET_HTONS(net_ipv4_checksum(d_ip));
+
+    uint16_t dns_frame_len = (uint16_t)(ETH_HDR_LEN + IPV4_MIN_HDR_LEN + UDP_HDR_LEN + dns_payload_len);
+    TEST_ASSERT(net_input(dns_frame, dns_frame_len) == NET_OK, "net_input handles DNS query");
+    dhcp_get_telemetry(&dt);
+    TEST_ASSERT(dt.dns_queries_rx == 1U, "Telemetry dns_queries_rx incremented to 1");
+    TEST_ASSERT(dt.dns_replies_tx == 1U, "Telemetry dns_replies_tx incremented to 1");
+
+    /* 6. Release Lease */
+    dhcp_release_lease(client_mac);
+    dhcp_get_telemetry(&dt);
+    TEST_ASSERT(dt.active_leases == 0U, "Active leases decremented to 0 after release");
+    TEST_ASSERT(dt.release_rx == 1U, "Telemetry release_rx incremented to 1");
+}
+
 /* ========================================================================= */
 /* Phase 0-3 Host Test Hardening: Cross-Module Integration & Edge Case Tests */
 /* ========================================================================= */
@@ -3386,6 +3527,7 @@ int main(void)
     test_ieee802154_subsystem();
     test_tcpip_subsystem();
     test_http_server_subsystem();
+    test_dhcp_dns_subsystem();
 
     /* Hardened cross-module integration and edge case tests */
     test_coroutine_systimer_dpc_integration();

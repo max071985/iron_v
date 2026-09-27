@@ -614,7 +614,7 @@ ble_status_t ble_gap_start_advertising(void)
     {
         dev_name_len = sizeof(adv.name) - 1U;
     }
-    adv.complete_name_hdr[0] = (uint8_t)(1U + dev_name_len);
+    adv.complete_name_hdr[0] = (uint8_t)(1U + sizeof(adv.name));
     adv.complete_name_hdr[1] = BLE_ADV_NAME_TYPE;
     memset(adv.name, 0, sizeof(adv.name));
     memcpy(adv.name, CONFIG_BLE_DEVICE_NAME, dev_name_len);

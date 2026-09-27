@@ -989,6 +989,7 @@ void wifi_os_adapter_poll(void)
 
     wdt_feed();
     lp_wdt_feed();
+    wifi_poll_rx_traffic();
 
     uint64_t now_us = systimer_get_us();
 

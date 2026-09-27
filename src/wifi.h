@@ -165,10 +165,12 @@ wifi_status_t wifi_verify_rx_ring(uint32_t *out_visited_count);
 wifi_status_t wifi_rx_poll(net_packet_t **out_packet, uint16_t *out_len);
 wifi_status_t wifi_rx_release(net_packet_t *packet);
 wifi_status_t wifi_tx_packet(const uint8_t *payload, uint16_t len);
+void wifi_poll_rx_traffic(void);
 
 /* Identity & Telemetry Queries */
 wifi_state_t wifi_get_state(void);
 wifi_status_t wifi_get_mac_addr(uint8_t *out_mac);
+wifi_status_t wifi_get_ap_mac_addr(uint8_t *out_mac);
 wifi_status_t wifi_get_telemetry(wifi_telemetry_t *out_telemetry);
 const net_packet_t *wifi_get_rx_packet(uint32_t index);
 

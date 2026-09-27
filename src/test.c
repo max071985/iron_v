@@ -2119,6 +2119,9 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     int t30_pass = ble_init_ok && mac_ok && hci_reset_pass && latency_bounded && gatt_pass && gap_pass && npl_pass;
     if (t30_pass) passed_tests++;
     print_result(t30_pass);
+#if CONFIG_BLE_AUTO_START_ADV
+    ble_gap_start_advertising();
+#endif
 
     /* ------------------------------------------------------------- */
     /* TEST 31: 802.11ax Wi-Fi 6 MAC Driver & Zero-Copy Packet Ring  */
@@ -2182,6 +2185,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
                    (w_telem.tx_bytes >= sizeof(test_tx_frame));
 
     /* 9. SoftAP Broadcasting Functionality (Task 5.7.2 & 5.7.3) */
+    if (wifi_is_ap_active())
+    {
+        wifi_stop_ap();
+    }
     int ap_init_inactive = (!wifi_is_ap_active());
     int ap_start_ok = (wifi_start_ap(NULL, NULL, 1U) == WIFI_OK);
     int ap_is_active = (wifi_is_ap_active() != 0);
@@ -2245,6 +2252,9 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
 
     if (t31_pass) passed_tests++;
     print_result(t31_pass);
+#if CONFIG_WIFI_AUTO_START_AP
+    wifi_start_ap(CONFIG_WIFI_SSID, NULL, CONFIG_WIFI_CHANNEL);
+#endif
 
     /* ------------------------------------------------------------- */
     /* TEST 32: IEEE 802.15.4 Radio Transceiver Driver (Task 5.4)    */

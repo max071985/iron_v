@@ -159,7 +159,7 @@
 /* ========================================================================= */
 
 #ifndef CONFIG_WIFI_SSID
-#define CONFIG_WIFI_SSID                    "IronV-AP"
+#define CONFIG_WIFI_SSID                    "IronV-C6"
 #endif
 
 #ifndef CONFIG_WIFI_PASSPHRASE
@@ -182,12 +182,20 @@
 #define CONFIG_WIFI_USE_STATIC_IP           1U
 #endif
 
+#ifndef CONFIG_WIFI_AUTO_START_AP
+#define CONFIG_WIFI_AUTO_START_AP           1U
+#endif
+
 /* ========================================================================= */
 /* 5. Bluetooth 5 (LE) Controller & GATT Server Defaults                     */
 /* ========================================================================= */
 
 #ifndef CONFIG_BLE_DEVICE_NAME
 #define CONFIG_BLE_DEVICE_NAME              "IRON-V-C6"
+#endif
+
+#ifndef CONFIG_BLE_AUTO_START_ADV
+#define CONFIG_BLE_AUTO_START_ADV           1U
 #endif
 
 /* Advertising Interval in 0.625 ms units (160 * 0.625 = 100 ms) */

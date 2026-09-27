@@ -31,6 +31,7 @@
 #include "ieee802154.h"
 #include "net.h"
 #include "tcp.h"
+#include "http_server.h"
 #include "wifi_vendor_types.h"
 
 static void print_help(void)
@@ -58,6 +59,7 @@ static void print_help(void)
     console_puts("  mmu [status|map]    - Show MSPI MMU Flash XIP mapping & cache status\r\n");
     console_puts("  15.4 [status|chan|pan|short|rx|tx|stop] - Show or control IEEE 802.15.4 radio transceiver\r\n");
     console_puts("  net [status|ip|mask|gw|arp|tcp|reset] - Show or control IPv4 network interface & TCP state machine\r\n");
+    console_puts("  http [status|routes|start|stop] - Show or control zero-allocation local REST/HTTP server\r\n");
     console_puts("  soak [cycles|status] - Run or inspect 24/7 multi-protocol automated stability soak engine\r\n");
     console_puts("  do-test             - Run full baseline validation test suite\r\n");
 }
@@ -325,6 +327,18 @@ static void print_info(void)
     net_ip_to_str(ncfg.gateway, ip_buf, sizeof(ip_buf));
     console_puts(ip_buf);
     console_puts(", TCP: Active\r\n");
+
+    http_telemetry_t htel;
+    http_server_get_telemetry(&htel);
+    console_puts(" HTTP:    State: ");
+    console_puts(htel.server_running ? "ACTIVE" : "STOPPED");
+    console_puts(", Port: ");
+    put_dec(HTTP_SERVER_DEFAULT_PORT);
+    console_puts(", Routes: ");
+    put_dec(htel.active_routes);
+    console_puts(", ReqTotal: ");
+    put_dec(htel.requests_total);
+    console_puts("\r\n");
     console_puts("========================================\r\n");
 }
 
@@ -2225,6 +2239,79 @@ static void shell_execute(char *input_buffer)
             console_puts(" (RFC 1071 Validation OK)\r\n");
         }
     }
+    else if (strncmp(input_buffer, "http", 4) == 0 && (input_buffer[4] == ' ' || input_buffer[4] == '\0'))
+    {
+        char *subcmd = input_buffer + 4;
+        while (*subcmd == ' ') subcmd++;
+
+        if (strncmp(subcmd, "start", 5) == 0)
+        {
+            http_status_t st = http_server_start(HTTP_SERVER_DEFAULT_PORT);
+            if (st == HTTP_OK)
+            {
+                console_puts("HTTP server started on port ");
+                put_dec(HTTP_SERVER_DEFAULT_PORT);
+                console_puts("\r\n");
+            }
+            else
+            {
+                console_puts("Failed to start HTTP server\r\n");
+            }
+        }
+        else if (strncmp(subcmd, "stop", 4) == 0)
+        {
+            http_server_stop();
+            console_puts("HTTP server stopped\r\n");
+        }
+        else if (strncmp(subcmd, "routes", 6) == 0)
+        {
+            console_puts("Registered HTTP Routes:\r\n");
+            console_puts("  1. GET  /               (Embedded Web UI Dashboard)\r\n");
+            console_puts("  2. GET  /index.html     (Embedded Web UI Dashboard)\r\n");
+            console_puts("  3. GET  /api/status     (System Status JSON)\r\n");
+            console_puts("  4. GET  /api/info       (Device Info JSON)\r\n");
+            console_puts("  5. GET  /api/telemetry  (Telemetry Metrics JSON)\r\n");
+            console_puts("  6. POST /api/wdt/feed   (Watchdog Supervisor Feed)\r\n");
+        }
+        else
+        {
+            http_telemetry_t ht;
+            http_server_get_telemetry(&ht);
+            console_puts("Zero-Allocation Local REST/HTTP Server Status:\r\n");
+            console_puts("  Server State:      ");
+            console_puts(ht.server_running ? "RUNNING" : "STOPPED");
+            console_puts("\r\n");
+            console_puts("  Bound Port:        ");
+            put_dec(HTTP_SERVER_DEFAULT_PORT);
+            console_puts("\r\n");
+            console_puts("  Active Routes:     ");
+            put_dec(ht.active_routes);
+            console_puts("\r\n");
+            console_puts("  Requests Total:    ");
+            put_dec(ht.requests_total);
+            console_puts("\r\n");
+            console_puts("  Requests GET:      ");
+            put_dec(ht.requests_get);
+            console_puts("\r\n");
+            console_puts("  Requests POST:     ");
+            put_dec(ht.requests_post);
+            console_puts("\r\n");
+            console_puts("  Responses 200 OK:  ");
+            put_dec(ht.responses_200);
+            console_puts("\r\n");
+            console_puts("  Responses 404:     ");
+            put_dec(ht.responses_404);
+            console_puts("\r\n");
+            console_puts("  Responses 405:     ");
+            put_dec(ht.responses_405);
+            console_puts("\r\n");
+            console_puts("  Bytes RX / TX:     ");
+            put_dec(ht.bytes_rx);
+            console_puts(" / ");
+            put_dec(ht.bytes_tx);
+            console_puts("\r\n");
+        }
+    }
     else
     {
         console_puts("Unknown command. Type 'help' for available commands.\r\n");
@@ -2318,6 +2405,10 @@ void main(void)
 
     /* Initialize Lightweight Bare-Metal TCP State Machine */
     tcp_init();
+
+    /* Initialize Zero-Allocation Local REST/HTTP Server Engine */
+    http_server_init();
+    http_server_start(HTTP_SERVER_DEFAULT_PORT);
 
     console_puts("\r\n");
     print_info();

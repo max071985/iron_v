@@ -36,6 +36,26 @@
 #include "wifi_ftm_cal.h"
 #include "wifi_phy_data.h"
 #include "test.h"
+#include "http_server.h"
+#include "web_assets.h"
+#include "clock.h"
+#include "wdt.h"
+
+/* Host test stubs for hardware-specific functions */
+void wdt_feed(void)
+{
+}
+
+void clock_get_config(clock_config_t *cfg)
+{
+    if (cfg != NULL)
+    {
+        cfg->xtal_mhz = 40U;
+        cfg->pll_mhz  = 480U;
+        cfg->cpu_mhz  = 160U;
+        cfg->apb_mhz  = 40U;
+    }
+}
 
 /* Freestanding function aliases matching runtime naming conventions */
 static inline size_t s_strlen(const char *s)
@@ -2160,6 +2180,93 @@ static void test_tcpip_subsystem(void)
     TEST_ASSERT(net_reset_defaults() == NET_OK, "net_reset_defaults succeeds");
 }
 
+static void test_custom_http_handler(const char *qp, char *body, size_t max)
+{
+    (void)qp;
+    const char msg[] = "{\"custom\":\"ok\"}";
+    size_t mlen = strlen(msg);
+    if (mlen >= max) mlen = max - 1U;
+    memcpy(body, msg, mlen);
+    body[mlen] = '\0';
+}
+
+static void test_http_server_subsystem(void)
+{
+    printf("  [TEST] Zero-Allocation Local REST/HTTP Engine & Embedded Web UI (Task 6.1)...\n");
+
+    /* 1. Protocol & Sizing Constants */
+    TEST_ASSERT(HTTP_SERVER_DEFAULT_PORT == 80U, "HTTP default port is 80");
+    TEST_ASSERT(HTTP_MAX_ROUTES == 16U, "HTTP_MAX_ROUTES is 16");
+    TEST_ASSERT(HTTP_REQUEST_BUF_SIZE == 1024U, "HTTP request buffer size is 1024");
+    TEST_ASSERT(HTTP_RESPONSE_BUF_SIZE == 1536U, "HTTP response buffer size is 1536");
+
+    /* 2. Lifecycle & Route Registration */
+    TEST_ASSERT(http_server_init() == HTTP_OK, "http_server_init succeeds");
+    uint16_t initial_routes = http_server_get_route_count();
+    TEST_ASSERT(initial_routes >= 5U, "Default routes registered >= 5");
+
+    /* Register custom route */
+    TEST_ASSERT(http_route_register("/api/test", HTTP_METHOD_GET, test_custom_http_handler) == HTTP_OK, "Custom route register succeeds");
+    TEST_ASSERT(http_server_get_route_count() == initial_routes + 1U, "Route count incremented");
+
+    /* 3. Route Lookup */
+    bool path_match = false;
+    const http_route_t *found = http_route_find("/api/test", HTTP_METHOD_GET, &path_match);
+    TEST_ASSERT(found != NULL && path_match == true, "Find custom route succeeds");
+    TEST_ASSERT(http_route_find("/nonexistent", HTTP_METHOD_GET, &path_match) == NULL && path_match == false, "Non-existent route returns NULL");
+
+    /* 4. Request Processing: Valid GET /api/status */
+    const char req_status[] = "GET /api/status HTTP/1.1\r\nHost: 192.168.1.100\r\n\r\n";
+    char resp[1536] = {0};
+    size_t resp_len = 0U;
+    TEST_ASSERT(http_process_request(req_status, strlen(req_status), resp, sizeof(resp), &resp_len) == HTTP_OK, "Process GET /api/status succeeds");
+    TEST_ASSERT(strstr(resp, "HTTP/1.1 200 OK") != NULL, "Status 200 OK in response");
+    TEST_ASSERT(strstr(resp, "uptime_ms") != NULL, "JSON contains uptime_ms");
+    TEST_ASSERT(strstr(resp, "Content-Type: application/json") != NULL, "Content-Type is JSON");
+
+    /* 5. Request Processing: 404 Not Found */
+    const char req_unknown[] = "POST /unknown HTTP/1.1\r\n\r\n";
+    resp[0] = '\0';
+    TEST_ASSERT(http_process_request(req_unknown, strlen(req_unknown), resp, sizeof(resp), &resp_len) == HTTP_ERR_NOT_FOUND, "Process POST /unknown returns 404");
+    TEST_ASSERT(strstr(resp, "HTTP/1.1 404 Not Found") != NULL, "Response line is 404 Not Found");
+    TEST_ASSERT(strstr(resp, "not_found") != NULL, "Response body contains not_found");
+
+    /* 6. Request Processing: 405 Method Not Allowed */
+    const char req_405[] = "POST /api/status HTTP/1.1\r\n\r\n";
+    resp[0] = '\0';
+    TEST_ASSERT(http_process_request(req_405, strlen(req_405), resp, sizeof(resp), &resp_len) == HTTP_ERR_METHOD_NOT_ALLOWED, "Process POST to GET route returns 405");
+    TEST_ASSERT(strstr(resp, "HTTP/1.1 405 Method Not Allowed") != NULL, "Response line is 405 Method Not Allowed");
+
+    /* 7. Request Processing: 400 Bad Request */
+    const char req_bad[] = "GARBAGE_REQUEST\r\n";
+    resp[0] = '\0';
+    TEST_ASSERT(http_process_request(req_bad, strlen(req_bad), resp, sizeof(resp), &resp_len) == HTTP_ERR_MALFORMED, "Process malformed request returns 400");
+    TEST_ASSERT(strstr(resp, "HTTP/1.1 400 Bad Request") != NULL, "Response line is 400 Bad Request");
+
+    /* 8. Web Dashboard Asset Delivery (GET /) */
+    const char req_root[] = "GET / HTTP/1.1\r\n\r\n";
+    resp[0] = '\0';
+    TEST_ASSERT(http_process_request(req_root, strlen(req_root), resp, sizeof(resp), &resp_len) == HTTP_OK, "Process GET / succeeds");
+    TEST_ASSERT(strstr(resp, "HTTP/1.1 200 OK") != NULL, "Root response is 200 OK");
+    TEST_ASSERT(strstr(resp, "Content-Type: text/html") != NULL, "Content-Type is text/html");
+    TEST_ASSERT(strstr(resp, "<html") != NULL, "Body contains HTML");
+
+    /* 9. HTTP Server Start & Telemetry */
+    TEST_ASSERT(http_server_start(80U) == HTTP_OK, "http_server_start succeeds");
+    TEST_ASSERT(http_server_is_running() == true, "Server reports running");
+
+    http_telemetry_t telem;
+    TEST_ASSERT(http_server_get_telemetry(&telem) == HTTP_OK, "http_server_get_telemetry succeeds");
+    TEST_ASSERT(telem.requests_total >= 5U, "Telemetry records >= 5 requests");
+    TEST_ASSERT(telem.responses_200 >= 2U, "Telemetry records >= 2 200 responses");
+    TEST_ASSERT(telem.responses_404 >= 1U, "Telemetry records >= 1 404 response");
+    TEST_ASSERT(telem.bytes_tx > 0U, "Telemetry records transmitted bytes");
+
+    /* 10. HTTP Server Stop */
+    TEST_ASSERT(http_server_stop() == HTTP_OK, "http_server_stop succeeds");
+    TEST_ASSERT(http_server_is_running() == false, "Server reports stopped");
+}
+
 /* ========================================================================= */
 /* Phase 0-3 Host Test Hardening: Cross-Module Integration & Edge Case Tests */
 /* ========================================================================= */
@@ -3278,6 +3385,7 @@ int main(void)
     test_wifi_custom_stack_refactor();
     test_ieee802154_subsystem();
     test_tcpip_subsystem();
+    test_http_server_subsystem();
 
     /* Hardened cross-module integration and edge case tests */
     test_coroutine_systimer_dpc_integration();

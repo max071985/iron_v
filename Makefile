@@ -18,7 +18,7 @@ CFLAGS = -march=rv32imac_zicsr_zifencei -mabi=ilp32 -ffreestanding -nostdlib -Os
 LDFLAGS = -T ld/link.ld -T ld/rom/esp32c6.rom.ld -T ld/rom/esp32c6.rom.phy.ld -T ld/rom/esp32c6.rom.pp.ld -T ld/rom/esp32c6.rom.net80211.ld -T ld/rom/esp32c6.rom.coexist.ld -Llibs/esp32c6 -nostdlib -Wl,--wrap=ram_set_chan_freq_sw_start
 
 # Baseline source files
-SRCS = src/crt0.S src/trap_entry.S src/task_switch.S src/main.c src/string.c src/utils.c src/test.c src/clock.c src/mmu.c src/wdt.c src/trap.c src/panic.c src/interrupt.c src/dpc.c src/usb_serial.c src/uart.c src/console.c src/timer.c src/arena.c src/systimer.c src/task.c src/pmp.c src/lp_core.c src/power.c src/gpio.c src/gdma.c src/modem.c src/ble.c src/ble_npl.c src/wifi.c src/ieee802154.c src/net.c src/tcp.c src/wifi_os_adapter.c src/wifi_regulatory.c src/wifi_ftm_cal.c src/wifi_phy_data.c
+SRCS = src/crt0.S src/trap_entry.S src/task_switch.S src/main.c src/string.c src/utils.c src/test.c src/clock.c src/mmu.c src/wdt.c src/trap.c src/panic.c src/interrupt.c src/dpc.c src/usb_serial.c src/uart.c src/console.c src/timer.c src/arena.c src/systimer.c src/task.c src/pmp.c src/lp_core.c src/power.c src/gpio.c src/gdma.c src/modem.c src/ble.c src/ble_npl.c src/wifi.c src/ieee802154.c src/net.c src/tcp.c src/wifi_os_adapter.c src/wifi_regulatory.c src/wifi_ftm_cal.c src/wifi_phy_data.c src/http_server.c
 
 # Auto-detect hardware ports
 DETECTED_ACM ?= $(firstword $(wildcard /dev/ttyACM*))
@@ -108,8 +108,8 @@ monitor:
 	echo "Connecting to $$port with picocom $$flags..."; \
 	exec picocom $$flags "$$port"
 
-tests/test_freestanding: tests/test_freestanding.c src/string.c src/string.h src/mmu.c src/mmu.h src/dpc.c src/dpc.h src/arena.c src/arena.h src/pmp.c src/pmp.h src/lp_core.c src/lp_core.h src/lp_firmware_image.h src/power.c src/power.h src/gpio.c src/gpio.h src/gdma.c src/gdma.h src/modem.c src/modem.h src/ble.c src/ble.h src/ble_gatt.h src/ble_npl.c src/ble_npl.h src/wifi.c src/wifi.h src/ieee802154.c src/ieee802154.h src/config.h src/net.c src/net.h src/tcp.c src/tcp.h src/wifi_os_adapter.c src/wifi_os_adapter.h src/wifi_vendor_types.h src/wifi_regulatory.h src/wifi_ftm_cal.h src/wifi_phy_data.h src/wifi_regulatory.c src/wifi_ftm_cal.c src/wifi_phy_data.c
-	gcc -O2 -fno-tree-loop-distribute-patterns -Wall -Wextra -Werror -Isrc tests/test_freestanding.c src/string.c src/mmu.c src/dpc.c src/arena.c src/pmp.c src/lp_core.c src/power.c src/gpio.c src/gdma.c src/modem.c src/ble.c src/ble_npl.c src/wifi.c src/ieee802154.c src/net.c src/tcp.c src/wifi_os_adapter.c src/wifi_regulatory.c src/wifi_ftm_cal.c src/wifi_phy_data.c -o $@
+tests/test_freestanding: tests/test_freestanding.c src/string.c src/string.h src/mmu.c src/mmu.h src/dpc.c src/dpc.h src/arena.c src/arena.h src/pmp.c src/pmp.h src/lp_core.c src/lp_core.h src/lp_firmware_image.h src/power.c src/power.h src/gpio.c src/gpio.h src/gdma.c src/gdma.h src/modem.c src/modem.h src/ble.c src/ble.h src/ble_gatt.h src/ble_npl.c src/ble_npl.h src/wifi.c src/wifi.h src/ieee802154.c src/ieee802154.h src/config.h src/net.c src/net.h src/tcp.c src/tcp.h src/wifi_os_adapter.c src/wifi_os_adapter.h src/wifi_vendor_types.h src/wifi_regulatory.h src/wifi_ftm_cal.h src/wifi_phy_data.h src/wifi_regulatory.c src/wifi_ftm_cal.c src/wifi_phy_data.c src/http_server.c src/http_server.h src/web_assets.h
+	gcc -O2 -fno-tree-loop-distribute-patterns -Wall -Wextra -Werror -Isrc tests/test_freestanding.c src/string.c src/mmu.c src/dpc.c src/arena.c src/pmp.c src/lp_core.c src/power.c src/gpio.c src/gdma.c src/modem.c src/ble.c src/ble_npl.c src/wifi.c src/ieee802154.c src/net.c src/tcp.c src/wifi_os_adapter.c src/wifi_regulatory.c src/wifi_ftm_cal.c src/wifi_phy_data.c src/http_server.c -o $@
 
 do-test: firmware.elf firmware.bin tests/test_freestanding
 	@./tests/test_freestanding

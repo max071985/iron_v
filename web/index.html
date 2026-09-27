@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Iron V Bare-Metal RISC-V Dashboard</title>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --surface: #1e293b;
+            --border: #334155;
+            --text: #f8fafc;
+            --text-muted: #94a3b8;
+            --primary: #38bdf8;
+            --success: #4ade80;
+            --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background-color: var(--bg);
+            color: var(--text);
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            line-height: 1.5;
+            padding: 1.5rem;
+        }
+        .container { max-width: 900px; margin: 0 auto; }
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 1rem;
+            margin-bottom: 1.5rem;
+        }
+        .title-group h1 { font-size: 1.5rem; font-weight: 700; color: var(--primary); }
+        .title-group p { font-size: 0.875rem; color: var(--text-muted); }
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.25rem 0.625rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            background: rgba(74, 222, 128, 0.15);
+            color: var(--success);
+            border: 1px solid rgba(74, 222, 128, 0.3);
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 1.25rem;
+            margin-bottom: 1.5rem;
+        }
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 0.75rem;
+            padding: 1.25rem;
+        }
+        .card h2 {
+            font-size: 1rem;
+            font-weight: 600;
+            margin-bottom: 0.75rem;
+            display: flex;
+            align-items: center;
+            color: var(--text);
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 0.5rem;
+        }
+        .data-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 0.375rem 0;
+            font-size: 0.875rem;
+        }
+        .data-row .label { color: var(--text-muted); }
+        .data-row .val { font-family: var(--font-mono); font-weight: 500; }
+        .btn {
+            background: var(--primary);
+            color: #0f172a;
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 0.375rem;
+            font-size: 0.875rem;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .btn:hover { opacity: 0.9; }
+        .footer {
+            text-align: center;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-top: 2rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--border);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="title-group">
+                <h1>Iron V Bare-Metal Runtime</h1>
+                <p>ESP32-C6 RISC-V SoC Embedded Engine</p>
+            </div>
+            <div>
+                <span class="badge">ONLINE</span>
+            </div>
+        </header>
+        <div class="grid">
+            <div class="card">
+                <h2>System & Hardware</h2>
+                <div class="data-row"><span class="label">Target SoC:</span><span class="val" id="val-soc">ESP32-C6</span></div>
+                <div class="data-row"><span class="label">CPU Frequency:</span><span class="val" id="val-cpu">160 MHz</span></div>
+                <div class="data-row"><span class="label">APB Frequency:</span><span class="val" id="val-apb">40 MHz</span></div>
+                <div class="data-row"><span class="label">System Uptime:</span><span class="val" id="val-uptime">--</span></div>
+            </div>
+            <div class="card">
+                <h2>Network & Transport</h2>
+                <div class="data-row"><span class="label">IPv4 Address:</span><span class="val" id="val-ip">192.168.1.100</span></div>
+                <div class="data-row"><span class="label">Subnet Mask:</span><span class="val">255.255.255.0</span></div>
+                <div class="data-row"><span class="label">Gateway:</span><span class="val">192.168.1.1</span></div>
+                <div class="data-row"><span class="label">TCP Port:</span><span class="val">80 (HTTP)</span></div>
+            </div>
+            <div class="card">
+                <h2>Wireless Subsystems</h2>
+                <div class="data-row"><span class="label">Wi-Fi 6:</span><span class="val">802.11ax MAC / SoftAP</span></div>
+                <div class="data-row"><span class="label">Bluetooth:</span><span class="val">5.0 LE / Minimal GATT</span></div>
+                <div class="data-row"><span class="label">IEEE 802.15.4:</span><span class="val">Radio Transceiver Ready</span></div>
+                <div class="data-row"><span class="label">RF Coexistence:</span><span class="val">Hardware Arbiter Synced</span></div>
+            </div>
+            <div class="card">
+                <h2>Memory & Safety</h2>
+                <div class="data-row"><span class="label">HP SRAM:</span><span class="val">512 KB (Harvard Split)</span></div>
+                <div class="data-row"><span class="label">Static Arenas:</span><span class="val">Zero Dynamic Heap</span></div>
+                <div class="data-row"><span class="label">Watchdog:</span><span class="val">Multi-Tier MWDT Active</span></div>
+                <div class="data-row"><span class="label">Isolation:</span><span class="val">PMP & HP_APM Enforced</span></div>
+            </div>
+        </div>
+        <div style="text-align: right;">
+            <button class="btn" onclick="fetchStatus()">Refresh Status</button>
+        </div>
+        <div class="footer">
+            Iron V Embedded RISC-V Runtime &mdash; Built with zero dynamic heap allocation
+        </div>
+    </div>
+    <script>
+        function fetchStatus() {
+            fetch('/api/status')
+                .then(r => r.json())
+                .then(d => {
+                    if (d.uptime_ms) {
+                        const sec = Math.floor(d.uptime_ms / 1000);
+                        document.getElementById('val-uptime').innerText = sec + 's (' + d.uptime_ms + ' ms)';
+                    }
+                    if (d.hostname) document.getElementById('val-soc').innerText = d.hostname + ' (ESP32-C6)';
+                    if (d.cpu_mhz) document.getElementById('val-cpu').innerText = d.cpu_mhz + ' MHz';
+                })
+                .catch(err => console.log('API poll:', err));
+        }
+        setInterval(fetchStatus, 5000);
+        window.onload = fetchStatus;
+    </script>
+</body>
+</html>

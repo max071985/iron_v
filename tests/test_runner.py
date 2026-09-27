@@ -1093,6 +1093,38 @@ def run_suite():
         t32_pass
     )
 
+    # TEST 33: Zero-Allocation Local REST/HTTP Engine & Embedded Web UI (Task 6.1)
+    total += 1
+    http_syms = [
+        "http_server_init",
+        "http_server_start",
+        "http_server_stop",
+        "http_server_is_running",
+        "http_route_register",
+        "http_route_find",
+        "http_process_request",
+        "http_server_get_telemetry",
+        "http_server_get_route_count",
+        "http_method_to_str",
+        "http_status_to_str"
+    ]
+    found_http_syms = [s for s in http_syms if s in symbols]
+    all_http_found = len(found_http_syms) == len(http_syms)
+    all_http_in_text = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        for s in found_http_syms
+    )
+    t33_pass = all_http_found and all_http_in_text
+    t33_actual = f"Found {len(found_http_syms)}/{len(http_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    passed += print_result_line(
+        total,
+        "Zero-Allocation Local REST/HTTP Engine & Embedded Web UI Linkage",
+        "Verify http_server_init, start/stop, routing, process_request, and telemetry symbols exist in IRAM",
+        f"All {len(http_syms)} HTTP server symbols present in IRAM text section [0x40800000, 0x40829000)",
+        t33_actual,
+        t33_pass
+    )
+
     print("\n" + "=" * 70)
     print("                       TEST SUITE SUMMARY                             ")
     print("=" * 70)

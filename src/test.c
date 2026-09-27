@@ -28,6 +28,7 @@
 #include "ieee802154.h"
 #include "net.h"
 #include "tcp.h"
+#include "http_server.h"
 
 /* Route all test output to unified dual-console multiplexer */
 #define uart_puts console_puts
@@ -2498,6 +2499,131 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
 
     if (t33_pass) passed_tests++;
     print_result(t33_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 34: Zero-Allocation Local REST/HTTP Engine (Task 6.1)    */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(34, "Zero-Allocation Local REST/HTTP Engine & Embedded Web UI",
+                      "Verify HTTP/1.1 request routing, JSON REST endpoints, 404/405 error handling, and web dashboard");
+
+    wdt_feed();
+
+    /* 1. Subsystem Initialization */
+    int http_init_ok = (http_server_init() == HTTP_OK);
+    uint16_t route_cnt = http_server_get_route_count();
+    int route_cnt_ok = (route_cnt >= 5U);
+
+    /* 2. GET /api/status -> HTTP 200 OK with valid JSON containing uptime_ms */
+    const char req_status[] = "GET /api/status HTTP/1.1\r\nHost: iron-v\r\n\r\n";
+    char resp_status[1024];
+    size_t resp_status_len = 0U;
+    http_status_t st_status = http_process_request(req_status, strlen(req_status),
+                                                   resp_status, sizeof(resp_status),
+                                                   &resp_status_len);
+    int get_status_ok = (st_status == HTTP_OK) &&
+                        (strstr(resp_status, "200 OK") != NULL) &&
+                        (strstr(resp_status, "uptime_ms") != NULL) &&
+                        (strstr(resp_status, "Content-Length:") != NULL) &&
+                        (strstr(resp_status, "application/json") != NULL);
+
+    /* 3. POST /unknown -> HTTP 404 Not Found */
+    const char req_unknown[] = "POST /unknown HTTP/1.1\r\nHost: iron-v\r\n\r\n";
+    char resp_unknown[512];
+    size_t resp_unknown_len = 0U;
+    http_status_t st_unknown = http_process_request(req_unknown, strlen(req_unknown),
+                                                    resp_unknown, sizeof(resp_unknown),
+                                                    &resp_unknown_len);
+    int post_unknown_ok = (st_unknown == HTTP_ERR_NOT_FOUND) &&
+                          (strstr(resp_unknown, "404 Not Found") != NULL) &&
+                          (strstr(resp_unknown, "not_found") != NULL);
+
+    /* 4. GET / -> Embedded Web UI HTML Dashboard */
+    const char req_root[] = "GET / HTTP/1.1\r\nHost: iron-v\r\n\r\n";
+    char resp_root[1536];
+    size_t resp_root_len = 0U;
+    http_status_t st_root = http_process_request(req_root, strlen(req_root),
+                                                 resp_root, sizeof(resp_root),
+                                                 &resp_root_len);
+    int get_root_ok = (st_root == HTTP_OK) &&
+                      (strstr(resp_root, "200 OK") != NULL) &&
+                      (strstr(resp_root, "text/html") != NULL) &&
+                      (strstr(resp_root, "<html") != NULL);
+
+    /* 5. Method Not Allowed: POST to GET-only /api/info */
+    const char req_method_err[] = "POST /api/info HTTP/1.1\r\nHost: iron-v\r\n\r\n";
+    char resp_method_err[512];
+    size_t resp_method_len = 0U;
+    http_status_t st_method_err = http_process_request(req_method_err, strlen(req_method_err),
+                                                       resp_method_err, sizeof(resp_method_err),
+                                                       &resp_method_len);
+    int method_err_ok = (st_method_err == HTTP_ERR_METHOD_NOT_ALLOWED) &&
+                        (strstr(resp_method_err, "405 Method Not Allowed") != NULL);
+
+    /* 6. Watchdog Supervisor Feed via POST /api/wdt/feed */
+    const char req_wdt[] = "POST /api/wdt/feed HTTP/1.1\r\nHost: iron-v\r\n\r\n";
+    char resp_wdt[512];
+    size_t resp_wdt_len = 0U;
+    http_status_t st_wdt = http_process_request(req_wdt, strlen(req_wdt),
+                                                resp_wdt, sizeof(resp_wdt),
+                                                &resp_wdt_len);
+    int wdt_feed_ok = (st_wdt == HTTP_OK) &&
+                      (strstr(resp_wdt, "200 OK") != NULL) &&
+                      (strstr(resp_wdt, "\"fed\":true") != NULL);
+
+    /* 7. Start HTTP Server & Query Telemetry */
+    int srv_start_ok = (http_server_start(HTTP_SERVER_DEFAULT_PORT) == HTTP_OK) &&
+                       http_server_is_running();
+    http_telemetry_t h_telem;
+    int http_telem_ok = (http_server_get_telemetry(&h_telem) == HTTP_OK) &&
+                   (h_telem.requests_total >= 5U) &&
+                   (h_telem.responses_200 >= 3U) &&
+                   (h_telem.responses_404 >= 1U) &&
+                   (h_telem.responses_405 >= 1U);
+
+    wdt_feed();
+
+    int t34_pass = http_init_ok && route_cnt_ok && get_status_ok &&
+                   post_unknown_ok && get_root_ok && method_err_ok &&
+                   wdt_feed_ok && srv_start_ok && http_telem_ok;
+
+    uart_puts("  Expected:    Init=1, Routes=1, Status200=1, Unk404=1, RootHTML=1, Method405=1, WdtFeed=1, SrvStart=1, Telem=1\r\n");
+    uart_puts("  Actual:      Init=");
+    put_dec(http_init_ok);
+    uart_puts(", Routes=");
+    put_dec(route_cnt_ok);
+    uart_puts(", Status200=");
+    put_dec(get_status_ok);
+    uart_puts(", Unk404=");
+    put_dec(post_unknown_ok);
+    uart_puts(", RootHTML=");
+    put_dec(get_root_ok);
+    uart_puts(", Method405=");
+    put_dec(method_err_ok);
+    uart_puts(", WdtFeed=");
+    put_dec(wdt_feed_ok);
+    uart_puts(", SrvStart=");
+    put_dec(srv_start_ok);
+    uart_puts(", Telem=");
+    put_dec(http_telem_ok);
+    uart_puts("\r\n");
+
+    uart_puts("  Diag: Routes=");
+    put_dec(route_cnt);
+    uart_puts(", ReqTotal=");
+    put_dec(h_telem.requests_total);
+    uart_puts(", Resp200=");
+    put_dec(h_telem.responses_200);
+    uart_puts(", Resp404=");
+    put_dec(h_telem.responses_404);
+    uart_puts(", Resp405=");
+    put_dec(h_telem.responses_405);
+    uart_puts(", BytesTx=");
+    put_dec(h_telem.bytes_tx);
+    uart_puts("\r\n");
+
+    if (t34_pass) passed_tests++;
+    print_result(t34_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

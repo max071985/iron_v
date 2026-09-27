@@ -17,5 +17,6 @@ int memcmp(const void *s1, const void *s2, size_t n);
 int s_htoi(char **str, uint32_t *out);
 int is_hex(char c);
 void skip_space(char **str);
+char *strstr(const char *haystack, const char *needle);
 
 #endif // STRING_H

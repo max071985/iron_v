@@ -88,7 +88,7 @@ static tcp_status_t tcp_send_segment(tcp_pcb_t *pcb, uint8_t flags,
     ip->src_ip            = NET_HTONL(net_cfg.ip);
     ip->dest_ip           = NET_HTONL(pcb->remote_ip);
     ip->checksum          = 0U;
-    ip->checksum          = net_ipv4_checksum(ip);
+    ip->checksum          = NET_HTONS(net_ipv4_checksum(ip));
 
     /* TCP Header */
     tcp->src_port              = NET_HTONS(pcb->local_port);
@@ -106,7 +106,7 @@ static tcp_status_t tcp_send_segment(tcp_pcb_t *pcb, uint8_t flags,
         memcpy(data_dst, payload, payload_len);
     }
 
-    tcp->checksum = net_tcp_checksum(net_cfg.ip, pcb->remote_ip, tcp, TCP_MIN_HDR_LEN, payload, payload_len);
+    tcp->checksum = NET_HTONS(net_tcp_checksum(net_cfg.ip, pcb->remote_ip, tcp, TCP_MIN_HDR_LEN, payload, payload_len));
 
     wifi_status_t wst = wifi_tx_packet(frame, total_frame_len);
     if (wst == WIFI_OK)
@@ -314,6 +314,13 @@ tcp_status_t tcp_input(const uint8_t *ip_packet, uint16_t ip_len)
         return TCP_ERR_ARG;
     }
 
+    /* Clamp ip_len to actual IPv4 total_len if smaller to strip carrier padding */
+    uint16_t ip_total_len = NET_NTOHS(ip->total_len);
+    if (ip_total_len >= (ihl + TCP_MIN_HDR_LEN) && ip_total_len <= ip_len)
+    {
+        ip_len = ip_total_len;
+    }
+
     const tcp_header_t *tcp = (const tcp_header_t *)(ip_packet + ihl);
     uint8_t data_offset = ((tcp->data_offset_reserved >> TCP_DATA_OFFSET_SHIFT) & 0x0FU) * 4U;
     if (data_offset < TCP_MIN_HDR_LEN || ip_len < (ihl + data_offset))
@@ -359,6 +366,21 @@ tcp_status_t tcp_input(const uint8_t *ip_packet, uint16_t ip_len)
             match = &s_tcp_pcbs[i];
             break;
         }
+    }
+
+    /* Handle reset flags */
+    if ((flags & TCP_FLAG_RST) != 0U)
+    {
+        if (match != NULL && match->state != TCP_STATE_LISTEN)
+        {
+            match->state = TCP_STATE_CLOSED;
+            match->in_use = false;
+            if (s_tcp_telemetry.active_connections > 0U)
+            {
+                s_tcp_telemetry.active_connections--;
+            }
+        }
+        return TCP_OK;
     }
 
     /* 2. Handle connection establishment on listening PCB */
@@ -416,6 +438,12 @@ tcp_status_t tcp_input(const uint8_t *ip_packet, uint16_t ip_len)
             break;
 
         case TCP_STATE_SYN_RECEIVED:
+            if ((flags & TCP_FLAG_SYN) != 0U)
+            {
+                /* Retransmit SYN+ACK on duplicate SYN */
+                tcp_send_segment(match, TCP_FLAG_SYN | TCP_FLAG_ACK, NULL, 0U);
+                break;
+            }
             if ((flags & TCP_FLAG_ACK) != 0U)
             {
                 match->snd_una = ack_num;
@@ -426,6 +454,22 @@ tcp_status_t tcp_input(const uint8_t *ip_packet, uint16_t ip_len)
                 if (match->accept_cb != NULL)
                 {
                     match->accept_cb(match->callback_arg, match);
+                }
+
+                if (payload_len > 0U)
+                {
+                    match->rcv_nxt += payload_len;
+                    s_tcp_telemetry.bytes_rx += payload_len;
+
+                    if (match->recv_cb != NULL)
+                    {
+                        match->recv_cb(match->callback_arg, match, payload, payload_len);
+                    }
+
+                    if (match->in_use && match->state == TCP_STATE_ESTABLISHED)
+                    {
+                        tcp_send_segment(match, TCP_FLAG_ACK, NULL, 0U);
+                    }
                 }
             }
             break;
@@ -442,8 +486,11 @@ tcp_status_t tcp_input(const uint8_t *ip_packet, uint16_t ip_len)
                     match->recv_cb(match->callback_arg, match, payload, payload_len);
                 }
 
-                /* Acknowledge received payload */
-                tcp_send_segment(match, TCP_FLAG_ACK, NULL, 0U);
+                /* Acknowledge received payload only if connection is still established */
+                if (match->in_use && match->state == TCP_STATE_ESTABLISHED)
+                {
+                    tcp_send_segment(match, TCP_FLAG_ACK, NULL, 0U);
+                }
             }
 
             if ((flags & TCP_FLAG_FIN) != 0U)
@@ -509,9 +556,47 @@ void tcp_tick(void)
     {
         if (!s_tcp_pcbs[i].in_use) continue;
 
+        uint32_t elapsed = now - s_tcp_pcbs[i].last_activity_ms;
+
         if (s_tcp_pcbs[i].state == TCP_STATE_TIME_WAIT)
         {
-            if ((now - s_tcp_pcbs[i].last_activity_ms) >= 2000U)
+            if (elapsed >= 1000U)
+            {
+                s_tcp_pcbs[i].state  = TCP_STATE_CLOSED;
+                s_tcp_pcbs[i].in_use = false;
+                if (s_tcp_telemetry.active_connections > 0U)
+                {
+                    s_tcp_telemetry.active_connections--;
+                }
+            }
+        }
+        else if (s_tcp_pcbs[i].state == TCP_STATE_SYN_RECEIVED)
+        {
+            if (elapsed >= 5000U)
+            {
+                s_tcp_pcbs[i].state  = TCP_STATE_CLOSED;
+                s_tcp_pcbs[i].in_use = false;
+            }
+        }
+        else if (s_tcp_pcbs[i].state == TCP_STATE_FIN_WAIT_1 ||
+                 s_tcp_pcbs[i].state == TCP_STATE_FIN_WAIT_2 ||
+                 s_tcp_pcbs[i].state == TCP_STATE_CLOSING ||
+                 s_tcp_pcbs[i].state == TCP_STATE_CLOSE_WAIT ||
+                 s_tcp_pcbs[i].state == TCP_STATE_LAST_ACK)
+        {
+            if (elapsed >= 5000U)
+            {
+                s_tcp_pcbs[i].state  = TCP_STATE_CLOSED;
+                s_tcp_pcbs[i].in_use = false;
+                if (s_tcp_telemetry.active_connections > 0U)
+                {
+                    s_tcp_telemetry.active_connections--;
+                }
+            }
+        }
+        else if (s_tcp_pcbs[i].state == TCP_STATE_ESTABLISHED)
+        {
+            if (elapsed >= 30000U)
             {
                 s_tcp_pcbs[i].state  = TCP_STATE_CLOSED;
                 s_tcp_pcbs[i].in_use = false;

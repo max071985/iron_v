@@ -110,6 +110,22 @@ net_status_t net_set_ip(uint32_t ip, uint32_t netmask, uint32_t gateway)
     return NET_OK;
 }
 
+net_status_t net_set_mac(const uint8_t *mac)
+{
+    if (mac == NULL)
+    {
+        return NET_ERR_INVALID_ARG;
+    }
+
+    if (!s_net_initialized)
+    {
+        net_init();
+    }
+
+    memcpy(s_net_config.mac, mac, ETH_ADDR_LEN);
+    return NET_OK;
+}
+
 net_status_t net_get_config(net_config_t *out_config)
 {
     if (out_config == NULL)
@@ -501,7 +517,7 @@ net_status_t icmp_process_packet(const uint8_t *in_packet, uint16_t in_len,
     ip_out->dest_ip = src_ip;
     ip_out->ttl     = IPV4_TTL_DEFAULT;
     ip_out->checksum = 0U;
-    ip_out->checksum = net_ipv4_checksum(ip_out);
+    ip_out->checksum = NET_HTONS(net_ipv4_checksum(ip_out));
 
     /* Convert to ICMP Echo Reply */
     icmp_out->type = ICMP_TYPE_ECHO_REPLY;
@@ -509,7 +525,7 @@ net_status_t icmp_process_packet(const uint8_t *in_packet, uint16_t in_len,
     icmp_out->checksum = 0U;
 
     size_t icmp_len = (size_t)in_len - (ETH_HDR_LEN + ihl);
-    icmp_out->checksum = net_checksum(icmp_out, icmp_len);
+    icmp_out->checksum = NET_HTONS(net_checksum(icmp_out, icmp_len));
 
     *out_reply_len = in_len;
     s_net_telemetry.icmp_tx++;
@@ -574,11 +590,25 @@ net_status_t net_input(const uint8_t *frame, uint16_t len)
             return NET_ERR_FRAME_CORRUPT;
         }
 
+        uint16_t ip_total_len = NET_NTOHS(ip->total_len);
+        if (ip_total_len < ihl || (len - ETH_HDR_LEN) < ip_total_len)
+        {
+            s_net_telemetry.dropped_packets++;
+            return NET_ERR_FRAME_CORRUPT;
+        }
+
+        /* Dynamically update ARP cache from incoming IPv4 unicast frames */
+        uint32_t sender_ip = NET_NTOHL(ip->src_ip);
+        if (sender_ip != 0U && sender_ip != 0xFFFFFFFFU && (eth->src_mac[0] & 0x01U) == 0U)
+        {
+            arp_insert(sender_ip, eth->src_mac);
+        }
+
         if (ip->protocol == IPV4_PROTO_ICMP)
         {
             uint8_t icmp_reply[NET_MAX_FRAME_SIZE];
             uint16_t icmp_reply_len = 0U;
-            net_status_t st = icmp_process_packet(frame, len, icmp_reply, sizeof(icmp_reply), &icmp_reply_len);
+            net_status_t st = icmp_process_packet(frame, (uint16_t)(ETH_HDR_LEN + ip_total_len), icmp_reply, sizeof(icmp_reply), &icmp_reply_len);
             if (st == NET_OK && icmp_reply_len > 0U)
             {
                 wifi_tx_packet(icmp_reply, icmp_reply_len);
@@ -590,21 +620,21 @@ net_status_t net_input(const uint8_t *frame, uint16_t len)
         else if (ip->protocol == IPV4_PROTO_TCP)
         {
             s_net_telemetry.tcp_rx++;
-            tcp_status_t tst = tcp_input(frame + ETH_HDR_LEN, len - ETH_HDR_LEN);
+            tcp_status_t tst = tcp_input(frame + ETH_HDR_LEN, ip_total_len);
             return (tst == TCP_OK) ? NET_OK : NET_ERR_INVALID_ARG;
         }
         else if (ip->protocol == IPV4_PROTO_UDP)
         {
             s_net_telemetry.udp_rx++;
-            if (len >= (ETH_HDR_LEN + ihl + UDP_HDR_LEN))
+            if (ip_total_len >= (ihl + UDP_HDR_LEN))
             {
                 const udp_header_t *udp = (const udp_header_t *)(frame + ETH_HDR_LEN + ihl);
                 uint16_t dest_port = NET_NTOHS(udp->dest_port);
                 uint16_t udp_len = NET_NTOHS(udp->length);
-                if (udp_len >= UDP_HDR_LEN && len >= (ETH_HDR_LEN + ihl + udp_len))
+                if (udp_len >= UDP_HDR_LEN && (ihl + udp_len) <= ip_total_len)
                 {
-                    const uint8_t *payload = (const uint8_t *)udp + UDP_HDR_LEN;
                     uint16_t payload_len = (uint16_t)(udp_len - UDP_HDR_LEN);
+                    const uint8_t *payload = (const uint8_t *)udp + UDP_HDR_LEN;
 
                     if (dest_port == DHCP_SERVER_PORT)
                     {
@@ -690,7 +720,7 @@ net_status_t net_send_udp(uint32_t dest_ip, uint16_t src_port, uint16_t dest_por
     {
         memcpy(payload, data, len);
     }
-    udp->checksum = net_udp_checksum(s_net_config.ip, dest_ip, udp, data, len);
+    udp->checksum = NET_HTONS(net_udp_checksum(s_net_config.ip, dest_ip, udp, data, len));
 
     wifi_status_t wst = wifi_tx_packet(frame_buf, total_frame_len);
     if (wst == WIFI_OK)

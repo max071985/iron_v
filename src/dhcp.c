@@ -53,12 +53,9 @@ static dhcp_status_t dhcp_send_udp_frame(const uint8_t *dest_mac, uint32_t dest_
 
     /* Query local interface MAC */
     uint8_t src_mac[ETH_ADDR_LEN];
-    if (wifi_get_ap_mac_addr(src_mac) != WIFI_OK)
-    {
-        net_config_t ncfg;
-        net_get_config(&ncfg);
-        memcpy(src_mac, ncfg.mac, ETH_ADDR_LEN);
-    }
+    net_config_t ncfg;
+    net_get_config(&ncfg);
+    memcpy(src_mac, ncfg.mac, ETH_ADDR_LEN);
 
     /* 1. Ethernet Header */
     memcpy(eth->dest_mac, dest_mac, ETH_ADDR_LEN);
@@ -288,6 +285,7 @@ dhcp_status_t dhcp_process_packet(const uint8_t *eth_frame, const uint8_t *paylo
         s_dhcp_telemetry.discover_rx++;
 
         dhcp_lease_t *lease = dhcp_allocate_lease(req->chaddr);
+        arp_insert(lease->ip, req->chaddr);
         resp.yiaddr = NET_HTONL(lease->ip);
 
         /* Option 53: Message Type = DHCPOFFER (2) */
@@ -364,6 +362,7 @@ dhcp_status_t dhcp_process_packet(const uint8_t *eth_frame, const uint8_t *paylo
         }
 
         dhcp_lease_t *lease = dhcp_allocate_lease(req->chaddr);
+        arp_insert(lease->ip, req->chaddr);
         if (requested_ip != 0U && requested_ip != lease->ip)
         {
             /* Requested IP does not match assigned pool; issue NAK */

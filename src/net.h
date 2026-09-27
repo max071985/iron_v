@@ -260,6 +260,7 @@ net_status_t net_init(void);
 
 /* Interface Configuration & Telemetry */
 net_status_t net_set_ip(uint32_t ip, uint32_t netmask, uint32_t gateway);
+net_status_t net_set_mac(const uint8_t *mac);
 net_status_t net_reset_defaults(void);
 net_status_t net_get_config(net_config_t *out_config);
 net_status_t net_get_telemetry(net_telemetry_t *out_telemetry);

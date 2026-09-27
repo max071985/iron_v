@@ -268,6 +268,12 @@ http_status_t http_server_init(void)
     /* Register standard routes */
     http_route_register("/", HTTP_METHOD_GET, http_handler_root);
     http_route_register("/index.html", HTTP_METHOD_GET, http_handler_root);
+    http_route_register("/generate_204", HTTP_METHOD_GET, http_handler_root);
+    http_route_register("/gen_204", HTTP_METHOD_GET, http_handler_root);
+    http_route_register("/hotspot-detect.html", HTTP_METHOD_GET, http_handler_root);
+    http_route_register("/ncsi.txt", HTTP_METHOD_GET, http_handler_root);
+    http_route_register("/connecttest.txt", HTTP_METHOD_GET, http_handler_root);
+    http_route_register("/canonical.html", HTTP_METHOD_GET, http_handler_root);
     http_route_register("/api/status", HTTP_METHOD_GET, http_handler_status);
     http_route_register("/api/info", HTTP_METHOD_GET, http_handler_info);
     http_route_register("/api/telemetry", HTTP_METHOD_GET, http_handler_telemetry);
@@ -493,7 +499,9 @@ http_status_t http_process_request(const char *raw_request, size_t req_len,
         route->handler(query_buf, body_buf, sizeof(body_buf));
         s_http_telemetry.responses_200++;
 
-        if (strcmp(path_buf, "/") == 0 || strcmp(path_buf, "/index.html") == 0)
+        if (strcmp(path_buf, "/") == 0 || strcmp(path_buf, "/index.html") == 0 ||
+            strcmp(path_buf, "/generate_204") == 0 || strcmp(path_buf, "/gen_204") == 0 ||
+            strcmp(path_buf, "/hotspot-detect.html") == 0 || strcmp(path_buf, "/canonical.html") == 0)
         {
             content_type = HTTP_MIME_HTML;
         }
@@ -524,6 +532,7 @@ http_status_t http_process_request(const char *raw_request, size_t req_len,
     http_str_append(out_response, max_resp_len, status_line);
     http_str_append(out_response, max_resp_len, HTTP_SERVER_HEADER);
     http_str_append(out_response, max_resp_len, HTTP_CONN_CLOSE_HEADER);
+    http_str_append(out_response, max_resp_len, "Access-Control-Allow-Origin: *\r\n");
     http_str_append(out_response, max_resp_len, "Content-Type: ");
     http_str_append(out_response, max_resp_len, content_type);
     http_str_append(out_response, max_resp_len, "\r\nContent-Length: ");

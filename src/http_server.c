@@ -256,6 +256,52 @@ static void http_handler_wdt_feed(const char *query_params, char *response_body,
     http_str_append(response_body, max_len, "{\"status\":\"ok\",\"fed\":true,\"message\":\"watchdog fed\"}\r\n");
 }
 
+/* GET /favicon.ico -> Returns 200 OK empty response */
+static void http_handler_favicon(const char *query_params, char *response_body, size_t max_len)
+{
+    (void)query_params;
+    (void)max_len;
+    if (response_body != NULL)
+    {
+        response_body[0] = '\0';
+    }
+}
+
+/* GET /generate_204 & /gen_204 -> HTTP 204 No Content (Android connectivity validation) */
+static void http_handler_generate_204(const char *query_params, char *response_body, size_t max_len)
+{
+    (void)query_params;
+    (void)max_len;
+    if (response_body != NULL)
+    {
+        response_body[0] = '\0';
+    }
+}
+
+/* GET /hotspot-detect.html -> Apple Captive Network Assistant Success */
+static void http_handler_apple_cna(const char *query_params, char *response_body, size_t max_len)
+{
+    (void)query_params;
+    if (response_body == NULL || max_len == 0U) return;
+    const char apple_ok[] = "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>";
+    size_t alen = strlen(apple_ok);
+    if (alen >= max_len) alen = max_len - 1U;
+    memcpy(response_body, apple_ok, alen);
+    response_body[alen] = '\0';
+}
+
+/* GET /ncsi.txt & /connecttest.txt -> Windows NCSI Success */
+static void http_handler_windows_ncsi(const char *query_params, char *response_body, size_t max_len)
+{
+    (void)query_params;
+    if (response_body == NULL || max_len == 0U) return;
+    const char ncsi_ok[] = "Microsoft NCSI";
+    size_t nlen = strlen(ncsi_ok);
+    if (nlen >= max_len) nlen = max_len - 1U;
+    memcpy(response_body, ncsi_ok, nlen);
+    response_body[nlen] = '\0';
+}
+
 /* ========================================================================= */
 /* Core Lifecycle & Routing Implementations                                  */
 /* ========================================================================= */
@@ -270,11 +316,12 @@ http_status_t http_server_init(void)
     /* Register standard routes */
     http_route_register("/", HTTP_METHOD_GET, http_handler_root);
     http_route_register("/index.html", HTTP_METHOD_GET, http_handler_root);
-    http_route_register("/generate_204", HTTP_METHOD_GET, http_handler_root);
-    http_route_register("/gen_204", HTTP_METHOD_GET, http_handler_root);
-    http_route_register("/hotspot-detect.html", HTTP_METHOD_GET, http_handler_root);
-    http_route_register("/ncsi.txt", HTTP_METHOD_GET, http_handler_root);
-    http_route_register("/connecttest.txt", HTTP_METHOD_GET, http_handler_root);
+    http_route_register("/favicon.ico", HTTP_METHOD_GET, http_handler_favicon);
+    http_route_register("/generate_204", HTTP_METHOD_GET, http_handler_generate_204);
+    http_route_register("/gen_204", HTTP_METHOD_GET, http_handler_generate_204);
+    http_route_register("/hotspot-detect.html", HTTP_METHOD_GET, http_handler_apple_cna);
+    http_route_register("/ncsi.txt", HTTP_METHOD_GET, http_handler_windows_ncsi);
+    http_route_register("/connecttest.txt", HTTP_METHOD_GET, http_handler_windows_ncsi);
     http_route_register("/canonical.html", HTTP_METHOD_GET, http_handler_root);
     http_route_register("/api/status", HTTP_METHOD_GET, http_handler_status);
     http_route_register("/api/info", HTTP_METHOD_GET, http_handler_info);
@@ -501,11 +548,19 @@ http_status_t http_process_request(const char *raw_request, size_t req_len,
         route->handler(query_buf, body_buf, sizeof(body_buf));
         s_http_telemetry.responses_200++;
 
-        if (strcmp(path_buf, "/") == 0 || strcmp(path_buf, "/index.html") == 0 ||
-            strcmp(path_buf, "/generate_204") == 0 || strcmp(path_buf, "/gen_204") == 0 ||
-            strcmp(path_buf, "/hotspot-detect.html") == 0 || strcmp(path_buf, "/canonical.html") == 0)
+        if (strcmp(path_buf, "/generate_204") == 0 || strcmp(path_buf, "/gen_204") == 0)
+        {
+            status_line = "HTTP/1.1 204 No Content\r\n";
+            content_type = HTTP_MIME_TEXT;
+        }
+        else if (strcmp(path_buf, "/") == 0 || strcmp(path_buf, "/index.html") == 0 ||
+                 strcmp(path_buf, "/hotspot-detect.html") == 0 || strcmp(path_buf, "/canonical.html") == 0)
         {
             content_type = HTTP_MIME_HTML;
+        }
+        else if (strcmp(path_buf, "/ncsi.txt") == 0 || strcmp(path_buf, "/connecttest.txt") == 0)
+        {
+            content_type = HTTP_MIME_TEXT;
         }
     }
     else if (path_matched)

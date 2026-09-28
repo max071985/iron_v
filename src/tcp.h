@@ -20,9 +20,9 @@
 /* ========================================================================= */
 /* TCP Configuration Constants (Zero Dynamic Heap Allocation)                */
 /* ========================================================================= */
-#define TCP_MAX_PCBS                     4U
-#define TCP_RX_BUF_SIZE                  512U
-#define TCP_TX_BUF_SIZE                  512U
+#define TCP_MAX_PCBS                     8U
+#define TCP_RX_BUF_SIZE                  64U
+#define TCP_TX_BUF_SIZE                  64U
 
 #define TCP_DEFAULT_WINDOW_BYTES         CONFIG_TCP_DEFAULT_WINDOW
 #define TCP_DEFAULT_SEGMENT_MSS          CONFIG_TCP_DEFAULT_MSS

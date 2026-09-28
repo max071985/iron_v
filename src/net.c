@@ -16,6 +16,8 @@
 
 #if defined(__riscv)
 #include "systimer.h"
+#include "console.h"
+#include "utils.h"
 static inline uint32_t net_time_ms(void)
 {
     return (uint32_t)systimer_get_ms();
@@ -588,11 +590,16 @@ net_status_t net_input(const uint8_t *frame, uint16_t len)
 
     if (ethertype == ETHERTYPE_ARP)
     {
-        uint8_t reply_buf[sizeof(arp_frame_t)];
+        uint8_t reply_buf[64];
+        memset(reply_buf, 0, sizeof(reply_buf));
         uint16_t reply_len = 0U;
         net_status_t st = arp_process_packet(frame, len, reply_buf, sizeof(reply_buf), &reply_len);
         if (st == NET_OK && reply_len > 0U)
         {
+            if (reply_len < 60U)
+            {
+                reply_len = 60U;
+            }
             wifi_tx_packet(reply_buf, reply_len);
             s_net_telemetry.tx_packets++;
             s_net_telemetry.tx_bytes += reply_len;

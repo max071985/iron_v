@@ -35,7 +35,6 @@ static volatile bool s_wifi_scan_done = false;
 static uint8_t s_wifi_channel = 1U;
 static int8_t s_wifi_rssi = 0;
 extern uint8_t *g_wifi_nvs;
-extern void *cnx_node_search(const uint8_t *mac);
 #endif
 
 /* Baseband DMA linkage & RF timing telemetry tracking (Task 3) */
@@ -345,14 +344,6 @@ void wifi_handle_vendor_event(int32_t event_id, void *event_data)
             wifi_print_mac(staconn->mac);
             console_puts(" AID=");
             put_dec((uint32_t)staconn->aid);
-
-            void *node = cnx_node_search(staconn->mac);
-            if (node != NULL)
-            {
-                uint8_t *pnode = (uint8_t *)node;
-                pnode[WIFI_NODE_OFFSET_TX_DISALLOW] = 0U;
-                *(uint32_t *)(pnode + WIFI_NODE_OFFSET_FLAGS) |= WIFI_NODE_FLAG_AUTHORIZED;
-            }
         }
         console_puts("\r\n");
     }
@@ -590,18 +581,16 @@ wifi_status_t wifi_tx_packet(const uint8_t *payload, uint16_t len)
 #if defined(__riscv)
     if (s_vendor_wifi_inited && (s_wifi_ap_running || s_wifi_telemetry.state == WIFI_STATE_CONNECTED || s_wifi_telemetry.state == WIFI_STATE_ACTIVE))
     {
-        if (s_wifi_ap_running && (payload[0] & 0x01U) == 0U)
-        {
-            void *node = cnx_node_search(payload);
-            if (node != NULL)
-            {
-                uint8_t *pnode = (uint8_t *)node;
-                pnode[WIFI_NODE_OFFSET_TX_DISALLOW] = 0U;
-                *(uint32_t *)(pnode + WIFI_NODE_OFFSET_FLAGS) |= WIFI_NODE_FLAG_AUTHORIZED;
-            }
-        }
         wifi_interface_t ifx = s_wifi_ap_running ? WIFI_IF_AP : WIFI_IF_STA;
-        esp_wifi_internal_tx(ifx, (void *)payload, len);
+        esp_err_t tx_err = esp_wifi_internal_tx(ifx, (void *)payload, len);
+        if (tx_err != 0)
+        {
+            console_puts("[Wi-Fi] TX err=");
+            put_dec((uint32_t)tx_err);
+            console_puts(" len=");
+            put_dec((uint32_t)len);
+            console_puts("\r\n");
+        }
     }
 #endif
 
@@ -1255,6 +1244,12 @@ wifi_status_t wifi_start_ap(const char *ssid, const char *password, uint8_t chan
     s_wifi_ap_running = true;
     s_wifi_telemetry.state = WIFI_STATE_AP_ACTIVE;
 
+    uint8_t ap_mac[WIFI_MAC_ADDR_LEN];
+    if (wifi_get_ap_mac_addr(ap_mac) == WIFI_OK)
+    {
+        net_set_mac(ap_mac);
+    }
+
     return WIFI_OK;
 }
 
@@ -1269,6 +1264,12 @@ wifi_status_t wifi_stop_ap(void)
 #endif
     s_wifi_ap_running = false;
     s_wifi_telemetry.state = WIFI_STATE_IDLE;
+
+    uint8_t sta_mac[WIFI_MAC_ADDR_LEN];
+    if (wifi_get_mac_addr(sta_mac) == WIFI_OK)
+    {
+        net_set_mac(sta_mac);
+    }
     return WIFI_OK;
 }
 

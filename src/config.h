@@ -195,7 +195,7 @@
 #endif
 
 #ifndef CONFIG_BLE_AUTO_START_ADV
-#define CONFIG_BLE_AUTO_START_ADV           0U
+#define CONFIG_BLE_AUTO_START_ADV           1U
 #endif
 
 /* Advertising Interval in 0.625 ms units (160 * 0.625 = 100 ms) */

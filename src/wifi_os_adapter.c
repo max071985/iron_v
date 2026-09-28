@@ -30,10 +30,10 @@
 #include "wdt.h"
 
 /* ========================================================================= */
-/* 1. Deterministic Static Memory Arena for Wi-Fi Subsystem (56 KB)          */
+/* 1. Deterministic Static Memory Arena for Wi-Fi Subsystem (54 KB)          */
 /* Zero dynamic heap memory calls permitted (AGENTS.md execution standard)   */
 /* ========================================================================= */
-#define WIFI_HEAP_SIZE          (56U * 1024U)
+#define WIFI_HEAP_SIZE          (54U * 1024U)
 #define WIFI_BLOCK_MAGIC        0xA55AU
 #define WIFI_ALLOC_ALIGN_MASK   7U
 
@@ -864,7 +864,7 @@ static inline bool is_valid_instruction_address(uintptr_t addr)
 {
     if ((addr & 1U) != 0U) return false;
     if (addr >= 0x40000000U && addr < 0x40060000U) return true; /* ROM */
-    if (addr >= 0x40800000U && addr < 0x40860000U) return true; /* IRAM / HP SRAM */
+    if (addr >= 0x40800000U && addr < 0x40829000U) return true; /* IRAM */
     if (addr >= 0x42000000U && addr < 0x42800000U) return true; /* Flash XIP text */
     return false;
 }
@@ -917,18 +917,6 @@ static void timer_setfn_wrapper(void *ptimer, void *pfunction, void *parg)
         }
     }
 
-    if (slot == NULL)
-    {
-        for (uint32_t i = 0U; i < WIFI_MAX_ACTIVE_TIMERS; i++)
-        {
-            if (!s_timer_trackers[i].active)
-            {
-                slot = &s_timer_trackers[i];
-                break;
-            }
-        }
-    }
-
     if (slot != NULL)
     {
         slot->timer_handle = ptimer;
@@ -965,7 +953,7 @@ static void timer_arm_us_wrapper(void *ptimer, uint32_t us, bool repeat)
         {
             for (uint32_t i = 0U; i < WIFI_MAX_ACTIVE_TIMERS; i++)
             {
-                if (s_timer_trackers[i].timer_handle == NULL || !s_timer_trackers[i].active)
+                if (s_timer_trackers[i].timer_handle == NULL)
                 {
                     slot = &s_timer_trackers[i];
                     slot->timer_handle = ptimer;
@@ -1768,16 +1756,7 @@ struct wpa_funcs {
     int (*wpa_parse_wpa_ie_scan_only)(const uint8_t *wpa_ie, size_t wpa_ie_len, wifi_wpa_ie_t *data);
 };
 
-struct wpa2_funcs {
-    int (*wpa2_sm_rx_eapol)(uint8_t *src_addr, uint8_t *buf, uint32_t len, uint8_t *bssid);
-    int (*wpa2_start)(void);
-    uint8_t (*wpa2_get_state)(void);
-    int (*wpa2_init)(void);
-    void (*wpa2_deinit)(void);
-};
-
 extern int esp_wifi_register_wpa_cb_internal(struct wpa_funcs *cb);
-extern int esp_wifi_register_wpa2_cb_internal(struct wpa2_funcs *cb);
 
 static bool s_wpa_sta_init(void) { return true; }
 static bool s_wpa_sta_deinit(void) { return true; }
@@ -1887,24 +1866,9 @@ static struct wpa_funcs s_wpa_funcs = {
     .wpa_parse_wpa_ie_scan_only = s_wpa_parse_wpa_ie_scan_only,
 };
 
-static int s_wpa2_rx_eapol(uint8_t *s, uint8_t *b, uint32_t l, uint8_t *bs) { (void)s; (void)b; (void)l; (void)bs; return 0; }
-static int s_wpa2_start(void) { return 0; }
-static uint8_t s_wpa2_get_state(void) { return 0; }
-static int s_wpa2_init(void) { return 0; }
-static void s_wpa2_deinit(void) {}
-
-static struct wpa2_funcs s_wpa2_funcs = {
-    .wpa2_sm_rx_eapol = s_wpa2_rx_eapol,
-    .wpa2_start       = s_wpa2_start,
-    .wpa2_get_state   = s_wpa2_get_state,
-    .wpa2_init        = s_wpa2_init,
-    .wpa2_deinit      = s_wpa2_deinit,
-};
-
 void wifi_os_adapter_register_wpa_stubs(void)
 {
     esp_wifi_register_wpa_cb_internal(&s_wpa_funcs);
-    esp_wifi_register_wpa2_cb_internal(&s_wpa2_funcs);
 }
 
 #else

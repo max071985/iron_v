@@ -71,11 +71,6 @@
 /* Dedicated GDMA Channel for Wi-Fi MAC Data Transfer */
 #define WIFI_GDMA_CHANNEL                GDMA_CHANNEL_1
 
-/* Vendor Wi-Fi Station Node Structure Offsets for Authorization (libnet80211) */
-#define WIFI_NODE_OFFSET_FLAGS           12U
-#define WIFI_NODE_OFFSET_TX_DISALLOW     36U
-#define WIFI_NODE_FLAG_AUTHORIZED        0x00000001U
-
 
 /* Memory Cartography Boundaries for HP SRAM DRAM Descriptor Validation   */
 #define WIFI_DRAM_START_ADDR             0x40820000U

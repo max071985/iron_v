@@ -18,7 +18,7 @@ extern "C" {
 #endif
 
 /* Maximum simultaneously tracked software timers */
-#define WIFI_MAX_ACTIVE_TIMERS 16U
+#define WIFI_MAX_ACTIVE_TIMERS 32U
 
 /* OSAL Subsystem lifecycle */
 void wifi_os_adapter_init(void);

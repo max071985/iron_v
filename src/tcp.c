@@ -16,6 +16,8 @@
 
 #if defined(__riscv)
 #include "systimer.h"
+#include "console.h"
+#include "utils.h"
 static inline uint32_t tcp_time_ms(void)
 {
     return (uint32_t)systimer_get_ms();
@@ -150,17 +152,64 @@ tcp_pcb_t *tcp_new(void)
         tcp_init();
     }
 
+    uint32_t now = tcp_time_ms();
+
+    /* 1. First look for an unused PCB slot */
     for (uint32_t i = 0; i < TCP_MAX_PCBS; i++)
     {
         if (!s_tcp_pcbs[i].in_use)
         {
             memset(&s_tcp_pcbs[i], 0, sizeof(tcp_pcb_t));
-            s_tcp_pcbs[i].in_use  = true;
-            s_tcp_pcbs[i].state   = TCP_STATE_CLOSED;
-            s_tcp_pcbs[i].rcv_wnd = TCP_DEFAULT_WINDOW_BYTES;
-            s_tcp_pcbs[i].snd_wnd = TCP_DEFAULT_WINDOW_BYTES;
-            s_tcp_pcbs[i].snd_nxt = TCP_INITIAL_SEQ_NUM + (i * 0x01000000U);
-            s_tcp_pcbs[i].snd_una = s_tcp_pcbs[i].snd_nxt;
+            s_tcp_pcbs[i].in_use           = true;
+            s_tcp_pcbs[i].state            = TCP_STATE_CLOSED;
+            s_tcp_pcbs[i].rcv_wnd          = TCP_DEFAULT_WINDOW_BYTES;
+            s_tcp_pcbs[i].snd_wnd          = TCP_DEFAULT_WINDOW_BYTES;
+            s_tcp_pcbs[i].snd_nxt          = TCP_INITIAL_SEQ_NUM + (i * 0x01000000U);
+            s_tcp_pcbs[i].snd_una          = s_tcp_pcbs[i].snd_nxt;
+            s_tcp_pcbs[i].last_activity_ms = now;
+            return &s_tcp_pcbs[i];
+        }
+    }
+
+    /* 2. If all slots in use, recycle closed or TIME_WAIT slots (RFC 1122 tw_recycle) */
+    for (uint32_t i = 0; i < TCP_MAX_PCBS; i++)
+    {
+        if (s_tcp_pcbs[i].state == TCP_STATE_TIME_WAIT || s_tcp_pcbs[i].state == TCP_STATE_CLOSED)
+        {
+            if (s_tcp_pcbs[i].in_use && s_tcp_telemetry.active_connections > 0U &&
+                s_tcp_pcbs[i].state != TCP_STATE_CLOSED)
+            {
+                s_tcp_telemetry.active_connections--;
+            }
+            memset(&s_tcp_pcbs[i], 0, sizeof(tcp_pcb_t));
+            s_tcp_pcbs[i].in_use           = true;
+            s_tcp_pcbs[i].state            = TCP_STATE_CLOSED;
+            s_tcp_pcbs[i].rcv_wnd          = TCP_DEFAULT_WINDOW_BYTES;
+            s_tcp_pcbs[i].snd_wnd          = TCP_DEFAULT_WINDOW_BYTES;
+            s_tcp_pcbs[i].snd_nxt          = TCP_INITIAL_SEQ_NUM + (i * 0x01000000U);
+            s_tcp_pcbs[i].snd_una          = s_tcp_pcbs[i].snd_nxt;
+            s_tcp_pcbs[i].last_activity_ms = now;
+            return &s_tcp_pcbs[i];
+        }
+    }
+
+    /* 3. Recycle orphaned/stale non-listening connections (idle >= 5000 ms) */
+    for (uint32_t i = 0; i < TCP_MAX_PCBS; i++)
+    {
+        if (s_tcp_pcbs[i].state != TCP_STATE_LISTEN && (now - s_tcp_pcbs[i].last_activity_ms) >= 5000U)
+        {
+            if (s_tcp_pcbs[i].in_use && s_tcp_telemetry.active_connections > 0U)
+            {
+                s_tcp_telemetry.active_connections--;
+            }
+            memset(&s_tcp_pcbs[i], 0, sizeof(tcp_pcb_t));
+            s_tcp_pcbs[i].in_use           = true;
+            s_tcp_pcbs[i].state            = TCP_STATE_CLOSED;
+            s_tcp_pcbs[i].rcv_wnd          = TCP_DEFAULT_WINDOW_BYTES;
+            s_tcp_pcbs[i].snd_wnd          = TCP_DEFAULT_WINDOW_BYTES;
+            s_tcp_pcbs[i].snd_nxt          = TCP_INITIAL_SEQ_NUM + (i * 0x01000000U);
+            s_tcp_pcbs[i].snd_una          = s_tcp_pcbs[i].snd_nxt;
+            s_tcp_pcbs[i].last_activity_ms = now;
             return &s_tcp_pcbs[i];
         }
     }
@@ -358,6 +407,11 @@ tcp_status_t tcp_input(const uint8_t *ip_packet, uint16_t ip_len)
     uint16_t chk = net_tcp_checksum(src_ip, dest_ip, tcp, data_offset, payload, payload_len);
     if (chk != 0U)
     {
+#if defined(__riscv)
+        console_puts("[TCP] BAD CHK: 0x");
+        put_hex(chk);
+        console_puts("\r\n");
+#endif
         return TCP_ERR_ARG;
     }
 
@@ -381,6 +435,25 @@ tcp_status_t tcp_input(const uint8_t *ip_packet, uint16_t ip_len)
             break;
         }
     }
+
+#if defined(__riscv)
+    if (dest_port == CONFIG_TCP_DEFAULT_HTTP_PORT || src_port == CONFIG_TCP_DEFAULT_HTTP_PORT)
+    {
+        console_puts("[TCP] in fl=0x");
+        put_hex(flags);
+        console_puts(" dp=");
+        put_dec(dest_port);
+        console_puts(" sp=");
+        put_dec(src_port);
+        console_puts(" m=");
+        put_dec(match != NULL ? 1 : 0);
+        console_puts(" st=");
+        put_dec(match != NULL ? (uint32_t)match->state : (listener != NULL ? (uint32_t)listener->state : 99));
+        console_puts(" pl=");
+        put_dec(payload_len);
+        console_puts("\r\n");
+    }
+#endif
 
     /* Handle reset flags */
     if ((flags & TCP_FLAG_RST) != 0U)
@@ -406,18 +479,19 @@ tcp_status_t tcp_input(const uint8_t *ip_packet, uint16_t ip_len)
             return TCP_ERR_MEM;
         }
 
-        conn->local_ip    = dest_ip;
-        conn->local_port  = dest_port;
-        conn->remote_ip   = src_ip;
-        conn->remote_port = src_port;
-        conn->rcv_nxt     = seq_num + 1U;
-        conn->snd_nxt     = TCP_INITIAL_SEQ_NUM;
-        conn->snd_una     = conn->snd_nxt;
-        conn->rcv_wnd     = TCP_DEFAULT_WINDOW_BYTES;
-        conn->snd_wnd     = NET_NTOHS(tcp->window);
-        conn->state       = TCP_STATE_SYN_RECEIVED;
-        conn->accept_cb   = listener->accept_cb;
-        conn->recv_cb     = listener->recv_cb;
+        conn->local_ip         = dest_ip;
+        conn->local_port       = dest_port;
+        conn->remote_ip        = src_ip;
+        conn->remote_port      = src_port;
+        conn->rcv_nxt          = seq_num + 1U;
+        conn->snd_nxt          = TCP_INITIAL_SEQ_NUM;
+        conn->snd_una          = conn->snd_nxt;
+        conn->rcv_wnd          = TCP_DEFAULT_WINDOW_BYTES;
+        conn->snd_wnd          = NET_NTOHS(tcp->window);
+        conn->state            = TCP_STATE_SYN_RECEIVED;
+        conn->accept_cb        = listener->accept_cb;
+        conn->recv_cb          = listener->recv_cb;
+        conn->last_activity_ms = tcp_time_ms();
 
         s_tcp_telemetry.syn_received_count++;
 
@@ -554,6 +628,22 @@ tcp_status_t tcp_input(const uint8_t *ip_packet, uint16_t ip_len)
                 {
                     s_tcp_telemetry.active_connections--;
                 }
+            }
+            break;
+
+        case TCP_STATE_TIME_WAIT:
+            if ((flags & TCP_FLAG_SYN) != 0U)
+            {
+                match->rcv_nxt          = seq_num + 1U;
+                match->snd_nxt          = TCP_INITIAL_SEQ_NUM;
+                match->snd_una          = match->snd_nxt;
+                match->rcv_wnd          = TCP_DEFAULT_WINDOW_BYTES;
+                match->snd_wnd          = NET_NTOHS(tcp->window);
+                match->state            = TCP_STATE_SYN_RECEIVED;
+                match->last_activity_ms = tcp_time_ms();
+                s_tcp_telemetry.syn_received_count++;
+                tcp_send_segment(match, TCP_FLAG_SYN | TCP_FLAG_ACK, NULL, 0U);
+                match->snd_nxt++;
             }
             break;
 

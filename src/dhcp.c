@@ -57,7 +57,7 @@ static dhcp_status_t dhcp_send_udp_frame(const uint8_t *dest_mac, uint32_t dest_
     net_get_config(&ncfg);
     memcpy(src_mac, ncfg.mac, ETH_ADDR_LEN);
 
-    /* 1. Ethernet Header */
+    /* 1. Ethernet Header: Always send directly to client station MAC */
     memcpy(eth->dest_mac, dest_mac, ETH_ADDR_LEN);
     memcpy(eth->src_mac, src_mac, ETH_ADDR_LEN);
     eth->ethertype = NET_HTONS(ETHERTYPE_IPV4);
@@ -75,15 +75,14 @@ static dhcp_status_t dhcp_send_udp_frame(const uint8_t *dest_mac, uint32_t dest_
     ip->checksum          = 0U;
     ip->checksum          = NET_HTONS(net_ipv4_checksum(ip));
 
-    /* 3. UDP Header */
+    /* 3. UDP Header: Zero checksum for IPv4 UDP per RFC 768 / RFC 2131 */
     udp->src_port  = NET_HTONS(src_port);
     udp->dest_port = NET_HTONS(dest_port);
     udp->length    = NET_HTONS(UDP_HDR_LEN + payload_len);
     udp->checksum  = 0U;
 
-    /* 4. Payload & UDP Checksum */
+    /* 4. Payload */
     memcpy(data_dst, payload, payload_len);
-    udp->checksum  = net_udp_checksum(DHCP_DEFAULT_GATEWAY, dest_ip, udp, payload, payload_len);
 
     /* Transmit frame via Wi-Fi subsystem */
     wifi_status_t wst = wifi_tx_packet(frame_buf, total_len);
@@ -272,7 +271,7 @@ dhcp_status_t dhcp_process_packet(const uint8_t *eth_frame, const uint8_t *paylo
     resp.secs         = 0U;
     resp.flags        = req->flags;
     resp.ciaddr       = 0U;
-    resp.siaddr       = NET_HTONL(DHCP_DEFAULT_GATEWAY);
+    resp.siaddr       = 0U;
     resp.giaddr       = 0U;
     memcpy(resp.chaddr, req->chaddr, DHCP_CHADDR_LEN);
     resp.magic_cookie = NET_HTONL(DHCP_MAGIC_COOKIE);
@@ -333,10 +332,23 @@ dhcp_status_t dhcp_process_packet(const uint8_t *eth_frame, const uint8_t *paylo
         out_opt[opt_offset++] = (uint8_t)(DHCP_DEFAULT_GATEWAY >> 8U);
         out_opt[opt_offset++] = (uint8_t)(DHCP_DEFAULT_GATEWAY & 0xFFU);
 
+        /* Option 28: Broadcast Address (192.168.1.255) */
+        out_opt[opt_offset++] = 28U;
+        out_opt[opt_offset++] = 4U;
+        out_opt[opt_offset++] = (uint8_t)(DHCP_DEFAULT_GATEWAY >> 24U);
+        out_opt[opt_offset++] = (uint8_t)(DHCP_DEFAULT_GATEWAY >> 16U);
+        out_opt[opt_offset++] = (uint8_t)(DHCP_DEFAULT_GATEWAY >> 8U);
+        out_opt[opt_offset++] = 255U;
+
         /* Option 255: End */
         out_opt[opt_offset++] = DHCP_OPT_END;
 
         uint16_t resp_len = (uint16_t)(240U + opt_offset);
+        if (resp_len < 300U)
+        {
+            memset(&resp.options[opt_offset], 0, 300U - resp_len);
+            resp_len = 300U;
+        }
         dhcp_status_t st = dhcp_send_udp_frame(req->chaddr, 0xFFFFFFFFU,
                                                DHCP_SERVER_PORT, DHCP_CLIENT_PORT,
                                                &resp, resp_len);
@@ -381,6 +393,11 @@ dhcp_status_t dhcp_process_packet(const uint8_t *eth_frame, const uint8_t *paylo
             out_opt[opt_offset++] = DHCP_OPT_END;
 
             uint16_t resp_len = (uint16_t)(240U + opt_offset);
+            if (resp_len < 300U)
+            {
+                memset(&resp.options[opt_offset], 0, 300U - resp_len);
+                resp_len = 300U;
+            }
             dhcp_send_udp_frame(req->chaddr, 0xFFFFFFFFU,
                                 DHCP_SERVER_PORT, DHCP_CLIENT_PORT,
                                 &resp, resp_len);
@@ -435,10 +452,23 @@ dhcp_status_t dhcp_process_packet(const uint8_t *eth_frame, const uint8_t *paylo
         out_opt[opt_offset++] = (uint8_t)(DHCP_DEFAULT_GATEWAY >> 8U);
         out_opt[opt_offset++] = (uint8_t)(DHCP_DEFAULT_GATEWAY & 0xFFU);
 
+        /* Option 28: Broadcast Address (192.168.1.255) */
+        out_opt[opt_offset++] = 28U;
+        out_opt[opt_offset++] = 4U;
+        out_opt[opt_offset++] = (uint8_t)(DHCP_DEFAULT_GATEWAY >> 24U);
+        out_opt[opt_offset++] = (uint8_t)(DHCP_DEFAULT_GATEWAY >> 16U);
+        out_opt[opt_offset++] = (uint8_t)(DHCP_DEFAULT_GATEWAY >> 8U);
+        out_opt[opt_offset++] = 255U;
+
         /* Option 255: End */
         out_opt[opt_offset++] = DHCP_OPT_END;
 
         uint16_t resp_len = (uint16_t)(240U + opt_offset);
+        if (resp_len < 300U)
+        {
+            memset(&resp.options[opt_offset], 0, 300U - resp_len);
+            resp_len = 300U;
+        }
         dhcp_status_t st = dhcp_send_udp_frame(req->chaddr, 0xFFFFFFFFU,
                                                DHCP_SERVER_PORT, DHCP_CLIENT_PORT,
                                                &resp, resp_len);

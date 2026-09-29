@@ -35,6 +35,7 @@
 #include "dhcp.h"
 #include "wifi_vendor_types.h"
 #include "speedtest.h"
+#include "matter.h"
 
 #define FLASH_TEXT_ATTR __attribute__((section(".flash.text")))
 
@@ -66,6 +67,7 @@ static void FLASH_TEXT_ATTR print_help(void)
     console_puts("  dhcp [status]       - Show DHCP server leases and captive portal telemetry\r\n");
     console_puts("  http [status|routes|start|stop] - Show or control zero-allocation local REST/HTTP server\r\n");
     console_puts("  speedtest [run|burst|udp|status|reset] - Run or inspect LAN network & Wi-Fi throughput benchmark\r\n");
+    console_puts("  matter [info|code|qr|onoff|state|commission|reset] - Google Home Matter commissioning & bridge\r\n");
     console_puts("  soak [cycles|status] - Run or inspect 24/7 multi-protocol automated stability soak engine\r\n");
     console_puts("  do-test             - Run full baseline validation test suite\r\n");
 }
@@ -355,6 +357,22 @@ static void FLASH_TEXT_ATTR print_info(void)
     console_puts(", Last: ");
     put_dec(sptel.last_throughput_mbps);
     console_puts(" Mbps\r\n");
+
+    matter_telemetry_t mtel;
+    matter_get_telemetry(&mtel);
+    char m_code[MATTER_MANUAL_CODE_MAX_BUF];
+    matter_commissioning_info_t minfo;
+    matter_get_commissioning_info(&minfo);
+    matter_generate_manual_pairing_code(&minfo, m_code, sizeof(m_code), true);
+    console_puts(" Matter:  State: ");
+    console_puts(matter_state_to_str(mtel.state));
+    console_puts(", Code: ");
+    console_puts(m_code);
+    console_puts(", OnOff: ");
+    console_puts(mtel.onoff_state ? "ON" : "OFF");
+    console_puts(", Trans: ");
+    console_puts((mtel.transport == MATTER_TRANSPORT_THREAD) ? "Thread" : "Wi-Fi");
+    console_puts("\r\n");
     console_puts("========================================\r\n");
 }
 
@@ -2509,6 +2527,103 @@ static void FLASH_TEXT_ATTR shell_execute(char *input_buffer)
             }
         }
     }
+    else if (strncmp(input_buffer, "matter", 6) == 0 && (input_buffer[6] == ' ' || input_buffer[6] == '\0'))
+    {
+        char *sub = input_buffer + 6;
+        skip_space(&sub);
+
+        if (strncmp(sub, "code", 4) == 0)
+        {
+            matter_commissioning_info_t minfo;
+            matter_get_commissioning_info(&minfo);
+            char c_fmt[MATTER_MANUAL_CODE_MAX_BUF];
+            char c_raw[MATTER_MANUAL_CODE_MAX_BUF];
+            matter_generate_manual_pairing_code(&minfo, c_fmt, sizeof(c_fmt), true);
+            matter_generate_manual_pairing_code(&minfo, c_raw, sizeof(c_raw), false);
+            console_puts("Matter Manual Pairing Code:\r\n");
+            console_puts("  Formatted:   "); console_puts(c_fmt); console_puts("\r\n");
+            console_puts("  Raw Numeric: "); console_puts(c_raw); console_puts("\r\n");
+        }
+        else if (strncmp(sub, "qr", 2) == 0)
+        {
+            matter_commissioning_info_t minfo;
+            matter_get_commissioning_info(&minfo);
+            char qr_buf[MATTER_QR_CODE_MAX_BUF];
+            matter_generate_qr_code_payload(&minfo, qr_buf, sizeof(qr_buf));
+            console_puts("Matter QR Code Onboarding Payload:\r\n");
+            console_puts("  Payload:     "); console_puts(qr_buf); console_puts("\r\n");
+        }
+        else if (strncmp(sub, "onoff", 5) == 0)
+        {
+            char *p = sub + 5;
+            skip_space(&p);
+            if (strncmp(p, "on", 2) == 0)
+            {
+                matter_set_onoff(true);
+                console_puts("Matter Endpoint 1 OnOff -> ON\r\n");
+            }
+            else if (strncmp(p, "off", 3) == 0)
+            {
+                matter_set_onoff(false);
+                console_puts("Matter Endpoint 1 OnOff -> OFF\r\n");
+            }
+            else if (strncmp(p, "toggle", 6) == 0)
+            {
+                matter_toggle_onoff();
+                console_puts("Matter Endpoint 1 OnOff -> ");
+                console_puts(matter_get_onoff() ? "ON\r\n" : "OFF\r\n");
+            }
+            else
+            {
+                console_puts("Matter Endpoint 1 OnOff: ");
+                console_puts(matter_get_onoff() ? "ON\r\n" : "OFF\r\n");
+            }
+        }
+        else if (strncmp(sub, "reset", 5) == 0)
+        {
+            matter_reset();
+            console_puts("Matter subsystem reset to initial state.\r\n");
+        }
+        else if (strncmp(sub, "state", 5) == 0)
+        {
+            console_puts("Matter Commissioning State: ");
+            console_puts(matter_state_to_str(matter_get_state()));
+            console_puts("\r\n");
+        }
+        else if (strncmp(sub, "commission", 10) == 0)
+        {
+            matter_complete_commissioning(0x10001ULL, 1U);
+            console_puts("Matter Commissioning Complete: Fabric 1, Node 0x10001, BLE Reclaimed.\r\n");
+        }
+        else
+        {
+            /* Default: info */
+            matter_commissioning_info_t minfo;
+            matter_get_commissioning_info(&minfo);
+            matter_telemetry_t mtel;
+            matter_get_telemetry(&mtel);
+            char c_fmt[MATTER_MANUAL_CODE_MAX_BUF];
+            char qr_buf[MATTER_QR_CODE_MAX_BUF];
+            matter_generate_manual_pairing_code(&minfo, c_fmt, sizeof(c_fmt), true);
+            matter_generate_qr_code_payload(&minfo, qr_buf, sizeof(qr_buf));
+
+            console_puts("Matter-over-Thread/Wi-Fi Subsystem Status:\r\n");
+            console_puts("  Vendor ID:           0x"); put_hex(minfo.vendor_id); console_puts("\r\n");
+            console_puts("  Product ID:          0x"); put_hex(minfo.product_id); console_puts("\r\n");
+            console_puts("  Discriminator:       "); put_dec(minfo.discriminator); console_puts(" (0x"); put_hex(minfo.discriminator); console_puts(")\r\n");
+            console_puts("  Setup Passcode:      "); put_dec(minfo.setup_passcode); console_puts("\r\n");
+            console_puts("  Manual Code:         "); console_puts(c_fmt); console_puts("\r\n");
+            console_puts("  QR Payload:          "); console_puts(qr_buf); console_puts("\r\n");
+            console_puts("  Commissioning State: "); console_puts(matter_state_to_str(mtel.state)); console_puts("\r\n");
+            console_puts("  Transport Mode:      "); console_puts(matter_transport_to_str(mtel.transport)); console_puts("\r\n");
+            console_puts("  Endpoint 1 OnOff:    "); console_puts(mtel.onoff_state ? "ON" : "OFF"); console_puts("\r\n");
+            console_puts("  Fabric Count:        "); put_dec(mtel.fabric_count); console_puts("\r\n");
+            console_puts("  BLE Reclaimed:       "); console_puts(mtel.ble_reclaimed ? "YES" : "NO"); console_puts("\r\n");
+            console_puts("  Crypto HW Accel:     "); console_puts(mtel.crypto_hw_accelerated ? "ACTIVE (ESP32-C6 SHA/ECC)" : "SOFTWARE"); console_puts("\r\n");
+            console_puts("  SHA Silicon Date:    0x"); put_hex(matter_get_sha_date()); console_puts("\r\n");
+            console_puts("  ECC Silicon Date:    0x"); put_hex(matter_get_ecc_date()); console_puts("\r\n");
+        }
+    }
     else
     {
         console_puts("Unknown command. Type 'help' for available commands.\r\n");
@@ -2612,6 +2727,9 @@ void main(void)
 
     /* Initialize LAN Network Diagnostics & Wi-Fi Speed-Test Benchmark Engine */
     speedtest_init();
+
+    /* Initialize Google Home Matter Commissioning Bridge & Hardware Crypto */
+    matter_init(NULL);
 
 #if CONFIG_BLE_AUTO_START_ADV
     ble_gap_start_advertising();

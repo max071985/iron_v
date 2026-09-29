@@ -30,6 +30,7 @@
 #include "tcp.h"
 #include "http_server.h"
 #include "speedtest.h"
+#include "matter.h"
 
 /* Route all test output to unified dual-console multiplexer */
 #define uart_puts console_puts
@@ -1240,8 +1241,8 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     s_test_task_b_counter = 0;
     s_test_turn_idx = 0;
 
-    static uint8_t task_a_stack[1024] __attribute__((aligned(16)));
-    static uint8_t task_b_stack[1024] __attribute__((aligned(16)));
+    static uint8_t task_a_stack[512] __attribute__((aligned(16)));
+    static uint8_t task_b_stack[512] __attribute__((aligned(16)));
 
     int id_a = task_create("task_a", test_task_a_worker, NULL, 10U, task_a_stack, sizeof(task_a_stack));
     int id_b = task_create("task_b", test_task_b_worker, NULL, 10U, task_b_stack, sizeof(task_b_stack));
@@ -2766,6 +2767,116 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
 
     if (t35_pass) passed_tests++;
     print_result(t35_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 36: Google Home Matter Readiness & Commissioning Bridge  */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(36, "Google Home Matter Readiness, Commissioning Bridge & Hardware Crypto Accelerators",
+                      "Verify Matter setup payload, manual pairing code formatting (3497-011-2332), discriminator match, QR payload, and SHA/ECC accelerators");
+
+    wdt_feed();
+    lp_wdt_feed();
+
+    /* 1. Subsystem Initialization */
+    int m_init_ok = (matter_init(NULL) == MATTER_OK);
+
+    /* 2. Hardware Crypto Accelerators (TRM Ch. 20 ECC, Ch. 23 SHA) */
+    int m_crypto_ok = (matter_crypto_hw_init() == MATTER_OK);
+    uint32_t sha_date = matter_get_sha_date();
+    uint32_t ecc_date = matter_get_ecc_date();
+    int m_date_ok = (sha_date != 0U) && (ecc_date != 0U);
+
+    /* Compute SHA-256 over NIST test vector "abc" */
+    uint8_t m_digest[MATTER_SHA256_DIGEST_SIZE];
+    int m_sha_ok = (matter_crypto_sha256((const uint8_t *)"abc", 3U, m_digest) == MATTER_OK);
+    int m_sha_match = (m_digest[0] == 0xbaU && m_digest[1] == 0x78U &&
+                       m_digest[2] == 0x16U && m_digest[3] == 0xbfU);
+
+    /* 3. Matter Setup Payload & Manual Pairing Code (Roadmap T36) */
+    matter_commissioning_info_t m_info;
+    matter_get_commissioning_info(&m_info);
+
+    char m_code_fmt[MATTER_MANUAL_CODE_MAX_BUF];
+    int m_gen_code_ok = (matter_generate_manual_pairing_code(&m_info, m_code_fmt, sizeof(m_code_fmt), true) == MATTER_OK);
+    int m_code_match = (strcmp(m_code_fmt, "3497-011-2332") == 0);
+
+    matter_commissioning_info_t m_parsed;
+    int m_parse_code_ok = (matter_parse_manual_pairing_code(m_code_fmt, &m_parsed) == MATTER_OK);
+    int m_disc_match = (m_parsed.discriminator == 3840U);
+    int m_pass_match = (m_parsed.setup_passcode == 20202021U);
+
+    /* 4. Base38 QR Code Onboarding Payload Serialization */
+    char m_qr_buf[MATTER_QR_CODE_MAX_BUF];
+    int m_gen_qr_ok = (matter_generate_qr_code_payload(&m_info, m_qr_buf, sizeof(m_qr_buf)) == MATTER_OK);
+    int m_qr_prefix_ok = (strncmp(m_qr_buf, "MT:", 3) == 0);
+
+    matter_commissioning_info_t m_qr_parsed;
+    int m_parse_qr_ok = (matter_parse_qr_code_payload(m_qr_buf, &m_qr_parsed) == MATTER_OK);
+    int m_qr_match = (m_qr_parsed.vendor_id == m_info.vendor_id &&
+                      m_qr_parsed.discriminator == m_info.discriminator &&
+                      m_qr_parsed.setup_passcode == m_info.setup_passcode);
+
+    /* 5. Data Model Clusters & Commissioning FSM */
+    int m_toggle_ok = (matter_toggle_onoff() == MATTER_OK) && matter_get_onoff();
+    uint8_t m_resp[4];
+    size_t m_resp_len = sizeof(m_resp);
+    int m_cmd_arm_ok = (matter_process_cluster_command(MATTER_ENDPOINT_ROOT, MATTER_CLUSTER_GENERAL_COMMISSIONING,
+                                                       MATTER_CMD_GENCOMM_ARM_FAILSAFE, NULL, 0U, m_resp, &m_resp_len) == MATTER_OK);
+    int m_cmd_done_ok = (matter_process_cluster_command(MATTER_ENDPOINT_ROOT, MATTER_CLUSTER_GENERAL_COMMISSIONING,
+                                                        MATTER_CMD_GENCOMM_COMMISSIONING_COMPLETE, NULL, 0U, m_resp, &m_resp_len) == MATTER_OK);
+
+    matter_telemetry_t m_telem;
+    matter_get_telemetry(&m_telem);
+    int m_comm_done_ok = (m_telem.state == MATTER_COMMISSIONING_STATE_COMMISSIONED) &&
+                         (m_telem.fabric_count == 1U) &&
+                         m_telem.ble_reclaimed;
+
+    wdt_feed();
+    lp_wdt_feed();
+
+    int t36_pass = m_init_ok && m_crypto_ok && m_date_ok && m_sha_ok && m_sha_match &&
+                   m_gen_code_ok && m_code_match && m_parse_code_ok && m_disc_match && m_pass_match &&
+                   m_gen_qr_ok && m_qr_prefix_ok && m_parse_qr_ok && m_qr_match &&
+                   m_toggle_ok && m_cmd_arm_ok && m_cmd_done_ok && m_comm_done_ok;
+
+    uart_puts("  Expected:    Init=1, Crypto=1, Date=1, SHA=1, GenCode=1, CodeMatch=1, Parse=1, DiscMatch=1, QR=1, Cluster=1, CommDone=1\r\n");
+    uart_puts("  Actual:      Init=");
+    put_dec(m_init_ok);
+    uart_puts(", Crypto=");
+    put_dec(m_crypto_ok);
+    uart_puts(", Date=");
+    put_dec(m_date_ok);
+    uart_puts(", SHA=");
+    put_dec(m_sha_ok && m_sha_match);
+    uart_puts(", GenCode=");
+    put_dec(m_gen_code_ok);
+    uart_puts(", CodeMatch=");
+    put_dec(m_code_match);
+    uart_puts(", Parse=");
+    put_dec(m_parse_code_ok);
+    uart_puts(", DiscMatch=");
+    put_dec(m_disc_match && m_pass_match);
+    uart_puts(", QR=");
+    put_dec(m_gen_qr_ok && m_qr_prefix_ok && m_parse_qr_ok && m_qr_match);
+    uart_puts(", Cluster=");
+    put_dec(m_toggle_ok && m_cmd_arm_ok);
+    uart_puts(", CommDone=");
+    put_dec(m_comm_done_ok);
+    uart_puts("\r\n");
+
+    uart_puts("  Diag: Code=");
+    uart_puts(m_code_fmt);
+    uart_puts(", QR=");
+    uart_puts(m_qr_buf);
+    uart_puts(", SHADate=0x");
+    put_hex(sha_date);
+    uart_puts(", ECCDate=0x");
+    put_hex(ecc_date);
+    uart_puts("\r\n");
+
+    if (t36_pass) passed_tests++;
+    print_result(t36_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

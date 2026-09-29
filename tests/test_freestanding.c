@@ -40,6 +40,7 @@
 #include "http_server.h"
 #include "web_assets.h"
 #include "speedtest.h"
+#include "matter.h"
 #include "clock.h"
 #include "wdt.h"
 
@@ -2531,6 +2532,199 @@ static void test_speedtest_subsystem(void)
     TEST_ASSERT(telem.bursts_run == 0U, "speedtest_reset clears burst counter");
 }
 
+static void test_matter_subsystem(void)
+{
+    printf("  [TEST] Google Home Matter Readiness & Commissioning Bridge (Task 6.3)...\n");
+
+    /* 1. Protocol Constants & Sizing */
+    TEST_ASSERT(MATTER_DEFAULT_VENDOR_ID == 0xFFF1U, "Matter default vendor ID is 0xFFF1");
+    TEST_ASSERT(MATTER_DEFAULT_PRODUCT_ID == 0x8001U, "Matter default product ID is 0x8001");
+    TEST_ASSERT(MATTER_DEFAULT_DISCRIMINATOR == 3840U, "Matter default discriminator is 3840 (0x0F00)");
+    TEST_ASSERT(MATTER_DEFAULT_PASSCODE == 20202021U, "Matter default passcode is 20202021");
+    TEST_ASSERT(MATTER_MANUAL_CODE_LEN_STANDARD == 11U, "Standard manual code length is 11 digits");
+    TEST_ASSERT(MATTER_MANUAL_CODE_LEN_EXTENDED == 21U, "Extended manual code length is 21 digits");
+
+    /* 2. Verhoeff Checksum Algorithm Test Vectors */
+    /* Vector 1: Standard 10-digit payload -> check digit must be 2 */
+    uint8_t c1 = matter_verhoeff_compute("3497011233");
+    TEST_ASSERT(c1 == 2U, "Verhoeff check digit for '3497011233' is 2");
+    TEST_ASSERT(matter_verhoeff_validate("34970112332"), "Verhoeff validates '34970112332'");
+
+    /* Vector 2: Single-digit mutation detection */
+    TEST_ASSERT(!matter_verhoeff_validate("34970112342"), "Verhoeff rejects single digit corruption");
+    TEST_ASSERT(!matter_verhoeff_validate("34970112331"), "Verhoeff rejects bad check digit");
+
+    /* Vector 3: Adjacent transposition error detection */
+    TEST_ASSERT(!matter_verhoeff_validate("34970112323"), "Verhoeff rejects transposed digits");
+
+    /* Vector 4: Known short vector "236" -> check digit is 3 */
+    TEST_ASSERT(matter_verhoeff_compute("236") == 3U, "Verhoeff check digit for '236' is 3");
+    TEST_ASSERT(matter_verhoeff_validate("2363"), "Verhoeff validates '2363'");
+
+    /* 3. Manual Pairing Code Generation (Roadmap T36) */
+    matter_commissioning_info_t cfg = {
+        .vendor_id              = MATTER_DEFAULT_VENDOR_ID,
+        .product_id             = MATTER_DEFAULT_PRODUCT_ID,
+        .discriminator          = MATTER_DEFAULT_DISCRIMINATOR,
+        .setup_passcode         = MATTER_DEFAULT_PASSCODE,
+        .commissioning_flow     = MATTER_COMMISSIONING_FLOW_STANDARD,
+        .discovery_capabilities = (MATTER_DISCOVERY_CAP_BLE | MATTER_DISCOVERY_CAP_ONNETWORK)
+    };
+
+    char code_formatted[MATTER_MANUAL_CODE_MAX_BUF];
+    char code_raw[MATTER_MANUAL_CODE_MAX_BUF];
+    memset(code_formatted, 0, sizeof(code_formatted));
+    memset(code_raw, 0, sizeof(code_raw));
+
+    TEST_ASSERT(matter_generate_manual_pairing_code(&cfg, code_formatted, sizeof(code_formatted), true) == MATTER_OK,
+                "matter_generate_manual_pairing_code formatted succeeds");
+    TEST_ASSERT(strcmp(code_formatted, "3497-011-2332") == 0,
+                "Standard manual pairing code matches '3497-011-2332'");
+
+    TEST_ASSERT(matter_generate_manual_pairing_code(&cfg, code_raw, sizeof(code_raw), false) == MATTER_OK,
+                "matter_generate_manual_pairing_code unformatted succeeds");
+    TEST_ASSERT(strcmp(code_raw, "34970112332") == 0,
+                "Raw unformatted manual code matches '34970112332'");
+
+    /* 4. Manual Pairing Code Parsing */
+    matter_commissioning_info_t parsed_info;
+    memset(&parsed_info, 0, sizeof(parsed_info));
+
+    TEST_ASSERT(matter_parse_manual_pairing_code("3497-011-2332", &parsed_info) == MATTER_OK,
+                "matter_parse_manual_pairing_code parses '3497-011-2332'");
+    TEST_ASSERT(parsed_info.discriminator == 3840U, "Parsed discriminator matches 3840 (0x0F00)");
+    TEST_ASSERT(parsed_info.setup_passcode == 20202021U, "Parsed passcode matches 20202021");
+
+    memset(&parsed_info, 0, sizeof(parsed_info));
+    TEST_ASSERT(matter_parse_manual_pairing_code("34970112332", &parsed_info) == MATTER_OK,
+                "matter_parse_manual_pairing_code parses raw '34970112332'");
+    TEST_ASSERT(parsed_info.discriminator == 3840U, "Raw parsed discriminator matches 3840");
+    TEST_ASSERT(parsed_info.setup_passcode == 20202021U, "Raw parsed passcode matches 20202021");
+
+    /* Error cases */
+    TEST_ASSERT(matter_parse_manual_pairing_code("3497-011-2330", &parsed_info) == MATTER_ERR_CHECKSUM,
+                "Reject manual code with invalid checksum");
+    TEST_ASSERT(matter_parse_manual_pairing_code("12345", &parsed_info) == MATTER_ERR_INVALID_PARAM,
+                "Reject manual code with invalid length");
+
+    /* 5. Extended 21-Digit Manual Code */
+    matter_commissioning_info_t ext_cfg = {
+        .vendor_id              = 0x1234U,
+        .product_id             = 0x5678U,
+        .discriminator          = 3840U,
+        .setup_passcode         = 20202021U,
+        .commissioning_flow     = MATTER_COMMISSIONING_FLOW_USER_ACTION,
+        .discovery_capabilities = MATTER_DISCOVERY_CAP_BLE
+    };
+
+    char ext_code[MATTER_MANUAL_CODE_MAX_BUF];
+    memset(ext_code, 0, sizeof(ext_code));
+    TEST_ASSERT(matter_generate_manual_pairing_code(&ext_cfg, ext_code, sizeof(ext_code), false) == MATTER_OK,
+                "Generate 21-digit extended manual code");
+    TEST_ASSERT(strlen(ext_code) == 21U, "Extended code length is exactly 21 digits");
+
+    matter_commissioning_info_t ext_parsed;
+    memset(&ext_parsed, 0, sizeof(ext_parsed));
+    TEST_ASSERT(matter_parse_manual_pairing_code(ext_code, &ext_parsed) == MATTER_OK,
+                "Parse 21-digit extended manual code");
+    TEST_ASSERT(ext_parsed.vendor_id == 0x1234U, "Extended code parsed vendor ID matches");
+    TEST_ASSERT(ext_parsed.product_id == 0x5678U, "Extended code parsed product ID matches");
+    TEST_ASSERT(ext_parsed.discriminator == 3840U, "Extended code parsed discriminator matches");
+    TEST_ASSERT(ext_parsed.setup_passcode == 20202021U, "Extended code parsed passcode matches");
+
+    /* 6. Base38 QR Code Onboarding Payload Serialization */
+    char qr_buf[MATTER_QR_CODE_MAX_BUF];
+    memset(qr_buf, 0, sizeof(qr_buf));
+    TEST_ASSERT(matter_generate_qr_code_payload(&cfg, qr_buf, sizeof(qr_buf)) == MATTER_OK,
+                "matter_generate_qr_code_payload succeeds");
+    TEST_ASSERT(strncmp(qr_buf, "MT:", 3) == 0, "QR payload starts with 'MT:' prefix");
+    TEST_ASSERT(strlen(qr_buf) == (MATTER_QR_PREFIX_LEN + MATTER_SETUP_PAYLOAD_QR_CHARS),
+                "QR payload length is exactly 22 chars");
+
+    matter_commissioning_info_t qr_parsed;
+    memset(&qr_parsed, 0, sizeof(qr_parsed));
+    TEST_ASSERT(matter_parse_qr_code_payload(qr_buf, &qr_parsed) == MATTER_OK,
+                "matter_parse_qr_code_payload roundtrips cleanly");
+    TEST_ASSERT(qr_parsed.vendor_id == MATTER_DEFAULT_VENDOR_ID, "QR roundtrip vendor ID matches");
+    TEST_ASSERT(qr_parsed.product_id == MATTER_DEFAULT_PRODUCT_ID, "QR roundtrip product ID matches");
+    TEST_ASSERT(qr_parsed.discriminator == MATTER_DEFAULT_DISCRIMINATOR, "QR roundtrip discriminator matches");
+    TEST_ASSERT(qr_parsed.setup_passcode == MATTER_DEFAULT_PASSCODE, "QR roundtrip passcode matches");
+
+    TEST_ASSERT(matter_parse_qr_code_payload("INVALID:PAYLOAD", &qr_parsed) == MATTER_ERR_INVALID_PARAM,
+                "Reject QR payload with invalid prefix");
+
+    /* 7. SHA-256 Hash Engine Verification */
+    uint8_t digest[MATTER_SHA256_DIGEST_SIZE];
+    const uint8_t nist_abc[] = "abc";
+    /* Expected SHA-256("abc"): ba7816bf 8f01cfea 414140de 5dae2223 b00361a3 96177a9c b410ff61 f20015ad */
+    const uint8_t nist_abc_expected[MATTER_SHA256_DIGEST_SIZE] = {
+        0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea,
+        0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
+        0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c,
+        0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad
+    };
+    TEST_ASSERT(matter_crypto_sha256(nist_abc, 3U, digest) == MATTER_OK, "matter_crypto_sha256('abc') succeeds");
+    TEST_ASSERT(memcmp(digest, nist_abc_expected, MATTER_SHA256_DIGEST_SIZE) == 0,
+                "SHA-256('abc') matches NIST test vector exactly");
+
+    /* Expected SHA-256(""): e3b0c442 98fc1c14 9afbf4c8 996fb924 27ae41e4 649b934c a495991b 7852b855 */
+    const uint8_t nist_empty_expected[MATTER_SHA256_DIGEST_SIZE] = {
+        0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14,
+        0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f, 0xb9, 0x24,
+        0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c,
+        0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52, 0xb8, 0x55
+    };
+    TEST_ASSERT(matter_crypto_sha256((const uint8_t *)"", 0U, digest) == MATTER_OK, "matter_crypto_sha256('') succeeds");
+    TEST_ASSERT(memcmp(digest, nist_empty_expected, MATTER_SHA256_DIGEST_SIZE) == 0,
+                "SHA-256('') matches NIST empty string vector");
+
+    /* 8. Data Model Clusters & Commissioning FSM */
+    TEST_ASSERT(matter_init(NULL) == MATTER_OK, "matter_init succeeds");
+    TEST_ASSERT(matter_get_state() == MATTER_COMMISSIONING_STATE_READY, "Initial state is READY");
+    TEST_ASSERT(!matter_get_onoff(), "Default On/Off state is false (Off)");
+
+    TEST_ASSERT(matter_toggle_onoff() == MATTER_OK, "matter_toggle_onoff toggles to true");
+    TEST_ASSERT(matter_get_onoff(), "On/Off state is now true (On)");
+
+    TEST_ASSERT(matter_set_onoff(false) == MATTER_OK, "matter_set_onoff sets false");
+    TEST_ASSERT(!matter_get_onoff(), "On/Off state is now false");
+
+    /* Cluster Command Dispatch: Endpoint 1 On/Off Cluster */
+    uint8_t resp[4];
+    size_t resp_len = sizeof(resp);
+    TEST_ASSERT(matter_process_cluster_command(MATTER_ENDPOINT_APPLICATION, MATTER_CLUSTER_ONOFF,
+                                              MATTER_CMD_ONOFF_ON, NULL, 0U, resp, &resp_len) == MATTER_OK,
+                "Process On/Off Cluster Command ON");
+    TEST_ASSERT(matter_get_onoff(), "Cluster command turned on the light/socket");
+
+    /* Cluster Command Dispatch: Endpoint 0 General Commissioning FailSafe */
+    TEST_ASSERT(matter_process_cluster_command(MATTER_ENDPOINT_ROOT, MATTER_CLUSTER_GENERAL_COMMISSIONING,
+                                              MATTER_CMD_GENCOMM_ARM_FAILSAFE, NULL, 0U, resp, &resp_len) == MATTER_OK,
+                "Process General Commissioning ArmFailSafe");
+    TEST_ASSERT(matter_get_state() == MATTER_COMMISSIONING_STATE_ARMED_FAILSAFE,
+                "State transitioned to ARMED_FAILSAFE");
+
+    /* Complete Commissioning */
+    TEST_ASSERT(matter_process_cluster_command(MATTER_ENDPOINT_ROOT, MATTER_CLUSTER_GENERAL_COMMISSIONING,
+                                              MATTER_CMD_GENCOMM_COMMISSIONING_COMPLETE, NULL, 0U, resp, &resp_len) == MATTER_OK,
+                "Process CommissioningComplete command");
+    TEST_ASSERT(matter_get_state() == MATTER_COMMISSIONING_STATE_COMMISSIONED,
+                "State transitioned to COMMISSIONED");
+
+    matter_telemetry_t telem_final;
+    TEST_ASSERT(matter_get_telemetry(&telem_final) == MATTER_OK, "matter_get_telemetry succeeds");
+    TEST_ASSERT(telem_final.fabric_count == 1U, "Fabric count is 1 after commissioning");
+    TEST_ASSERT(telem_final.ble_reclaimed, "BLE memory reclaimed after joining fabric");
+    TEST_ASSERT(telem_final.total_commands_processed >= 3U, "Telemetry records processed cluster commands");
+
+    /* Transport switching */
+    TEST_ASSERT(matter_set_transport(MATTER_TRANSPORT_THREAD) == MATTER_OK, "Set Thread transport");
+    TEST_ASSERT(matter_get_transport() == MATTER_TRANSPORT_THREAD, "Active transport is Thread");
+
+    TEST_ASSERT(matter_reset() == MATTER_OK, "matter_reset resets subsystem");
+    TEST_ASSERT(matter_get_state() == MATTER_COMMISSIONING_STATE_READY, "State after reset is READY");
+}
+
 /* ========================================================================= */
 /* Phase 0-3 Host Test Hardening: Cross-Module Integration & Edge Case Tests */
 /* ========================================================================= */
@@ -3652,6 +3846,7 @@ int main(void)
     test_http_server_subsystem();
     test_dhcp_dns_subsystem();
     test_speedtest_subsystem();
+    test_matter_subsystem();
 
     /* Hardened cross-module integration and edge case tests */
     test_coroutine_systimer_dpc_integration();

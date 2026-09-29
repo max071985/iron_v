@@ -1156,6 +1156,51 @@ def run_suite():
         t34_pass
     )
 
+    # TEST 35: Google Home Matter Readiness & Commissioning Bridge Linkage (Task 6.3)
+    total += 1
+    matter_syms = [
+        "matter_init",
+        "matter_reset",
+        "matter_get_commissioning_info",
+        "matter_set_commissioning_info",
+        "matter_get_telemetry",
+        "matter_get_state",
+        "matter_arm_failsafe",
+        "matter_complete_commissioning",
+        "matter_set_transport",
+        "matter_get_transport",
+        "matter_set_onoff",
+        "matter_get_onoff",
+        "matter_toggle_onoff",
+        "matter_generate_manual_pairing_code",
+        "matter_parse_manual_pairing_code",
+        "matter_generate_qr_code_payload",
+        "matter_parse_qr_code_payload",
+        "matter_process_cluster_command",
+        "matter_verhoeff_compute",
+        "matter_verhoeff_validate",
+        "matter_crypto_hw_init",
+        "matter_crypto_sha256",
+        "matter_get_sha_date",
+        "matter_get_ecc_date"
+    ]
+    found_matter_syms = [s for s in matter_syms if s in symbols]
+    all_matter_found = len(found_matter_syms) == len(matter_syms)
+    all_matter_in_text = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        for s in found_matter_syms
+    )
+    t35_pass = all_matter_found and all_matter_in_text
+    t35_actual = f"Found {len(found_matter_syms)}/{len(matter_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    passed += print_result_line(
+        total,
+        "Google Home Matter Readiness & Commissioning Bridge Linkage",
+        "Verify matter_init, manual code, QR payload, cluster processing, and crypto accelerator symbols exist in IRAM",
+        f"All {len(matter_syms)} Matter subsystem symbols present in IRAM text section [0x40800000, 0x40829000)",
+        t35_actual,
+        t35_pass
+    )
+
     print("\n" + "=" * 70)
     print("                       TEST SUITE SUMMARY                             ")
     print("=" * 70)

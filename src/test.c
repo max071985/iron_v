@@ -29,6 +29,7 @@
 #include "net.h"
 #include "tcp.h"
 #include "http_server.h"
+#include "speedtest.h"
 
 /* Route all test output to unified dual-console multiplexer */
 #define uart_puts console_puts
@@ -2634,6 +2635,137 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
 
     if (t34_pass) passed_tests++;
     print_result(t34_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 35: LAN Network Diagnostics & Speed-Test Engine (Task 6.2)*/
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(35, "LAN Network Diagnostics & Wi-Fi Speed-Test Benchmark Engine",
+                      "Verify throughput calculation, 100-packet synthetic burst, SYSTIMER timestamps, and telemetry");
+
+    wdt_feed();
+
+    /* 1. Subsystem Initialization */
+    int st_init_ok = (speedtest_init() == SPEEDTEST_OK);
+
+    /* 2. Bandwidth Calculation Test Vectors (Roadmap T35) */
+    /* Assert calculation function correctly converts bytes and microseconds into Mbps */
+    uint32_t c_kbps1 = speedtest_calculate_throughput_kbps(125000U, 1000000U);
+    uint32_t c_mbps1 = speedtest_calculate_throughput_mbps(125000U, 1000000U);
+    int vec1_ok = (c_kbps1 == 1000U) && (c_mbps1 == 1U) && (speedtest_kbps_to_mbps(c_kbps1) == 1U);
+
+    uint32_t c_kbps2 = speedtest_calculate_throughput_kbps(12500000U, 1000000U);
+    uint32_t c_mbps2 = speedtest_calculate_throughput_mbps(12500000U, 1000000U);
+    int vec2_ok = (c_kbps2 == 100000U) && (c_mbps2 == 100U);
+
+    uint32_t c_kbps3 = speedtest_calculate_throughput_kbps(102400U, 10240U);
+    uint32_t c_mbps3 = speedtest_calculate_throughput_mbps(102400U, 10240U);
+    int vec3_ok = (c_kbps3 == 80000U) && (c_mbps3 == 80U);
+
+    int calc_ok = vec1_ok && vec2_ok && vec3_ok;
+
+    /* 3. Execute 100-Packet Synthetic Benchmark Burst using SYSTIMER timestamps */
+    speedtest_result_t st_res;
+    memset(&st_res, 0, sizeof(st_res));
+    speedtest_status_t st_run_status = speedtest_run_synthetic_burst(100U, 1024U, &st_res);
+    uint32_t st_dur_us = (st_res.end_time_us > st_res.start_time_us) ?
+                         (st_res.end_time_us - st_res.start_time_us) : 1U;
+    uint32_t st_mbps = speedtest_calculate_throughput_mbps(st_res.total_bytes_transferred, st_dur_us);
+
+    int burst_ok = (st_run_status == SPEEDTEST_OK) &&
+                   (st_res.total_bytes_transferred == 102400U) &&
+                   (st_res.end_time_us > st_res.start_time_us) &&
+                   (st_res.throughput_kbps > 0U) &&
+                   (st_res.packet_loss_count == 0U) &&
+                   (st_mbps > 0U);
+
+    /* 4. Query Engine Telemetry and Last Result */
+    speedtest_telemetry_t st_telem;
+    int st_telem_ok = (speedtest_get_telemetry(&st_telem) == SPEEDTEST_OK) &&
+                      (st_telem.bursts_run >= 1U) &&
+                      (st_telem.total_packets_tx >= 100U) &&
+                      (st_telem.total_bytes_tx >= 102400U);
+
+    speedtest_result_t st_last;
+    int last_ok = (speedtest_get_last_result(&st_last) == SPEEDTEST_OK) &&
+                  (st_last.total_bytes_transferred == 102400U);
+
+    /* 5. Inbound Speed-Test Packet Handling */
+    uint8_t mock_sp_frame[128];
+    memset(mock_sp_frame, 0, sizeof(mock_sp_frame));
+    ethernet_header_t *m_eth = (ethernet_header_t *)mock_sp_frame;
+    ipv4_header_t *m_ip = (ipv4_header_t *)(mock_sp_frame + ETH_HDR_LEN);
+    udp_header_t *m_udp = (udp_header_t *)(mock_sp_frame + ETH_HDR_LEN + IPV4_MIN_HDR_LEN);
+    speedtest_packet_header_t *m_hdr = (speedtest_packet_header_t *)(mock_sp_frame + ETH_HDR_LEN + IPV4_MIN_HDR_LEN + UDP_HDR_LEN);
+
+    uint8_t m_mac[6] = {0x18U, 0xFEU, 0x34U, 0x99U, 0x88U, 0x77U};
+    memcpy(m_eth->src_mac, m_mac, 6);
+    m_eth->ethertype = NET_HTONS(ETHERTYPE_IPV4);
+
+    m_ip->ver_ihl = IPV4_VER_IHL_DEFAULT;
+    m_ip->protocol = IPV4_PROTO_UDP;
+    m_ip->src_ip = NET_HTONL(NET_IP4_ADDR(192, 168, 1, 99));
+    m_ip->dest_ip = NET_HTONL(NET_IP4_ADDR(192, 168, 1, 1));
+    m_ip->ttl = 64U;
+
+    uint16_t m_payload_len = (uint16_t)sizeof(speedtest_packet_header_t);
+    m_udp->src_port = NET_HTONS(5001U);
+    m_udp->dest_port = NET_HTONS(SPEEDTEST_DEFAULT_PORT);
+    m_udp->length = NET_HTONS(UDP_HDR_LEN + m_payload_len);
+
+    m_hdr->magic = SPEEDTEST_MAGIC_HEADER;
+    m_hdr->sequence = 1U;
+    m_hdr->timestamp_us = 99999U;
+    m_hdr->payload_len = m_payload_len;
+    m_hdr->flags = SPEEDTEST_FLAG_BURST;
+
+    m_ip->total_len = NET_HTONS(IPV4_MIN_HDR_LEN + UDP_HDR_LEN + m_payload_len);
+    m_ip->checksum = 0U;
+    m_ip->checksum = NET_HTONS(net_ipv4_checksum(m_ip));
+
+    uint16_t m_frame_len = (uint16_t)(ETH_HDR_LEN + IPV4_MIN_HDR_LEN + UDP_HDR_LEN + m_payload_len);
+    int rx_ok = (net_input(mock_sp_frame, m_frame_len) == NET_OK);
+
+    speedtest_get_telemetry(&st_telem);
+    int rx_telem_ok = (st_telem.total_packets_rx >= 1U);
+
+    wdt_feed();
+
+    int t35_pass = st_init_ok && calc_ok && burst_ok && st_telem_ok && last_ok && rx_ok && rx_telem_ok;
+
+    uart_puts("  Expected:    Init=1, Calc=1, Burst100=1, Telem=1, LastRes=1, RxPacket=1, RxTelem=1\r\n");
+    uart_puts("  Actual:      Init=");
+    put_dec(st_init_ok);
+    uart_puts(", Calc=");
+    put_dec(calc_ok);
+    uart_puts(", Burst100=");
+    put_dec(burst_ok);
+    uart_puts(", Telem=");
+    put_dec(st_telem_ok);
+    uart_puts(", LastRes=");
+    put_dec(last_ok);
+    uart_puts(", RxPacket=");
+    put_dec(rx_ok);
+    uart_puts(", RxTelem=");
+    put_dec(rx_telem_ok);
+    uart_puts("\r\n");
+
+    uart_puts("  Diag: BytesTransferred=");
+    put_dec(st_res.total_bytes_transferred);
+    uart_puts(", DurUs=");
+    put_dec(st_dur_us);
+    uart_puts(", ThroughputKbps=");
+    put_dec(st_res.throughput_kbps);
+    uart_puts(", ThroughputMbps=");
+    put_dec(st_mbps);
+    uart_puts(", LatMinUs=");
+    put_dec(st_res.latency_min_us);
+    uart_puts(", LatMaxUs=");
+    put_dec(st_res.latency_max_us);
+    uart_puts("\r\n");
+
+    if (t35_pass) passed_tests++;
+    print_result(t35_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

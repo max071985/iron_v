@@ -322,7 +322,7 @@ def run_suite():
     native_desc = ""
     if not os.path.exists(native_test_bin):
         comp = subprocess.run(
-            ["gcc", "-O2", "-fno-tree-loop-distribute-patterns", "-Wall", "-Wextra", "-Werror", "-Isrc", "tests/test_freestanding.c", "src/string.c", "src/mmu.c", "src/dpc.c", "src/arena.c", "src/pmp.c", "src/lp_core.c", "src/power.c", "src/gpio.c", "src/gdma.c", "src/modem.c", "src/ble.c", "src/ble_npl.c", "src/wifi.c", "src/ieee802154.c", "src/net.c", "src/tcp.c", "src/wifi_os_adapter.c", "src/wifi_regulatory.c", "src/wifi_ftm_cal.c", "src/wifi_phy_data.c", "-o", native_test_bin],
+            ["gcc", "-O2", "-fno-tree-loop-distribute-patterns", "-Wall", "-Wextra", "-Werror", "-Isrc", "tests/test_freestanding.c", "src/string.c", "src/mmu.c", "src/dpc.c", "src/arena.c", "src/pmp.c", "src/lp_core.c", "src/power.c", "src/gpio.c", "src/gdma.c", "src/modem.c", "src/ble.c", "src/ble_npl.c", "src/wifi.c", "src/ieee802154.c", "src/net.c", "src/tcp.c", "src/dhcp.c", "src/wifi_os_adapter.c", "src/wifi_regulatory.c", "src/wifi_ftm_cal.c", "src/wifi_phy_data.c", "src/http_server.c", "src/speedtest.c", "-o", native_test_bin],
             capture_output=True, text=True
         )
         if comp.returncode != 0:
@@ -1123,6 +1123,37 @@ def run_suite():
         f"All {len(http_syms)} HTTP server symbols present in IRAM text section [0x40800000, 0x40829000)",
         t33_actual,
         t33_pass
+    )
+
+    # TEST 34: LAN Network Diagnostics & Wi-Fi Speed-Test Benchmark Linkage (Task 6.2)
+    total += 1
+    speedtest_syms = [
+        "speedtest_init",
+        "speedtest_reset",
+        "speedtest_calculate_throughput_kbps",
+        "speedtest_calculate_throughput_mbps",
+        "speedtest_kbps_to_mbps",
+        "speedtest_run_synthetic_burst",
+        "speedtest_run_udp_tx",
+        "speedtest_process_udp_packet",
+        "speedtest_get_last_result",
+        "speedtest_get_telemetry"
+    ]
+    found_speedtest_syms = [s for s in speedtest_syms if s in symbols]
+    all_speedtest_found = len(found_speedtest_syms) == len(speedtest_syms)
+    all_speedtest_in_text = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        for s in found_speedtest_syms
+    )
+    t34_pass = all_speedtest_found and all_speedtest_in_text
+    t34_actual = f"Found {len(found_speedtest_syms)}/{len(speedtest_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    passed += print_result_line(
+        total,
+        "LAN Network Diagnostics & Wi-Fi Speed-Test Benchmark Linkage",
+        "Verify speedtest_init, reset, bandwidth calculation, synthetic burst, UDP tx, and telemetry exist in IRAM",
+        f"All {len(speedtest_syms)} Speed-Test benchmark symbols present in IRAM text section [0x40800000, 0x40829000)",
+        t34_actual,
+        t34_pass
     )
 
     print("\n" + "=" * 70)

@@ -34,8 +34,11 @@
 #include "http_server.h"
 #include "dhcp.h"
 #include "wifi_vendor_types.h"
+#include "speedtest.h"
 
-static void print_help(void)
+#define FLASH_TEXT_ATTR __attribute__((section(".flash.text")))
+
+static void FLASH_TEXT_ATTR print_help(void)
 {
     console_puts("Iron V Shell Commands:\r\n");
     console_puts("  help                - Show available commands\r\n");
@@ -62,11 +65,12 @@ static void print_help(void)
     console_puts("  net [status|ip|mask|gw|arp|tcp|reset] - Show or control IPv4 network interface & TCP state machine\r\n");
     console_puts("  dhcp [status]       - Show DHCP server leases and captive portal telemetry\r\n");
     console_puts("  http [status|routes|start|stop] - Show or control zero-allocation local REST/HTTP server\r\n");
+    console_puts("  speedtest [run|burst|udp|status|reset] - Run or inspect LAN network & Wi-Fi throughput benchmark\r\n");
     console_puts("  soak [cycles|status] - Run or inspect 24/7 multi-protocol automated stability soak engine\r\n");
     console_puts("  do-test             - Run full baseline validation test suite\r\n");
 }
 
-static void print_info(void)
+static void FLASH_TEXT_ATTR print_info(void)
 {
     clock_config_t clk;
     clock_get_config(&clk);
@@ -341,6 +345,16 @@ static void print_info(void)
     console_puts(", ReqTotal: ");
     put_dec(htel.requests_total);
     console_puts("\r\n");
+
+    speedtest_telemetry_t sptel;
+    speedtest_get_telemetry(&sptel);
+    console_puts(" Diag:    Port: ");
+    put_dec(SPEEDTEST_DEFAULT_PORT);
+    console_puts(", Bursts: ");
+    put_dec(sptel.bursts_run);
+    console_puts(", Last: ");
+    put_dec(sptel.last_throughput_mbps);
+    console_puts(" Mbps\r\n");
     console_puts("========================================\r\n");
 }
 
@@ -373,7 +387,7 @@ static int parse_uint(char **str, uint32_t *out)
     return 0;
 }
 
-static void shell_execute(char *input_buffer)
+static void FLASH_TEXT_ATTR shell_execute(char *input_buffer)
 {
     if (input_buffer[0] == '\0') return;
 
@@ -2352,6 +2366,149 @@ static void shell_execute(char *input_buffer)
             console_puts("\r\n");
         }
     }
+    else if (strncmp(input_buffer, "speedtest", 9) == 0 && (input_buffer[9] == ' ' || input_buffer[9] == '\0'))
+    {
+        char *subcmd = input_buffer + 9;
+        while (*subcmd == ' ') subcmd++;
+
+        if (strncmp(subcmd, "reset", 5) == 0)
+        {
+            speedtest_reset();
+            console_puts("Speed-Test engine statistics reset.\r\n");
+        }
+        else if (strncmp(subcmd, "udp", 3) == 0)
+        {
+            char *arg = subcmd + 3;
+            while (*arg == ' ') arg++;
+
+            uint32_t target_ip = 0U;
+            uint32_t count = SPEEDTEST_DEFAULT_BURST_COUNT;
+            uint32_t size = SPEEDTEST_DEFAULT_PACKET_SIZE;
+
+            if (*arg != '\0')
+            {
+                char ip_tok[32];
+                size_t tok_len = 0U;
+                while (*arg != ' ' && *arg != '\0' && tok_len < (sizeof(ip_tok) - 1U))
+                {
+                    ip_tok[tok_len++] = *arg++;
+                }
+                ip_tok[tok_len] = '\0';
+                target_ip = net_str_to_ip(ip_tok);
+                while (*arg == ' ') arg++;
+                if (*arg != '\0')
+                {
+                    uint32_t c_in = 0U;
+                    if (parse_uint(&arg, &c_in)) count = c_in;
+                    while (*arg == ' ') arg++;
+                    if (*arg != '\0')
+                    {
+                        uint32_t s_in = 0U;
+                        if (parse_uint(&arg, &s_in)) size = s_in;
+                    }
+                }
+            }
+
+            if (target_ip == 0U)
+            {
+                net_config_t cfg;
+                net_get_config(&cfg);
+                target_ip = cfg.gateway;
+            }
+
+            char ip_s[NET_IP_STR_BUF_LEN];
+            net_ip_to_str(target_ip, ip_s, sizeof(ip_s));
+            console_puts("Executing UDP Speed-Test Benchmark Burst to ");
+            console_puts(ip_s);
+            console_puts(" (");
+            put_dec(count);
+            console_puts(" packets, ");
+            put_dec(size);
+            console_puts(" B each)...\r\n");
+
+            speedtest_result_t res;
+            speedtest_status_t st = speedtest_run_udp_tx(target_ip, SPEEDTEST_DEFAULT_PORT, count, size, &res);
+            if (st == SPEEDTEST_OK)
+            {
+                uint32_t dur_us = (res.end_time_us > res.start_time_us) ? (res.end_time_us - res.start_time_us) : 1U;
+                uint32_t mbps = speedtest_calculate_throughput_mbps(res.total_bytes_transferred, dur_us);
+                console_puts("UDP Benchmark Completed:\r\n");
+                console_puts("  Bytes Transferred: "); put_dec(res.total_bytes_transferred); console_puts(" B\r\n");
+                console_puts("  Duration:          "); put_dec(dur_us / 1000U); console_puts(" ms ("); put_dec(dur_us); console_puts(" us)\r\n");
+                console_puts("  Throughput:        "); put_dec(res.throughput_kbps); console_puts(" kbps ("); put_dec(mbps); console_puts(" Mbps)\r\n");
+                console_puts("  Latency Min/Max:   "); put_dec(res.latency_min_us); console_puts(" us / "); put_dec(res.latency_max_us); console_puts(" us\r\n");
+                console_puts("  Packet Loss:       "); put_dec(res.packet_loss_count); console_puts("\r\n");
+            }
+            else
+            {
+                console_puts("UDP Benchmark Failed (error code: ");
+                put_dec((uint32_t)st);
+                console_puts(")\r\n");
+            }
+        }
+        else if (strncmp(subcmd, "status", 6) == 0)
+        {
+            speedtest_telemetry_t st;
+            speedtest_get_telemetry(&st);
+            console_puts("Speed-Test Benchmark Engine Telemetry:\r\n");
+            console_puts("  Bursts Executed:   "); put_dec(st.bursts_run); console_puts("\r\n");
+            console_puts("  Packets TX / RX:   "); put_dec(st.total_packets_tx); console_puts(" / "); put_dec(st.total_packets_rx); console_puts("\r\n");
+            console_puts("  Bytes TX / RX:     "); put_dec(st.total_bytes_tx); console_puts(" / "); put_dec(st.total_bytes_rx); console_puts("\r\n");
+            console_puts("  Last Throughput:   "); put_dec(st.last_throughput_kbps); console_puts(" kbps ("); put_dec(st.last_throughput_mbps); console_puts(" Mbps)\r\n");
+            console_puts("  Last Latency:      Min="); put_dec(st.last_latency_min_us); console_puts(" us, Max="); put_dec(st.last_latency_max_us);
+            console_puts(" us, Avg="); put_dec(st.last_latency_avg_us); console_puts(" us\r\n");
+            console_puts("  Last Packet Loss:  "); put_dec(st.last_packet_loss); console_puts("\r\n");
+        }
+        else
+        {
+            uint32_t count = SPEEDTEST_DEFAULT_BURST_COUNT;
+            uint32_t size = SPEEDTEST_DEFAULT_PACKET_SIZE;
+
+            if (strncmp(subcmd, "run", 3) == 0 || strncmp(subcmd, "burst", 5) == 0)
+            {
+                if (strncmp(subcmd, "run", 3) == 0) subcmd += 3;
+                else subcmd += 5;
+                while (*subcmd == ' ') subcmd++;
+                if (*subcmd != '\0')
+                {
+                    uint32_t c_in = 0U;
+                    if (parse_uint(&subcmd, &c_in)) count = c_in;
+                    while (*subcmd == ' ') subcmd++;
+                    if (*subcmd != '\0')
+                    {
+                        uint32_t s_in = 0U;
+                        if (parse_uint(&subcmd, &s_in)) size = s_in;
+                    }
+                }
+            }
+
+            console_puts("Running Synthetic Speed-Test Burst Benchmark (");
+            put_dec(count);
+            console_puts(" packets, ");
+            put_dec(size);
+            console_puts(" B each)...\r\n");
+
+            speedtest_result_t res;
+            speedtest_status_t st = speedtest_run_synthetic_burst(count, size, &res);
+            if (st == SPEEDTEST_OK)
+            {
+                uint32_t dur_us = (res.end_time_us > res.start_time_us) ? (res.end_time_us - res.start_time_us) : 1U;
+                uint32_t mbps = speedtest_calculate_throughput_mbps(res.total_bytes_transferred, dur_us);
+                console_puts("Synthetic Benchmark Result:\r\n");
+                console_puts("  Total Transferred: "); put_dec(res.total_bytes_transferred); console_puts(" B ("); put_dec(res.total_bytes_transferred / 1024U); console_puts(" KB)\r\n");
+                console_puts("  Duration:          "); put_dec(dur_us / 1000U); console_puts(" ms ("); put_dec(dur_us); console_puts(" us)\r\n");
+                console_puts("  Throughput:        "); put_dec(res.throughput_kbps); console_puts(" kbps ("); put_dec(mbps); console_puts(" Mbps)\r\n");
+                console_puts("  Latency Min/Max:   "); put_dec(res.latency_min_us); console_puts(" us / "); put_dec(res.latency_max_us); console_puts(" us\r\n");
+                console_puts("  Packet Loss:       0\r\n");
+            }
+            else
+            {
+                console_puts("Synthetic Benchmark Failed (error code: ");
+                put_dec((uint32_t)st);
+                console_puts(")\r\n");
+            }
+        }
+    }
     else
     {
         console_puts("Unknown command. Type 'help' for available commands.\r\n");
@@ -2452,6 +2609,9 @@ void main(void)
 
     /* Initialize Freestanding DHCP Server & DNS Captive Portal */
     dhcp_init();
+
+    /* Initialize LAN Network Diagnostics & Wi-Fi Speed-Test Benchmark Engine */
+    speedtest_init();
 
 #if CONFIG_BLE_AUTO_START_ADV
     ble_gap_start_advertising();

@@ -39,6 +39,7 @@
 #include "test.h"
 #include "http_server.h"
 #include "web_assets.h"
+#include "speedtest.h"
 #include "clock.h"
 #include "wdt.h"
 
@@ -2408,6 +2409,128 @@ static void test_dhcp_dns_subsystem(void)
     TEST_ASSERT(dt.release_rx == 1U, "Telemetry release_rx incremented to 1");
 }
 
+static void test_speedtest_subsystem(void)
+{
+    printf("  [TEST] LAN Network Diagnostics & Wi-Fi Speed-Test Benchmark Engine (Task 6.2)...\n");
+
+    /* 1. Protocol & Sizing Constants */
+    TEST_ASSERT(SPEEDTEST_DEFAULT_PORT == 5001U, "Speedtest default port is 5001");
+    TEST_ASSERT(SPEEDTEST_MAGIC_HEADER == 0x53504544U, "Speedtest magic header matches 'SPED'");
+    TEST_ASSERT(SPEEDTEST_DEFAULT_BURST_COUNT == 100U, "Default burst count is 100");
+    TEST_ASSERT(SPEEDTEST_DEFAULT_PACKET_SIZE == 1024U, "Default packet size is 1024");
+    TEST_ASSERT(SPEEDTEST_MAX_PACKET_SIZE == 1472U, "Max packet size is 1472");
+    TEST_ASSERT(SPEEDTEST_MIN_PACKET_SIZE == 64U, "Min packet size is 64");
+    TEST_ASSERT(sizeof(speedtest_packet_header_t) == 16U, "Wire header is 16 bytes packed");
+
+    /* 2. Lifecycle Initialization */
+    TEST_ASSERT(speedtest_init() == SPEEDTEST_OK, "speedtest_init succeeds");
+
+    /* 3. Bandwidth Calculation Formulas & Known Math Test Vectors */
+    /* Vector 1: 125,000 bytes in 1,000,000 us -> 1000 kbps (1 Mbps) */
+    uint32_t kbps1 = speedtest_calculate_throughput_kbps(125000U, 1000000U);
+    uint32_t mbps1 = speedtest_calculate_throughput_mbps(125000U, 1000000U);
+    TEST_ASSERT(kbps1 == 1000U, "125,000 B in 1s calculates exactly 1000 kbps");
+    TEST_ASSERT(mbps1 == 1U, "125,000 B in 1s calculates exactly 1 Mbps");
+    TEST_ASSERT(speedtest_kbps_to_mbps(kbps1) == 1U, "speedtest_kbps_to_mbps converts 1000 kbps to 1 Mbps");
+
+    /* Vector 2: 12,500,000 bytes in 1,000,000 us -> 100,000 kbps (100 Mbps) */
+    uint32_t kbps2 = speedtest_calculate_throughput_kbps(12500000U, 1000000U);
+    uint32_t mbps2 = speedtest_calculate_throughput_mbps(12500000U, 1000000U);
+    TEST_ASSERT(kbps2 == 100000U, "12.5 MB in 1s calculates exactly 100,000 kbps");
+    TEST_ASSERT(mbps2 == 100U, "12.5 MB in 1s calculates exactly 100 Mbps");
+
+    /* Vector 3: 1,500 bytes in 120 us -> 100 Mbps */
+    uint32_t kbps3 = speedtest_calculate_throughput_kbps(1500U, 120U);
+    uint32_t mbps3 = speedtest_calculate_throughput_mbps(1500U, 120U);
+    TEST_ASSERT(kbps3 == 100000U, "1500 B in 120 us calculates 100,000 kbps");
+    TEST_ASSERT(mbps3 == 100U, "1500 B in 120 us calculates 100 Mbps");
+
+    /* Vector 4: 102,400 bytes in 10,240 us -> 80 Mbps */
+    uint32_t kbps4 = speedtest_calculate_throughput_kbps(102400U, 10240U);
+    uint32_t mbps4 = speedtest_calculate_throughput_mbps(102400U, 10240U);
+    TEST_ASSERT(kbps4 == 80000U, "102,400 B in 10,240 us calculates 80,000 kbps");
+    TEST_ASSERT(mbps4 == 80U, "102,400 B in 10,240 us calculates 80 Mbps");
+
+    /* Division by zero / zero bytes safety */
+    TEST_ASSERT(speedtest_calculate_throughput_kbps(1000U, 0U) == 0U, "Zero elapsed us returns 0 kbps safely");
+    TEST_ASSERT(speedtest_calculate_throughput_kbps(0U, 1000U) == 0U, "Zero bytes returns 0 kbps safely");
+    TEST_ASSERT(speedtest_calculate_throughput_mbps(1000U, 0U) == 0U, "Zero elapsed us returns 0 mbps safely");
+    TEST_ASSERT(speedtest_calculate_throughput_mbps(0U, 1000U) == 0U, "Zero bytes returns 0 mbps safely");
+
+    /* 4. Synthetic Burst Execution (Roadmap T35) */
+    speedtest_result_t res;
+    memset(&res, 0, sizeof(res));
+    TEST_ASSERT(speedtest_run_synthetic_burst(100U, 1024U, &res) == SPEEDTEST_OK, "speedtest_run_synthetic_burst succeeds");
+    TEST_ASSERT(res.total_bytes_transferred == 102400U, "Transferred 102,400 bytes in 100-packet burst");
+    TEST_ASSERT(res.end_time_us > res.start_time_us, "End timestamp exceeds start timestamp");
+    TEST_ASSERT(res.throughput_kbps > 0U, "Positive throughput calculated");
+    TEST_ASSERT(res.packet_loss_count == 0U, "Zero packet loss in synthetic burst");
+
+    /* Calculation function correctly converts bytes and us into Mbps */
+    uint32_t dur = res.end_time_us - res.start_time_us;
+    uint32_t derived_mbps = speedtest_calculate_throughput_mbps(res.total_bytes_transferred, dur);
+    TEST_ASSERT(derived_mbps == speedtest_kbps_to_mbps(res.throughput_kbps), "Throughput kbps and Mbps match");
+
+    /* 5. Parameter Validation */
+    TEST_ASSERT(speedtest_run_synthetic_burst(0U, 2000U, &res) == SPEEDTEST_ERR_INVALID_PARAM, "Reject oversized packet");
+    TEST_ASSERT(speedtest_run_synthetic_burst(0U, 32U, &res) == SPEEDTEST_ERR_INVALID_PARAM, "Reject undersized packet");
+
+    /* 6. Telemetry & Last Result Queries */
+    speedtest_telemetry_t telem;
+    TEST_ASSERT(speedtest_get_telemetry(&telem) == SPEEDTEST_OK, "speedtest_get_telemetry succeeds");
+    TEST_ASSERT(telem.bursts_run >= 1U, "Telemetry records >= 1 burst run");
+    TEST_ASSERT(telem.total_packets_tx >= 100U, "Telemetry records >= 100 packets tx");
+    TEST_ASSERT(telem.total_bytes_tx >= 102400U, "Telemetry records >= 102,400 bytes tx");
+
+    speedtest_result_t last_res;
+    TEST_ASSERT(speedtest_get_last_result(&last_res) == SPEEDTEST_OK, "speedtest_get_last_result succeeds");
+    TEST_ASSERT(last_res.total_bytes_transferred == 102400U, "Last result matches executed burst");
+
+    /* 7. Inbound Packet Processing via net_input */
+    uint8_t sp_frame[128];
+    memset(sp_frame, 0, sizeof(sp_frame));
+    ethernet_header_t *sp_eth = (ethernet_header_t *)sp_frame;
+    ipv4_header_t *sp_ip = (ipv4_header_t *)(sp_frame + ETH_HDR_LEN);
+    udp_header_t *sp_udp = (udp_header_t *)(sp_frame + ETH_HDR_LEN + IPV4_MIN_HDR_LEN);
+    speedtest_packet_header_t *sp_hdr = (speedtest_packet_header_t *)(sp_frame + ETH_HDR_LEN + IPV4_MIN_HDR_LEN + UDP_HDR_LEN);
+
+    uint8_t sender_mac[ETH_ADDR_LEN] = {0x00U, 0x11U, 0x22U, 0x33U, 0x44U, 0x55U};
+    memcpy(sp_eth->src_mac, sender_mac, ETH_ADDR_LEN);
+    sp_eth->ethertype = NET_HTONS(ETHERTYPE_IPV4);
+
+    sp_ip->ver_ihl = IPV4_VER_IHL_DEFAULT;
+    sp_ip->protocol = IPV4_PROTO_UDP;
+    sp_ip->src_ip = NET_HTONL(NET_IP4_ADDR(192, 168, 1, 55));
+    sp_ip->dest_ip = NET_HTONL(NET_IP4_ADDR(192, 168, 1, 1));
+    sp_ip->ttl = 64U;
+
+    uint16_t sp_payload_len = (uint16_t)sizeof(speedtest_packet_header_t);
+    sp_udp->src_port = NET_HTONS(5001U);
+    sp_udp->dest_port = NET_HTONS(SPEEDTEST_DEFAULT_PORT);
+    sp_udp->length = NET_HTONS(UDP_HDR_LEN + sp_payload_len);
+
+    sp_hdr->magic = SPEEDTEST_MAGIC_HEADER;
+    sp_hdr->sequence = 42U;
+    sp_hdr->timestamp_us = 123456U;
+    sp_hdr->payload_len = sp_payload_len;
+    sp_hdr->flags = SPEEDTEST_FLAG_BURST;
+
+    sp_ip->total_len = NET_HTONS(IPV4_MIN_HDR_LEN + UDP_HDR_LEN + sp_payload_len);
+    sp_ip->checksum = 0U;
+    sp_ip->checksum = NET_HTONS(net_ipv4_checksum(sp_ip));
+
+    uint16_t sp_frame_len = (uint16_t)(ETH_HDR_LEN + IPV4_MIN_HDR_LEN + UDP_HDR_LEN + sp_payload_len);
+    TEST_ASSERT(net_input(sp_frame, sp_frame_len) == NET_OK, "net_input handles inbound speedtest UDP packet");
+
+    speedtest_get_telemetry(&telem);
+    TEST_ASSERT(telem.total_packets_rx >= 1U, "Telemetry records inbound speedtest packet");
+
+    /* 8. Reset Subsystem */
+    speedtest_reset();
+    speedtest_get_telemetry(&telem);
+    TEST_ASSERT(telem.bursts_run == 0U, "speedtest_reset clears burst counter");
+}
+
 /* ========================================================================= */
 /* Phase 0-3 Host Test Hardening: Cross-Module Integration & Edge Case Tests */
 /* ========================================================================= */
@@ -3528,6 +3651,7 @@ int main(void)
     test_tcpip_subsystem();
     test_http_server_subsystem();
     test_dhcp_dns_subsystem();
+    test_speedtest_subsystem();
 
     /* Hardened cross-module integration and edge case tests */
     test_coroutine_systimer_dpc_integration();

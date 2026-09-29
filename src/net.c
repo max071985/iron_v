@@ -13,6 +13,7 @@
 #include "dhcp.h"
 #include "wifi.h"
 #include "string.h"
+#include "speedtest.h"
 
 #if defined(__riscv)
 #include "systimer.h"
@@ -686,6 +687,10 @@ net_status_t net_input(const uint8_t *frame, uint16_t len)
                     else if (dest_port == DNS_SERVER_PORT)
                     {
                         dns_process_packet(frame, payload, payload_len);
+                    }
+                    else if (dest_port == SPEEDTEST_DEFAULT_PORT)
+                    {
+                        speedtest_process_udp_packet(frame, payload, payload_len);
                     }
                 }
             }

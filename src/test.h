@@ -54,7 +54,7 @@ typedef struct {
 /* Validates address accessibility and permission */
 mem_access_t check_mem_access(uint32_t addr);
 
-/* Executes full automated validation test suite (Tests 1 - 33) */
+/* Executes full automated validation test suite (Tests 1 - 35) */
 void run_validation_suite(void);
 
 /* Executes full validation test suite and returns structured result */

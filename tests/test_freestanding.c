@@ -43,6 +43,9 @@
 #include "matter.h"
 #include "clock.h"
 #include "wdt.h"
+#include "timer.h"
+#include "trap.h"
+#include "shell.h"
 
 /* Host test stubs for hardware-specific functions */
 void wdt_feed(void)
@@ -59,6 +62,86 @@ void clock_get_config(clock_config_t *cfg)
         cfg->apb_mhz  = 40U;
     }
 }
+
+void wdt_get_status(wdt_supervisor_t *wdt)
+{
+    if (wdt != NULL)
+    {
+        memset(wdt, 0, sizeof(*wdt));
+        wdt->active = 1U;
+        wdt->epoch_count = 10U;
+        wdt->total_feed_count = 100U;
+    }
+}
+
+soc_reset_cause_t wdt_get_reset_cause(void)
+{
+    return RESET_CAUSE_CHIP_POWER_ON;
+}
+
+const char *wdt_get_reset_cause_desc(soc_reset_cause_t cause)
+{
+    (void)cause;
+    return "Power-on reset";
+}
+
+uint64_t systimer_get_ticks(void)
+{
+    return 160000000ULL;
+}
+
+uint64_t systimer_get_us(void)
+{
+    return 10000000ULL;
+}
+
+void systimer_get_telemetry(systimer_telemetry_t *t)
+{
+    if (t != NULL)
+    {
+        memset(t, 0, sizeof(*t));
+        t->uptime_sec = 10U;
+        t->total_ticks = 160000000ULL;
+    }
+}
+
+void console_get_manager(console_manager_t *cmgr)
+{
+    if (cmgr != NULL)
+    {
+        memset(cmgr, 0, sizeof(*cmgr));
+        cmgr->active_mask = CONSOLE_MASK_UART0 | CONSOLE_MASK_USB;
+        cmgr->echo_enabled = 1U;
+    }
+}
+
+void console_putc(char c) { (void)c; }
+void console_flush(void) { }
+int console_read_line_nonblocking(char *buffer, size_t max_len) { (void)buffer; (void)max_len; return 0; }
+void read_line(char *buffer, int max_len) { (void)buffer; (void)max_len; }
+
+int usb_serial_is_tx_ready(void) { return 1; }
+int usb_serial_is_rx_ready(void) { return 0; }
+
+void timer_get_status(timer_status_t *t) { if (t != NULL) memset(t, 0, sizeof(*t)); }
+uint64_t timer_get_current_ticks(void) { return 0ULL; }
+void timer_stop(void) { }
+void timer_start(void) { }
+
+bool test_soak_run(uint32_t c, uint32_t d) { (void)c; (void)d; return true; }
+void test_soak_get_telemetry(test_soak_telemetry_t *t) { if (t != NULL) memset(t, 0, sizeof(*t)); }
+
+mem_access_t check_mem_access(uint32_t addr) { (void)addr; return MEM_ACCESS_READWRITE; }
+uint32_t trap_get_ecall_count(void) { return 0U; }
+
+void task_get_status(task_scheduler_status_t *s) { if (s != NULL) memset(s, 0, sizeof(*s)); }
+const char *task_state_name(task_state_t st) { (void)st; return "READY"; }
+
+const uint8_t _sflash_xip[1] = {0};
+const uint8_t _eflash_xip[1] = {0};
+
+uint32_t interrupt_get_count(uint32_t src) { (void)src; return 0U; }
+void run_validation_suite(void) { }
 
 /* Freestanding function aliases matching runtime naming conventions */
 static inline size_t s_strlen(const char *s)
@@ -2725,6 +2808,71 @@ static void test_matter_subsystem(void)
     TEST_ASSERT(matter_get_state() == MATTER_COMMISSIONING_STATE_READY, "State after reset is READY");
 }
 
+static void test_shell_subsystem(void)
+{
+    printf("  [TEST] Interactive Console Shell & 24/7 Health Monitoring (Task 6.4)...\n");
+
+    /* 1. Subsystem Initialization */
+    shell_init();
+    shell_telemetry_t stelem;
+    shell_get_telemetry(&stelem);
+    TEST_ASSERT(stelem.commands_processed == 0U, "Initial commands processed is 0");
+    TEST_ASSERT(stelem.unknown_commands == 0U, "Initial unknown commands is 0");
+    TEST_ASSERT(stelem.empty_commands == 0U, "Initial empty commands is 0");
+
+    /* 2. 24/7 System Health Telemetry Aggregation */
+    system_health_telemetry_t htelem;
+    shell_get_health_telemetry(&htelem);
+    TEST_ASSERT(htelem.uptime_seconds > 0U, "Health telemetry uptime > 0");
+    TEST_ASSERT(htelem.wdt_feeds_total > 0U, "Health telemetry watchdog feeds > 0");
+    TEST_ASSERT(htelem.arena_bytes_free > 0U, "Health telemetry arena memory free > 0");
+    TEST_ASSERT(htelem.dpc_queue_drops == 0U, "Health telemetry dpc queue drops is 0");
+    TEST_ASSERT(htelem.uart_active == 1U, "Health telemetry UART0 console active");
+    TEST_ASSERT(htelem.usb_active == 1U, "Health telemetry USB CDC-ACM console active");
+
+    /* 3. Empty Command Line Handling */
+    char empty_cmd[] = "";
+    shell_execute(empty_cmd);
+    shell_get_telemetry(&stelem);
+    TEST_ASSERT(stelem.empty_commands == 1U, "Empty command increments empty_commands");
+    TEST_ASSERT(stelem.commands_processed == 0U, "Empty command does not count as processed command");
+
+    /* 4. Valid Builtin Shell Commands */
+    char help_cmd[] = "help";
+    shell_execute(help_cmd);
+    char health_cmd[] = "health";
+    shell_execute(health_cmd);
+    char top_cmd[] = "top";
+    shell_execute(top_cmd);
+    char info_cmd[] = "info";
+    shell_execute(info_cmd);
+
+    shell_get_telemetry(&stelem);
+    TEST_ASSERT(stelem.commands_processed == 4U, "4 valid commands processed");
+    TEST_ASSERT(stelem.unknown_commands == 0U, "0 unknown commands for valid commands");
+
+    /* 5. Unknown Command Handling */
+    char bad_cmd[] = "nonexistent_shell_cmd_xyz";
+    shell_execute(bad_cmd);
+    shell_get_telemetry(&stelem);
+    TEST_ASSERT(stelem.commands_processed == 5U, "5 total commands processed");
+    TEST_ASSERT(stelem.unknown_commands == 1U, "1 unknown command recorded");
+
+    /* 6. Direct Print Helpers and Uptime */
+    shell_print_help();
+    shell_print_info();
+    shell_print_health();
+    shell_print_top();
+    TEST_ASSERT(shell_get_uptime_seconds() > 0U, "shell_get_uptime_seconds returns positive uptime");
+
+    /* 7. Shell Telemetry Reset */
+    shell_reset_telemetry();
+    shell_get_telemetry(&stelem);
+    TEST_ASSERT(stelem.commands_processed == 0U, "Reset clears commands processed");
+    TEST_ASSERT(stelem.unknown_commands == 0U, "Reset clears unknown commands");
+    TEST_ASSERT(stelem.empty_commands == 0U, "Reset clears empty commands");
+}
+
 /* ========================================================================= */
 /* Phase 0-3 Host Test Hardening: Cross-Module Integration & Edge Case Tests */
 /* ========================================================================= */
@@ -3847,6 +3995,7 @@ int main(void)
     test_dhcp_dns_subsystem();
     test_speedtest_subsystem();
     test_matter_subsystem();
+    test_shell_subsystem();
 
     /* Hardened cross-module integration and edge case tests */
     test_coroutine_systimer_dpc_integration();

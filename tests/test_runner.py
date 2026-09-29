@@ -322,7 +322,7 @@ def run_suite():
     native_desc = ""
     if not os.path.exists(native_test_bin):
         comp = subprocess.run(
-            ["gcc", "-O2", "-fno-tree-loop-distribute-patterns", "-Wall", "-Wextra", "-Werror", "-Isrc", "tests/test_freestanding.c", "src/string.c", "src/mmu.c", "src/dpc.c", "src/arena.c", "src/pmp.c", "src/lp_core.c", "src/power.c", "src/gpio.c", "src/gdma.c", "src/modem.c", "src/ble.c", "src/ble_npl.c", "src/wifi.c", "src/ieee802154.c", "src/net.c", "src/tcp.c", "src/dhcp.c", "src/wifi_os_adapter.c", "src/wifi_regulatory.c", "src/wifi_ftm_cal.c", "src/wifi_phy_data.c", "src/http_server.c", "src/speedtest.c", "-o", native_test_bin],
+            ["gcc", "-O2", "-fno-tree-loop-distribute-patterns", "-Wall", "-Wextra", "-Werror", "-Isrc", "tests/test_freestanding.c", "src/string.c", "src/mmu.c", "src/dpc.c", "src/arena.c", "src/pmp.c", "src/lp_core.c", "src/power.c", "src/gpio.c", "src/gdma.c", "src/modem.c", "src/ble.c", "src/ble_npl.c", "src/wifi.c", "src/ieee802154.c", "src/net.c", "src/tcp.c", "src/dhcp.c", "src/wifi_os_adapter.c", "src/wifi_regulatory.c", "src/wifi_ftm_cal.c", "src/wifi_phy_data.c", "src/http_server.c", "src/speedtest.c", "src/matter.c", "src/shell.c", "-o", native_test_bin],
             capture_output=True, text=True
         )
         if comp.returncode != 0:
@@ -1199,6 +1199,45 @@ def run_suite():
         f"All {len(matter_syms)} Matter subsystem symbols present in IRAM text section [0x40800000, 0x40829000)",
         t35_actual,
         t35_pass
+    )
+
+    # TEST 36: Extended Interactive Console Shell & 24/7 Health Monitoring Linkage (Task 6.4)
+    total += 1
+    shell_iram_syms = [
+        "shell_init",
+        "shell_tick",
+        "shell_get_health_telemetry",
+        "shell_get_telemetry",
+        "shell_reset_telemetry",
+        "shell_get_uptime_seconds",
+    ]
+    shell_flash_syms = [
+        "shell_execute",
+        "shell_print_health",
+        "shell_print_top",
+        "shell_print_help",
+        "shell_print_info",
+    ]
+    all_shell_syms = shell_iram_syms + shell_flash_syms
+    found_shell_syms = [s for s in all_shell_syms if s in symbols]
+    all_shell_found = len(found_shell_syms) == len(all_shell_syms)
+    all_iram_in_text = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        for s in shell_iram_syms if s in symbols
+    )
+    all_flash_in_xip = all(
+        (symbols[s]["value"] >= 0x42000000 and symbols[s]["value"] < 0x42800000)
+        for s in shell_flash_syms if s in symbols
+    )
+    t36_pass = all_shell_found and all_iram_in_text and all_flash_in_xip
+    t36_actual = f"Found {len(found_shell_syms)}/{len(all_shell_syms)} symbols (IRAM={all_iram_in_text}, FlashXIP={all_flash_in_xip})"
+    passed += print_result_line(
+        total,
+        "Extended Interactive Console Shell & 24/7 Health Monitoring Linkage",
+        "Verify shell_init/tick/health/uptime in IRAM and shell_execute/help/top/info in Flash XIP (.flash.text)",
+        f"All {len(all_shell_syms)} Shell & Health Monitoring symbols properly allocated across IRAM and Flash XIP",
+        t36_actual,
+        t36_pass
     )
 
     print("\n" + "=" * 70)

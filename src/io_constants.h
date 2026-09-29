@@ -13,8 +13,13 @@
 #include "regs/lp_clkrst.h"
 
 /* Memory barriers */
+#if defined(__riscv)
 #define FENCE()   __asm__ volatile ("fence" ::: "memory")
 #define FENCE_I() __asm__ volatile ("fence.i" ::: "memory")
+#else
+#define FENCE()   __asm__ volatile ("" ::: "memory")
+#define FENCE_I() __asm__ volatile ("" ::: "memory")
+#endif
 #endif
 
 

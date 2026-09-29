@@ -22,6 +22,7 @@ SECTIONS
         *(.flash.text .flash.text.*)
         _flash_rodata_start = .;
         *(.flash.rodata .flash.rodata.*)
+        *shell.o*(.rodata .rodata.* .srodata .srodata.*)
         . = ALIGN(16);
         _eflash_xip = .;
     } > flash_xip

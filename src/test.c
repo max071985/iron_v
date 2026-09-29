@@ -31,6 +31,7 @@
 #include "http_server.h"
 #include "speedtest.h"
 #include "matter.h"
+#include "shell.h"
 
 /* Route all test output to unified dual-console multiplexer */
 #define uart_puts console_puts
@@ -2877,6 +2878,79 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
 
     if (t36_pass) passed_tests++;
     print_result(t36_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 37: 24/7 Extended Console Shell & System Health Monitor  */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(37, "24/7 Extended Console Shell & System Health Monitoring",
+                      "Verify system health telemetry aggregation, uptime, memory invariant, and shell telemetry");
+
+    /* 1. System Health Telemetry Verification */
+    system_health_telemetry_t s_health;
+    shell_get_health_telemetry(&s_health);
+
+    int uptime_ok = (s_health.uptime_seconds > 0U);
+    int arena_ok = (s_health.arena_bytes_free > 0U);
+    int dpc_drops_ok = (s_health.dpc_queue_drops == 0U);
+    int wdt_feeds_ok = (s_health.wdt_feeds_total > 0U);
+    int console_ok = (s_health.uart_active || s_health.usb_active);
+
+    /* 2. Interactive Shell Execution & Command Telemetry Tracking */
+    shell_telemetry_t s_before, s_after;
+    shell_get_telemetry(&s_before);
+
+    char t37_cmd_buf[32] = "help";
+    shell_execute(t37_cmd_buf);
+
+    shell_get_telemetry(&s_after);
+    int shell_cmd_ok = (s_after.commands_processed == (s_before.commands_processed + 1U));
+
+    /* Test unknown command tracking */
+    char t37_bad_cmd[32] = "nonexistent_test_cmd";
+    shell_execute(t37_bad_cmd);
+    shell_get_telemetry(&s_after);
+    int shell_unk_ok = (s_after.unknown_commands > s_before.unknown_commands);
+
+    wdt_feed();
+    lp_wdt_feed();
+
+    int t37_pass = uptime_ok && arena_ok && dpc_drops_ok && wdt_feeds_ok &&
+                   console_ok && shell_cmd_ok && shell_unk_ok;
+
+    uart_puts("  Expected:    Uptime>0, FreeMem>0, Drops=0, WDTFeeds>0, Console=1, CmdProc=1, UnkCmd=1\r\n");
+    uart_puts("  Actual:      Uptime=");
+    put_dec(uptime_ok);
+    uart_puts(", FreeMem=");
+    put_dec(arena_ok);
+    uart_puts(", Drops=");
+    put_dec(dpc_drops_ok);
+    uart_puts(", WDTFeeds=");
+    put_dec(wdt_feeds_ok);
+    uart_puts(", Console=");
+    put_dec(console_ok);
+    uart_puts(", CmdProc=");
+    put_dec(shell_cmd_ok);
+    uart_puts(", UnkCmd=");
+    put_dec(shell_unk_ok);
+    uart_puts("\r\n");
+
+    uart_puts("  Diag: Uptime=");
+    put_dec(s_health.uptime_seconds);
+    uart_puts("s, FreeArena=");
+    put_dec(s_health.arena_bytes_free);
+    uart_puts("B, UsedArena=");
+    put_dec(s_health.arena_bytes_used);
+    uart_puts("B, Drops=");
+    put_dec(s_health.dpc_queue_drops);
+    uart_puts(", WDTTotal=");
+    put_dec(s_health.wdt_feeds_total);
+    uart_puts(", ShellCmds=");
+    put_dec(s_after.commands_processed);
+    uart_puts("\r\n");
+
+    if (t37_pass) passed_tests++;
+    print_result(t37_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

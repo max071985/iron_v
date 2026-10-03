@@ -50,6 +50,7 @@
 #include "soak.h"
 #include "ota.h"
 #include "nvs.h"
+#include "provisioning.h"
 
 /* Host test stubs for hardware-specific functions */
 void wdt_feed(void)
@@ -2291,9 +2292,9 @@ static void test_http_server_subsystem(void)
 
     /* 1. Protocol & Sizing Constants */
     TEST_ASSERT(HTTP_SERVER_DEFAULT_PORT == 80U, "HTTP default port is 80");
-    TEST_ASSERT(HTTP_MAX_ROUTES == 16U, "HTTP_MAX_ROUTES is 16");
+    TEST_ASSERT(HTTP_MAX_ROUTES == 24U, "HTTP_MAX_ROUTES is 24");
     TEST_ASSERT(HTTP_REQUEST_BUF_SIZE == 1024U, "HTTP request buffer size is 1024");
-    TEST_ASSERT(HTTP_RESPONSE_BUF_SIZE == 1536U, "HTTP response buffer size is 1536");
+    TEST_ASSERT(HTTP_RESPONSE_BUF_SIZE == 2048U, "HTTP response buffer size is 2048");
 
     /* 2. Lifecycle & Route Registration */
     TEST_ASSERT(http_server_init() == HTTP_OK, "http_server_init succeeds");
@@ -3241,6 +3242,121 @@ static void test_nvs_subsystem(void)
     TEST_ASSERT(gm_rep.ota_partitions_ok, "OTA partitions & boot image header verified");
     TEST_ASSERT(gm_rep.nvs_storage_ok, "NVS storage verified");
     TEST_ASSERT(gm_rep.total_assertions_passed >= 6U, "All 6 subsystem audits pass");
+}
+
+static void test_provisioning_subsystem(void)
+{
+    printf("  [TEST] SoftAP Captive Portal Wi-Fi Provisioning Engine (Task 8.1)...\n");
+
+    /* 1. Lifecycle and Initialization */
+    nvs_mock_reset();
+    nvs_init();
+    provisioning_mock_reset();
+    http_server_init();
+
+    TEST_ASSERT(provisioning_init() == PROV_OK, "provisioning_init succeeds");
+    TEST_ASSERT(provisioning_get_state() == PROV_STATE_UNPROVISIONED, "Initial state is UNPROVISIONED");
+    TEST_ASSERT(!provisioning_has_credentials(), "Initially has no credentials");
+
+    /* 2. Constants & Data Structure Geometry */
+    TEST_ASSERT(sizeof(wifi_scan_item_t) >= 40U, "sizeof(wifi_scan_item_t) holds required fields");
+    TEST_ASSERT(sizeof(wifi_credentials_t) >= 96U, "sizeof(wifi_credentials_t) holds SSID & pass");
+    TEST_ASSERT(PROVISIONING_MAX_SCAN_APS == 16U, "PROVISIONING_MAX_SCAN_APS is 16");
+
+    /* 3. Scan Results Query */
+    wifi_scan_item_t aps[PROVISIONING_MAX_SCAN_APS];
+    uint16_t ap_count = 0U;
+    TEST_ASSERT(provisioning_get_scan_results(aps, PROVISIONING_MAX_SCAN_APS, &ap_count) == PROV_OK, "get_scan_results succeeds");
+    TEST_ASSERT(ap_count >= 3U, "Scan table contains at least 3 baseline access points");
+    TEST_ASSERT(strcmp(aps[0].ssid, "HomeNetwork-2.4G") == 0, "First AP SSID is HomeNetwork-2.4G");
+    TEST_ASSERT(aps[0].rssi == -45, "First AP RSSI is -45 dBm");
+    TEST_ASSERT(aps[0].channel == 1U, "First AP channel is 1");
+    TEST_ASSERT(aps[0].auth_mode == PROV_AUTH_WPA2_PSK, "First AP auth mode is WPA2-PSK");
+
+    /* 4. Trigger Wi-Fi Scan */
+    TEST_ASSERT(provisioning_start_scan() == PROV_OK, "provisioning_start_scan succeeds");
+    provisioning_telemetry_t telem;
+    TEST_ASSERT(provisioning_get_telemetry(&telem) == PROV_OK, "provisioning_get_telemetry succeeds");
+    TEST_ASSERT(telem.scans_initiated >= 1U, "Telemetry tracks initiated scans");
+    TEST_ASSERT(telem.scans_completed >= 1U, "Telemetry tracks completed scans");
+
+    /* 5. Credential Validation & Persistence */
+    /* Rejection of invalid credentials */
+    TEST_ASSERT(provisioning_set_credentials("", "password123") == PROV_ERR_SSID_EMPTY, "Rejects empty SSID");
+    TEST_ASSERT(provisioning_set_credentials("MyNetwork", "short") == PROV_ERR_PASS_TOO_SHORT, "Rejects short passphrase (< 8 chars)");
+
+    /* Valid credentials */
+    TEST_ASSERT(provisioning_set_credentials("IronHomeWiFi", "SuperSecret123") == PROV_OK, "Valid credentials accepted");
+    TEST_ASSERT(provisioning_has_credentials(), "provisioning_has_credentials returns true");
+    TEST_ASSERT(provisioning_get_state() == PROV_STATE_CONFIGURED, "State transitioned to CONFIGURED");
+
+    wifi_credentials_t creds;
+    TEST_ASSERT(provisioning_get_credentials(&creds) == PROV_OK, "get_credentials succeeds");
+    TEST_ASSERT(strcmp(creds.ssid, "IronHomeWiFi") == 0, "Configured SSID matches");
+    TEST_ASSERT(strcmp(creds.passphrase, "SuperSecret123") == 0, "Configured passphrase matches");
+    TEST_ASSERT(creds.provisioned, "creds.provisioned flag is true");
+
+    /* NVS Persistence Verification */
+    char nvs_ssid[PROVISIONING_MAX_SSID_LEN + 1U];
+    char nvs_pass[PROVISIONING_MAX_PASS_LEN + 1U];
+    TEST_ASSERT(nvs_get_str(PROV_NVS_KEY_SSID, nvs_ssid, sizeof(nvs_ssid)) == NVS_OK, "Read SSID from NVS succeeds");
+    TEST_ASSERT(strcmp(nvs_ssid, "IronHomeWiFi") == 0, "NVS SSID matches configured value");
+    TEST_ASSERT(nvs_get_str(PROV_NVS_KEY_PASS, nvs_pass, sizeof(nvs_pass)) == NVS_OK, "Read passphrase from NVS succeeds");
+    TEST_ASSERT(strcmp(nvs_pass, "SuperSecret123") == 0, "NVS passphrase matches configured value");
+
+    /* 6. Credential Erasure */
+    TEST_ASSERT(provisioning_clear_credentials() == PROV_OK, "clear_credentials succeeds");
+    TEST_ASSERT(!provisioning_has_credentials(), "provisioning_has_credentials returns false after clear");
+    TEST_ASSERT(provisioning_get_credentials(&creds) == PROV_ERR_NOT_FOUND, "get_credentials returns NOT_FOUND after clear");
+    TEST_ASSERT(nvs_get_str(PROV_NVS_KEY_SSID, nvs_ssid, sizeof(nvs_ssid)) == NVS_ERR_NOT_FOUND, "SSID removed from NVS");
+
+    /* 7. HTTP Route Execution: Captive Portal & REST APIs */
+    char resp_buf[HTTP_RESPONSE_BUF_SIZE];
+    size_t resp_len = 0U;
+
+    /* 7a. GET /setup */
+    const char req_setup[] = "GET /setup HTTP/1.1\r\nHost: 192.168.4.1\r\n\r\n";
+    TEST_ASSERT(http_process_request(req_setup, strlen(req_setup), resp_buf, sizeof(resp_buf), &resp_len) == HTTP_OK, "GET /setup succeeds");
+    TEST_ASSERT(strstr(resp_buf, "200 OK") != NULL, "GET /setup returns 200 OK");
+    TEST_ASSERT(strstr(resp_buf, "text/html") != NULL, "GET /setup returns text/html");
+    TEST_ASSERT(strstr(resp_buf, "Wi-Fi Setup") != NULL, "GET /setup body contains 'Wi-Fi Setup'");
+
+    /* 7b. GET /api/wifi/scan */
+    const char req_scan[] = "GET /api/wifi/scan HTTP/1.1\r\nHost: 192.168.4.1\r\n\r\n";
+    TEST_ASSERT(http_process_request(req_scan, strlen(req_scan), resp_buf, sizeof(resp_buf), &resp_len) == HTTP_OK, "GET /api/wifi/scan succeeds");
+    TEST_ASSERT(strstr(resp_buf, "200 OK") != NULL, "GET /api/wifi/scan returns 200 OK");
+    TEST_ASSERT(strstr(resp_buf, "application/json") != NULL, "GET /api/wifi/scan returns JSON");
+    TEST_ASSERT(strstr(resp_buf, "HomeNetwork-2.4G") != NULL, "GET /api/wifi/scan contains HomeNetwork-2.4G");
+
+    /* 7c. POST /api/wifi/configure with JSON payload */
+    const char req_cfg_json[] =
+        "POST /api/wifi/configure HTTP/1.1\r\n"
+        "Host: 192.168.4.1\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: 48\r\n"
+        "\r\n"
+        "{\"ssid\":\"JsonHomeWiFi\",\"password\":\"P@ssw0rd999\"}";
+    TEST_ASSERT(http_process_request(req_cfg_json, strlen(req_cfg_json), resp_buf, sizeof(resp_buf), &resp_len) == HTTP_OK, "POST /api/wifi/configure (JSON) succeeds");
+    TEST_ASSERT(strstr(resp_buf, "200 OK") != NULL, "Configure returns 200 OK");
+    TEST_ASSERT(strstr(resp_buf, "\"provisioned\":true") != NULL, "Configure JSON reports provisioned:true");
+    TEST_ASSERT(provisioning_get_credentials(&creds) == PROV_OK, "Credentials saved from JSON POST");
+    TEST_ASSERT(strcmp(creds.ssid, "JsonHomeWiFi") == 0, "SSID matches JSON input");
+
+    /* 7d. GET /api/wifi/status */
+    const char req_status[] = "GET /api/wifi/status HTTP/1.1\r\nHost: 192.168.4.1\r\n\r\n";
+    TEST_ASSERT(http_process_request(req_status, strlen(req_status), resp_buf, sizeof(resp_buf), &resp_len) == HTTP_OK, "GET /api/wifi/status succeeds");
+    TEST_ASSERT(strstr(resp_buf, "200 OK") != NULL, "Status returns 200 OK");
+    TEST_ASSERT(strstr(resp_buf, "\"provisioned\":true") != NULL, "Status reports provisioned:true");
+    TEST_ASSERT(strstr(resp_buf, "JsonHomeWiFi") != NULL, "Status contains active SSID");
+
+    /* 7e. GET /api/wifi/credentials */
+    const char req_creds[] = "GET /api/wifi/credentials HTTP/1.1\r\nHost: 192.168.4.1\r\n\r\n";
+    TEST_ASSERT(http_process_request(req_creds, strlen(req_creds), resp_buf, sizeof(resp_buf), &resp_len) == HTTP_OK, "GET /api/wifi/credentials succeeds");
+    TEST_ASSERT(strstr(resp_buf, "200 OK") != NULL, "Credentials endpoint returns 200 OK");
+    TEST_ASSERT(strstr(resp_buf, "JsonHomeWiFi") != NULL, "Credentials endpoint returns active SSID");
+
+    /* 8. Reset state */
+    provisioning_clear_credentials();
 }
 
 /* ========================================================================= */
@@ -4370,6 +4486,7 @@ int main(void)
     test_soak_anti_starvation_subsystem();
     test_ota_subsystem();
     test_nvs_subsystem();
+    test_provisioning_subsystem();
 
     /* Hardened cross-module integration and edge case tests */
     test_coroutine_systimer_dpc_integration();

@@ -36,10 +36,17 @@
 #include "soak.h"
 #include "ota.h"
 #include "nvs.h"
+#include "provisioning.h"
 
 /* Route all test output to unified dual-console multiplexer */
 #define uart_puts console_puts
 #define uart_putc console_putc
+
+#if defined(__riscv)
+#define TEST_FLASH_TEXT __attribute__((section(".flash.text")))
+#else
+#define TEST_FLASH_TEXT
+#endif
 
 static void test_onchip_npl_cb(struct ble_npl_event *ev)
 {
@@ -3399,6 +3406,141 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t41_pass);
 
     /* ------------------------------------------------------------- */
+    /* TEST 42: SoftAP Captive Portal Wi-Fi Provisioning Engine      */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(42, "SoftAP Captive Portal Wi-Fi Provisioning Engine",
+                      "Verify interactive Wi-Fi scan table, /setup portal, configure endpoint & NVS persistence");
+
+    wdt_feed();
+    lp_wdt_feed();
+
+    /* 1. Subsystem Initialization */
+    int prov_init_ok = (provisioning_init() == PROV_OK);
+
+    /* 2. Scan Table & Query Verification */
+    wifi_scan_item_t scan_aps[PROVISIONING_MAX_SCAN_APS];
+    uint16_t scan_cnt = 0U;
+    int scan_get_ok = (provisioning_get_scan_results(scan_aps, PROVISIONING_MAX_SCAN_APS, &scan_cnt) == PROV_OK) &&
+                      (scan_cnt >= 3U) &&
+                      (strcmp(scan_aps[0].ssid, "HomeNetwork-2.4G") == 0) &&
+                      (scan_aps[0].rssi == -45) &&
+                      (scan_aps[0].channel == 1U) &&
+                      (scan_aps[0].auth_mode == PROV_AUTH_WPA2_PSK);
+
+    /* 3. Trigger Wi-Fi Scan */
+    int scan_trig_ok = (provisioning_start_scan() == PROV_OK);
+    provisioning_telemetry_t ptel;
+    int prov_telem_ok = (provisioning_get_telemetry(&ptel) == PROV_OK) &&
+                        (ptel.scans_initiated >= 1U) &&
+                        (ptel.scans_completed >= 1U);
+
+    /* 4. Credential Set, Validation & NVS Persistence */
+    int empty_reject_ok = (provisioning_set_credentials("", "pass12345") == PROV_ERR_SSID_EMPTY);
+    int short_reject_ok = (provisioning_set_credentials("TestAP", "short") == PROV_ERR_PASS_TOO_SHORT);
+
+    const char *test_prov_ssid = "IronSiliconNet";
+    const char *test_prov_pass = "SiliconP@ssw0rd99";
+    int set_creds_ok = (provisioning_set_credentials(test_prov_ssid, test_prov_pass) == PROV_OK);
+
+    wifi_credentials_t got_creds;
+    int get_creds_ok = (provisioning_get_credentials(&got_creds) == PROV_OK) &&
+                       (strcmp(got_creds.ssid, test_prov_ssid) == 0) &&
+                       (strcmp(got_creds.passphrase, test_prov_pass) == 0) &&
+                       got_creds.provisioned;
+
+    char nvs_chk_ssid[PROVISIONING_MAX_SSID_LEN + 1U];
+    char nvs_chk_pass[PROVISIONING_MAX_PASS_LEN + 1U];
+    int nvs_persisted_ok = (nvs_get_str(PROV_NVS_KEY_SSID, nvs_chk_ssid, sizeof(nvs_chk_ssid)) == NVS_OK) &&
+                           (strcmp(nvs_chk_ssid, test_prov_ssid) == 0) &&
+                           (nvs_get_str(PROV_NVS_KEY_PASS, nvs_chk_pass, sizeof(nvs_chk_pass)) == NVS_OK) &&
+                           (strcmp(nvs_chk_pass, test_prov_pass) == 0);
+
+    /* 5. Clear Credentials */
+    int clear_ok = (provisioning_clear_credentials() == PROV_OK) &&
+                   (!provisioning_has_credentials()) &&
+                   (provisioning_get_credentials(&got_creds) == PROV_ERR_NOT_FOUND) &&
+                   (nvs_get_str(PROV_NVS_KEY_SSID, nvs_chk_ssid, sizeof(nvs_chk_ssid)) == NVS_ERR_NOT_FOUND);
+
+    /* 6. Embedded HTTP Route Handlers Verification */
+    char http_resp[HTTP_RESPONSE_BUF_SIZE];
+    size_t http_resp_len = 0U;
+
+    /* 6a. GET /setup */
+    const char t_req_setup[] = "GET /setup HTTP/1.1\r\nHost: 192.168.4.1\r\n\r\n";
+    int http_setup_ok = (http_process_request(t_req_setup, strlen(t_req_setup), http_resp, sizeof(http_resp), &http_resp_len) == HTTP_OK) &&
+                        (strstr(http_resp, "200 OK") != NULL) &&
+                        (strstr(http_resp, "text/html") != NULL) &&
+                        (strstr(http_resp, "Wi-Fi Setup") != NULL);
+
+    /* 6b. GET /api/wifi/scan */
+    const char t_req_scan[] = "GET /api/wifi/scan HTTP/1.1\r\nHost: 192.168.4.1\r\n\r\n";
+    int http_scan_ok = (http_process_request(t_req_scan, strlen(t_req_scan), http_resp, sizeof(http_resp), &http_resp_len) == HTTP_OK) &&
+                       (strstr(http_resp, "200 OK") != NULL) &&
+                       (strstr(http_resp, "application/json") != NULL) &&
+                       (strstr(http_resp, "HomeNetwork-2.4G") != NULL);
+
+    /* 6c. POST /api/wifi/configure (JSON payload) */
+    const char t_req_cfg[] =
+        "POST /api/wifi/configure HTTP/1.1\r\n"
+        "Host: 192.168.4.1\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: 52\r\n"
+        "\r\n"
+        "{\"ssid\":\"SiliconWiFi_AP\",\"password\":\"Secr3tK3y!99\"}";
+    int http_cfg_ok = (http_process_request(t_req_cfg, strlen(t_req_cfg), http_resp, sizeof(http_resp), &http_resp_len) == HTTP_OK) &&
+                      (strstr(http_resp, "200 OK") != NULL) &&
+                      (strstr(http_resp, "\"provisioned\":true") != NULL) &&
+                      (provisioning_get_credentials(&got_creds) == PROV_OK) &&
+                      (strcmp(got_creds.ssid, "SiliconWiFi_AP") == 0);
+
+    /* 6d. GET /api/wifi/status & GET /api/wifi/credentials */
+    const char t_req_st[] = "GET /api/wifi/status HTTP/1.1\r\nHost: 192.168.4.1\r\n\r\n";
+    int http_st_ok = (http_process_request(t_req_st, strlen(t_req_st), http_resp, sizeof(http_resp), &http_resp_len) == HTTP_OK) &&
+                     (strstr(http_resp, "200 OK") != NULL) &&
+                     (strstr(http_resp, "SiliconWiFi_AP") != NULL);
+
+    wdt_feed();
+    lp_wdt_feed();
+
+    int t42_pass = prov_init_ok && scan_get_ok && scan_trig_ok && prov_telem_ok &&
+                   empty_reject_ok && short_reject_ok && set_creds_ok &&
+                   get_creds_ok && nvs_persisted_ok && clear_ok &&
+                   http_setup_ok && http_scan_ok && http_cfg_ok && http_st_ok;
+
+    uart_puts("  Expected:    Init=1, ScanGet=1, ScanTrig=1, RejectInvalid=1, SetCreds=1, NVSPersist=1, Clear=1, HTTP=1\r\n");
+    uart_puts("  Actual:      Init=");
+    put_dec(prov_init_ok);
+    uart_puts(", ScanGet=");
+    put_dec(scan_get_ok);
+    uart_puts(", ScanTrig=");
+    put_dec(scan_trig_ok && prov_telem_ok);
+    uart_puts(", RejectInvalid=");
+    put_dec(empty_reject_ok && short_reject_ok);
+    uart_puts(", SetCreds=");
+    put_dec(set_creds_ok && get_creds_ok);
+    uart_puts(", NVSPersist=");
+    put_dec(nvs_persisted_ok);
+    uart_puts(", Clear=");
+    put_dec(clear_ok);
+    uart_puts(", HTTP=");
+    put_dec(http_setup_ok && http_scan_ok && http_cfg_ok && http_st_ok);
+    uart_puts("\r\n");
+
+    uart_puts("  Diag: State=");
+    uart_puts(provisioning_state_to_str(provisioning_get_state()));
+    uart_puts(", ActiveSSID='");
+    uart_puts(got_creds.ssid);
+    uart_puts("', ScansRun=");
+    put_dec(ptel.scans_completed);
+    uart_puts(", SoftAP='");
+    uart_puts(wifi_get_ap_ssid());
+    uart_puts("'\r\n");
+
+    if (t42_pass) passed_tests++;
+    print_result(t42_pass);
+
+    /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */
     /* ------------------------------------------------------------- */
     print_banner_line();
@@ -3443,7 +3585,7 @@ void run_validation_suite(void)
 /* ========================================================================= */
 static test_soak_telemetry_t s_soak_telemetry = {0};
 
-void test_soak_get_telemetry(test_soak_telemetry_t *out_telem)
+TEST_FLASH_TEXT void test_soak_get_telemetry(test_soak_telemetry_t *out_telem)
 {
     if (out_telem != NULL)
     {
@@ -3451,7 +3593,7 @@ void test_soak_get_telemetry(test_soak_telemetry_t *out_telem)
     }
 }
 
-bool test_soak_run(uint32_t cycles, uint32_t delay_ms)
+TEST_FLASH_TEXT bool test_soak_run(uint32_t cycles, uint32_t delay_ms)
 {
     uint32_t target = (cycles == 0U) ? 1000000U : cycles;
     s_soak_telemetry.target_cycles = cycles;

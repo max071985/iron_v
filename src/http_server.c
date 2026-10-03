@@ -40,11 +40,17 @@ static http_telemetry_t s_http_telemetry;
 static tcp_pcb_t *s_http_listener_pcb = NULL;
 static bool s_http_initialized = false;
 
+#if defined(__riscv)
+#define HTTP_FLASH_TEXT __attribute__((section(".flash.text")))
+#else
+#define HTTP_FLASH_TEXT
+#endif
+
 /* ========================================================================= */
 /* Internal String Formatting Utilities (Zero C-Library Dependency)          */
 /* ========================================================================= */
 
-static size_t http_u32_to_dec(uint32_t val, char *buf, size_t max_len)
+static HTTP_FLASH_TEXT size_t http_u32_to_dec(uint32_t val, char *buf, size_t max_len)
 {
     if (buf == NULL || max_len < 2U)
     {
@@ -79,7 +85,7 @@ static size_t http_u32_to_dec(uint32_t val, char *buf, size_t max_len)
     return digits;
 }
 
-static size_t http_u64_to_dec(uint64_t val, char *buf, size_t max_len)
+static HTTP_FLASH_TEXT size_t http_u64_to_dec(uint64_t val, char *buf, size_t max_len)
 {
     if (buf == NULL || max_len < 2U)
     {
@@ -114,7 +120,7 @@ static size_t http_u64_to_dec(uint64_t val, char *buf, size_t max_len)
     return digits;
 }
 
-static size_t http_str_append(char *dest, size_t dest_max, const char *src)
+static HTTP_FLASH_TEXT size_t http_str_append(char *dest, size_t dest_max, const char *src)
 {
     if (dest == NULL || src == NULL || dest_max == 0U)
     {
@@ -141,7 +147,7 @@ static size_t http_str_append(char *dest, size_t dest_max, const char *src)
 /* ========================================================================= */
 
 /* GET / and GET /index.html -> Serves embedded HTML dashboard */
-static void http_handler_root(const char *query_params, char *response_body, size_t max_len)
+static HTTP_FLASH_TEXT void http_handler_root(const char *query_params, char *response_body, size_t max_len)
 {
     (void)query_params;
     if (response_body == NULL || max_len == 0U)
@@ -159,7 +165,7 @@ static void http_handler_root(const char *query_params, char *response_body, siz
 }
 
 /* GET /api/status -> Returns JSON with uptime_ms, cpu_mhz, hostname */
-static void http_handler_status(const char *query_params, char *response_body, size_t max_len)
+static HTTP_FLASH_TEXT void http_handler_status(const char *query_params, char *response_body, size_t max_len)
 {
     (void)query_params;
     if (response_body == NULL || max_len == 0U)
@@ -188,7 +194,7 @@ static void http_handler_status(const char *query_params, char *response_body, s
 }
 
 /* GET /api/info -> Returns device identification JSON */
-static void http_handler_info(const char *query_params, char *response_body, size_t max_len)
+static HTTP_FLASH_TEXT void http_handler_info(const char *query_params, char *response_body, size_t max_len)
 {
     (void)query_params;
     if (response_body == NULL || max_len == 0U)
@@ -211,7 +217,7 @@ static void http_handler_info(const char *query_params, char *response_body, siz
 }
 
 /* GET /api/telemetry -> Returns HTTP & TCP telemetry JSON */
-static void http_handler_telemetry(const char *query_params, char *response_body, size_t max_len)
+static HTTP_FLASH_TEXT void http_handler_telemetry(const char *query_params, char *response_body, size_t max_len)
 {
     (void)query_params;
     if (response_body == NULL || max_len == 0U)
@@ -243,7 +249,7 @@ static void http_handler_telemetry(const char *query_params, char *response_body
 }
 
 /* POST /api/wdt/feed -> Feeds watchdog supervisor via REST API */
-static void http_handler_wdt_feed(const char *query_params, char *response_body, size_t max_len)
+static HTTP_FLASH_TEXT void http_handler_wdt_feed(const char *query_params, char *response_body, size_t max_len)
 {
     (void)query_params;
     if (response_body == NULL || max_len == 0U)
@@ -257,7 +263,7 @@ static void http_handler_wdt_feed(const char *query_params, char *response_body,
 }
 
 /* GET /favicon.ico -> Returns 200 OK empty response */
-static void http_handler_favicon(const char *query_params, char *response_body, size_t max_len)
+static HTTP_FLASH_TEXT void http_handler_favicon(const char *query_params, char *response_body, size_t max_len)
 {
     (void)query_params;
     (void)max_len;
@@ -268,7 +274,7 @@ static void http_handler_favicon(const char *query_params, char *response_body, 
 }
 
 /* GET /generate_204 & /gen_204 -> HTTP 204 No Content (Android connectivity validation) */
-static void http_handler_generate_204(const char *query_params, char *response_body, size_t max_len)
+static HTTP_FLASH_TEXT void http_handler_generate_204(const char *query_params, char *response_body, size_t max_len)
 {
     (void)query_params;
     (void)max_len;
@@ -279,7 +285,7 @@ static void http_handler_generate_204(const char *query_params, char *response_b
 }
 
 /* GET /hotspot-detect.html -> Apple Captive Network Assistant Success */
-static void http_handler_apple_cna(const char *query_params, char *response_body, size_t max_len)
+static HTTP_FLASH_TEXT void http_handler_apple_cna(const char *query_params, char *response_body, size_t max_len)
 {
     (void)query_params;
     if (response_body == NULL || max_len == 0U) return;
@@ -291,7 +297,7 @@ static void http_handler_apple_cna(const char *query_params, char *response_body
 }
 
 /* GET /ncsi.txt & /connecttest.txt -> Windows NCSI Success */
-static void http_handler_windows_ncsi(const char *query_params, char *response_body, size_t max_len)
+static HTTP_FLASH_TEXT void http_handler_windows_ncsi(const char *query_params, char *response_body, size_t max_len)
 {
     (void)query_params;
     if (response_body == NULL || max_len == 0U) return;
@@ -508,6 +514,35 @@ http_status_t http_process_request(const char *raw_request, size_t req_len,
     path_buf[path_len]   = '\0';
     query_buf[query_len] = '\0';
 
+    /* For POST requests without query string in URL, extract payload body */
+    if (method == HTTP_METHOD_POST && query_len == 0U)
+    {
+        const char *body_marker = strstr(raw_request, "\r\n\r\n");
+        if (body_marker != NULL)
+        {
+            body_marker += 4;
+        }
+        else
+        {
+            body_marker = strstr(raw_request, "\n\n");
+            if (body_marker != NULL)
+            {
+                body_marker += 2;
+            }
+        }
+
+        if (body_marker != NULL)
+        {
+            size_t blen = strlen(body_marker);
+            if (blen >= sizeof(query_buf))
+            {
+                blen = sizeof(query_buf) - 1U;
+            }
+            memcpy(query_buf, body_marker, blen);
+            query_buf[blen] = '\0';
+        }
+    }
+
     if (path_len == 0U)
     {
         /* Malformed path */
@@ -554,6 +589,7 @@ http_status_t http_process_request(const char *raw_request, size_t req_len,
             content_type = HTTP_MIME_TEXT;
         }
         else if (strcmp(path_buf, "/") == 0 || strcmp(path_buf, "/index.html") == 0 ||
+                 strcmp(path_buf, "/setup") == 0 ||
                  strcmp(path_buf, "/hotspot-detect.html") == 0 || strcmp(path_buf, "/canonical.html") == 0)
         {
             content_type = HTTP_MIME_HTML;

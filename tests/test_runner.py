@@ -1408,6 +1408,47 @@ def run_suite():
         t40_pass
     )
 
+    # TEST 41: SoftAP Captive Portal Wi-Fi Provisioning Linkage (Task 8.1)
+    total += 1
+    prov_iram_syms = [
+        "provisioning_init",
+        "provisioning_start",
+        "provisioning_stop",
+        "provisioning_get_state",
+        "provisioning_set_credentials",
+        "provisioning_get_credentials",
+        "provisioning_clear_credentials",
+        "provisioning_has_credentials",
+        "provisioning_start_scan",
+        "provisioning_get_scan_results",
+        "provisioning_get_telemetry",
+    ]
+    prov_flash_syms = [
+        "provisioning_print_status",
+        "provisioning_print_scan",
+    ]
+    all_prov_syms = prov_iram_syms + prov_flash_syms
+    found_prov_syms = [s for s in all_prov_syms if s in symbols]
+    all_prov_found = len(found_prov_syms) == len(all_prov_syms)
+    all_prov_iram_ok = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        for s in prov_iram_syms if s in symbols
+    )
+    all_prov_flash_ok = all(
+        (symbols[s]["value"] >= 0x42000000 and symbols[s]["value"] < 0x42800000)
+        for s in prov_flash_syms if s in symbols
+    )
+    t41_pass = all_prov_found and all_prov_iram_ok and all_prov_flash_ok
+    t41_actual = f"Found {len(found_prov_syms)}/{len(all_prov_syms)} symbols (IRAM={all_prov_iram_ok}, FlashXIP={all_prov_flash_ok})"
+    passed += print_result_line(
+        total,
+        "SoftAP Captive Portal Wi-Fi Provisioning Linkage",
+        "Verify provisioning_init, get/set/clear creds, scan in IRAM and visualizers in Flash XIP (.flash.text)",
+        f"All {len(all_prov_syms)} provisioning subsystem symbols properly allocated across IRAM and Flash XIP",
+        t41_actual,
+        t41_pass
+    )
+
     print("\n" + "=" * 70)
     print("                       TEST SUITE SUMMARY                             ")
     print("=" * 70)

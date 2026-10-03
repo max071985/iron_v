@@ -41,6 +41,7 @@
 #include "soak.h"
 #include "ota.h"
 #include "nvs.h"
+#include "provisioning.h"
 
 
 /* ========================================================================= */
@@ -254,6 +255,7 @@ void FLASH_TEXT_ATTR shell_print_help(void)
     console_puts("  soak [status|audit|cycles] - 24/7 stability soak, memory leak audit & anti-starvation telemetry\r\n");
     console_puts("  ota [status|partitions|switch|rollback|mark-valid|verify] - Dual-slot Flash OTA upgrade & rollback\r\n");
     console_puts("  nvs [status|list|get|set|erase|format] - Non-Volatile Flash Key-Value storage\r\n");
+    console_puts("  prov [status|scan|set|get|clear] - SoftAP Captive Portal Wi-Fi Provisioning Engine\r\n");
     console_puts("  seal                - Run Golden Master system-wide integrity seal audit\r\n");
     console_puts("  do-test             - Run full baseline validation test suite\r\n");
 }
@@ -3129,6 +3131,92 @@ void FLASH_TEXT_ATTR shell_execute(char *input_buffer)
         else
         {
             console_puts("Usage: efuse [status|summary|security|mac]\r\n");
+        }
+    }
+    else if (strncmp(input_buffer, "prov", 4) == 0 && (input_buffer[4] == ' ' || input_buffer[4] == '\0'))
+    {
+        char *subcmd = input_buffer + 4;
+        while (*subcmd == ' ') subcmd++;
+
+        if (*subcmd == '\0' || strncmp(subcmd, "status", 6) == 0)
+        {
+            provisioning_print_status();
+        }
+        else if (strncmp(subcmd, "scan", 4) == 0)
+        {
+            console_puts("Triggering Wi-Fi scan...\r\n");
+            provisioning_start_scan();
+            provisioning_print_scan();
+        }
+        else if (strncmp(subcmd, "set", 3) == 0)
+        {
+            char *args = subcmd + 3;
+            while (*args == ' ') args++;
+            char ssid[PROVISIONING_MAX_SSID_LEN + 1U];
+            char pass[PROVISIONING_MAX_PASS_LEN + 1U];
+            memset(ssid, 0, sizeof(ssid));
+            memset(pass, 0, sizeof(pass));
+
+            size_t sidx = 0U;
+            while (*args != ' ' && *args != '\0' && sidx < sizeof(ssid) - 1U)
+            {
+                ssid[sidx++] = *args++;
+            }
+            ssid[sidx] = '\0';
+            while (*args == ' ') args++;
+
+            size_t pidx = 0U;
+            while (*args != ' ' && *args != '\0' && pidx < sizeof(pass) - 1U)
+            {
+                pass[pidx++] = *args++;
+            }
+            pass[pidx] = '\0';
+
+            if (ssid[0] != '\0')
+            {
+                provisioning_status_t rc = provisioning_set_credentials(ssid, pass);
+                if (rc == PROV_OK)
+                {
+                    console_puts("Provisioning credentials saved to NVS for SSID: '");
+                    console_puts(ssid);
+                    console_puts("'\r\n");
+                }
+                else
+                {
+                    console_puts("Error: Failed to set credentials (rc=");
+                    put_dec((uint32_t)(-rc));
+                    console_puts(")\r\n");
+                }
+            }
+            else
+            {
+                console_puts("Usage: prov set <ssid> [passphrase]\r\n");
+            }
+        }
+        else if (strncmp(subcmd, "get", 3) == 0)
+        {
+            wifi_credentials_t creds;
+            if (provisioning_get_credentials(&creds) == PROV_OK)
+            {
+                console_puts("Configured Wi-Fi Credentials:\r\n");
+                console_puts("  SSID:        '");
+                console_puts(creds.ssid);
+                console_puts("'\r\n");
+                console_puts("  Provisioned: YES\r\n");
+            }
+            else
+            {
+                console_puts("No Wi-Fi credentials configured (Unprovisioned).\r\n");
+            }
+        }
+        else if (strncmp(subcmd, "clear", 5) == 0)
+        {
+            provisioning_clear_credentials();
+            console_puts("Provisioning credentials cleared from NVS.\r\n");
+        }
+        else
+        {
+            console_puts("Usage: prov [status|scan|set <ssid> [pass]|get|clear]\r\n");
         }
     }
     else

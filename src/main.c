@@ -41,6 +41,7 @@
 #include "soak.h"
 #include "ota.h"
 #include "nvs.h"
+#include "provisioning.h"
 
 void main(void)
 {
@@ -129,6 +130,9 @@ void main(void)
 
     /* Initialize Freestanding DHCP Server & DNS Captive Portal */
     dhcp_init();
+
+    /* Initialize SoftAP Captive Portal Wi-Fi Provisioning Engine */
+    provisioning_init();
 
     /* Initialize LAN Network Diagnostics & Wi-Fi Speed-Test Benchmark Engine */
     speedtest_init();

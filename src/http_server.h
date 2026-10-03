@@ -21,12 +21,12 @@
 /* Server Sizing & Protocol Constants (Zero Dynamic Heap Allocation)         */
 /* ========================================================================= */
 #define HTTP_SERVER_DEFAULT_PORT         CONFIG_TCP_DEFAULT_HTTP_PORT
-#define HTTP_MAX_ROUTES                  16U
+#define HTTP_MAX_ROUTES                  24U
 #define HTTP_MAX_PATH_LEN                64U
-#define HTTP_MAX_QUERY_LEN               128U
+#define HTTP_MAX_QUERY_LEN               256U
 #define HTTP_REQUEST_BUF_SIZE            1024U
-#define HTTP_RESPONSE_BUF_SIZE           1536U
-#define HTTP_BODY_MAX_LEN                1280U
+#define HTTP_RESPONSE_BUF_SIZE           2048U
+#define HTTP_BODY_MAX_LEN                1600U
 
 /* Protocol Version & Header Literals */
 #define HTTP_VERSION_STR                 "HTTP/1.1"

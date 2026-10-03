@@ -39,6 +39,7 @@
 #include "shell.h"
 #include "efuse.h"
 #include "soak.h"
+#include "ota.h"
 
 void main(void)
 {
@@ -80,6 +81,9 @@ void main(void)
 
     /* Initialize 24/7 Stability Soak, Memory Leak & Anti-Starvation Subsystem */
     soak_init();
+
+    /* Initialize Dual-Slot Flash OTA Firmware Upgrade & Rollback Subsystem */
+    ota_init();
 
     /* Initialize RISC-V Physical Memory Protection (PMP) & APM Fault Isolation */
     pmp_init();

@@ -48,6 +48,7 @@
 #include "shell.h"
 #include "efuse.h"
 #include "soak.h"
+#include "ota.h"
 
 /* Host test stubs for hardware-specific functions */
 void wdt_feed(void)
@@ -3090,6 +3091,86 @@ static void test_soak_anti_starvation_subsystem(void)
     TEST_ASSERT(telem.clean_streak == 0U, "Reset clears clean streak");
 }
 
+static void test_ota_subsystem(void)
+{
+    printf("  [TEST] Dual-Slot Flash OTA Firmware Upgrade & Rollback (Task 7.3)...\n");
+
+    /* 1. Lifecycle and Initialization */
+    ota_mock_reset();
+    TEST_ASSERT(ota_init() == OTA_OK, "ota_init initializes cleanly");
+    TEST_ASSERT(ota_get_active_slot() == OTA_SLOT_0, "Active slot defaults to Slot 0");
+    TEST_ASSERT(ota_get_inactive_slot() == OTA_SLOT_1, "Inactive slot is Slot 1");
+    TEST_ASSERT(ota_get_slot_state(OTA_SLOT_0) == OTA_STATE_VALID, "Slot 0 starts in VALID state");
+
+    /* 2. Partition Geometry & Query */
+    ota_partition_t p0, p1;
+    TEST_ASSERT(ota_get_partition_info(OTA_SLOT_0, &p0) == OTA_OK, "Query Slot 0 partition info succeeds");
+    TEST_ASSERT(p0.phys_offset == OTA_SLOT_0_OFFSET, "Slot 0 physical offset matches 0x000000");
+    TEST_ASSERT(p0.size_bytes == OTA_SLOT_0_SIZE, "Slot 0 size matches 3.75 MB");
+    TEST_ASSERT(p0.is_active, "Slot 0 is marked active");
+    TEST_ASSERT(p0.seq == 1U, "Slot 0 sequence number is 1");
+
+    TEST_ASSERT(ota_get_partition_info(OTA_SLOT_1, &p1) == OTA_OK, "Query Slot 1 partition info succeeds");
+    TEST_ASSERT(p1.phys_offset == OTA_SLOT_1_OFFSET, "Slot 1 physical offset matches 0x3C0000 (3.75 MB)");
+    TEST_ASSERT(p1.size_bytes == OTA_SLOT_1_SIZE, "Slot 1 capacity matches Slot 0");
+    TEST_ASSERT(!p1.is_active, "Slot 1 is marked inactive");
+
+    /* 3. Image Header Parsing & Verification */
+    esp_image_header_t hdr;
+    TEST_ASSERT(ota_verify_image(OTA_SLOT_0, &hdr) == OTA_OK, "Slot 0 image verification succeeds");
+    TEST_ASSERT(hdr.magic == ESP_IMAGE_HEADER_MAGIC, "Image magic byte matches 0xE9");
+    TEST_ASSERT(hdr.entry_addr == ESP_IMAGE_DEFAULT_ENTRY_ADDR, "Entry address matches 0x40800000");
+    TEST_ASSERT(hdr.chip_id == ESP_IMAGE_CHIP_ID_ESP32C6, "Chip ID matches ESP32-C6 (13)");
+    TEST_ASSERT(hdr.segment_count == 4U, "Segment count matches 4");
+
+    /* Corrupted Header Rejection Mutation */
+    uint8_t bad_hdr[ESP_IMAGE_HEADER_SIZE];
+    memset(bad_hdr, 0, sizeof(bad_hdr));
+    TEST_ASSERT(ota_parse_image_header(bad_hdr, sizeof(bad_hdr), &hdr) == OTA_ERR_INVALID_IMAGE, "Null magic byte rejected");
+    bad_hdr[0] = ESP_IMAGE_HEADER_MAGIC;
+    bad_hdr[1] = 0U; /* 0 segments */
+    TEST_ASSERT(ota_parse_image_header(bad_hdr, sizeof(bad_hdr), &hdr) == OTA_ERR_INVALID_IMAGE, "Zero segments rejected");
+    bad_hdr[1] = 20U; /* > 16 segments */
+    TEST_ASSERT(ota_parse_image_header(bad_hdr, sizeof(bad_hdr), &hdr) == OTA_ERR_INVALID_IMAGE, "Overflow segment count rejected");
+
+    /* 4. Slot Switching & Testing State */
+    TEST_ASSERT(ota_switch_slot(OTA_SLOT_0) == OTA_ERR_ALREADY_ACTIVE, "Cannot switch to currently active slot");
+    TEST_ASSERT(ota_switch_slot(OTA_SLOT_1) == OTA_OK, "Switching to Slot 1 succeeds");
+    TEST_ASSERT(ota_get_active_slot() == OTA_SLOT_1, "Active slot is now Slot 1");
+    TEST_ASSERT(ota_get_inactive_slot() == OTA_SLOT_0, "Inactive slot is now Slot 0");
+    TEST_ASSERT(ota_get_slot_state(OTA_SLOT_1) == OTA_STATE_TESTING, "New slot transitions to TESTING state");
+
+    /* 5. Safe Rollback State Machine */
+    TEST_ASSERT(ota_rollback() == OTA_OK, "Rollback from uncommitted slot succeeds");
+    TEST_ASSERT(ota_get_active_slot() == OTA_SLOT_0, "Active slot reverted to Slot 0");
+    TEST_ASSERT(ota_get_slot_state(OTA_SLOT_0) == OTA_STATE_VALID, "Fallback slot restored to VALID state");
+
+    /* 6. Mark Valid State Commitment */
+    TEST_ASSERT(ota_switch_slot(OTA_SLOT_1) == OTA_OK, "Switch to Slot 1 for confirmation");
+    TEST_ASSERT(ota_mark_valid() == OTA_OK, "ota_mark_valid commits slot");
+    TEST_ASSERT(ota_get_slot_state(OTA_SLOT_1) == OTA_STATE_VALID, "Slot 1 committed to VALID state");
+
+    /* 7. Flash I/O Inactive Guarding */
+    uint8_t test_chunk[32];
+    memset(test_chunk, 0xA5, sizeof(test_chunk));
+    TEST_ASSERT(ota_write_chunk(OTA_SLOT_1, 0, test_chunk, sizeof(test_chunk)) == OTA_ERR_NOT_PERMITTED, "Writing to active slot is blocked");
+    TEST_ASSERT(ota_erase_slot(OTA_SLOT_1) == OTA_ERR_NOT_PERMITTED, "Erasing active slot is blocked");
+    TEST_ASSERT(ota_write_chunk(OTA_SLOT_0, 0, test_chunk, sizeof(test_chunk)) == OTA_OK, "Writing to inactive slot succeeds");
+
+    /* 8. Telemetry Snapshot & Parameter Guards */
+    ota_status_report_t rep;
+    TEST_ASSERT(ota_get_status(NULL) == OTA_ERR_INVALID_PARAM, "ota_get_status rejects NULL");
+    TEST_ASSERT(ota_get_status(&rep) == OTA_OK, "ota_get_status succeeds");
+    TEST_ASSERT(rep.active_slot == OTA_SLOT_1, "Telemetry matches active Slot 1");
+    TEST_ASSERT(rep.total_switches >= 2U, "Telemetry tracks slot switches");
+    TEST_ASSERT(rep.total_rollbacks >= 1U, "Telemetry tracks rollbacks");
+    TEST_ASSERT(rep.flash_reads > 0U, "Flash reads tracked");
+    TEST_ASSERT(rep.flash_writes > 0U, "Flash writes tracked");
+    TEST_ASSERT(ota_get_partition_info(OTA_SLOT_INVALID, &p0) == OTA_ERR_INVALID_PARAM, "Reject invalid slot query");
+    TEST_ASSERT(ota_parse_image_header(NULL, 10, &hdr) == OTA_ERR_INVALID_PARAM, "Parse rejects NULL pointer");
+    TEST_ASSERT(ota_verify_image(OTA_SLOT_INVALID, &hdr) == OTA_ERR_INVALID_PARAM, "Verify rejects invalid slot");
+}
+
 /* ========================================================================= */
 /* Phase 0-3 Host Test Hardening: Cross-Module Integration & Edge Case Tests */
 /* ========================================================================= */
@@ -4215,6 +4296,7 @@ int main(void)
     test_shell_subsystem();
     test_efuse_subsystem();
     test_soak_anti_starvation_subsystem();
+    test_ota_subsystem();
 
     /* Hardened cross-module integration and edge case tests */
     test_coroutine_systimer_dpc_integration();

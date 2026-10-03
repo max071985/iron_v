@@ -34,6 +34,7 @@
 #include "shell.h"
 #include "efuse.h"
 #include "soak.h"
+#include "ota.h"
 
 /* Route all test output to unified dual-console multiplexer */
 #define uart_puts console_puts
@@ -3187,6 +3188,117 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
 
     if (t39_pass) passed_tests++;
     print_result(t39_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 40: Dual-Slot Flash OTA Firmware Upgrade & Rollback      */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(40, "Dual-Slot Flash OTA Firmware Upgrade & Rollback",
+                      "Verify A/B partition geometry, boot header validation, slot switching, and safe rollback state machine");
+
+    wdt_feed();
+    lp_wdt_feed();
+
+    /* 1. Subsystem Initialization */
+    int ota_init_ok = (ota_init() == OTA_OK);
+    ota_slot_t active_slot = ota_get_active_slot();
+    ota_slot_t inactive_slot = ota_get_inactive_slot();
+    int slots_valid = (active_slot == OTA_SLOT_0 || active_slot == OTA_SLOT_1) &&
+                      (inactive_slot != active_slot);
+
+    /* 2. Partition Geometry Verification */
+    ota_partition_t p0, p1;
+    int p0_ok = (ota_get_partition_info(OTA_SLOT_0, &p0) == OTA_OK) &&
+                (p0.phys_offset == OTA_SLOT_0_OFFSET) &&
+                (p0.size_bytes == OTA_SLOT_0_SIZE);
+    int p1_ok = (ota_get_partition_info(OTA_SLOT_1, &p1) == OTA_OK) &&
+                (p1.phys_offset == OTA_SLOT_1_OFFSET) &&
+                (p1.size_bytes == OTA_SLOT_1_SIZE);
+    int part_geom_ok = p0_ok && p1_ok;
+
+    /* 3. Boot Image Header Validation */
+    esp_image_header_t boot_hdr;
+    int img_verify_ok = (ota_verify_image(OTA_SLOT_0, &boot_hdr) == OTA_OK);
+    int img_hdr_valid = (boot_hdr.magic == ESP_IMAGE_HEADER_MAGIC) &&
+                        (boot_hdr.entry_addr == ESP_IMAGE_DEFAULT_ENTRY_ADDR) &&
+                        (boot_hdr.segment_count > 0U && boot_hdr.segment_count <= ESP_IMAGE_MAX_SEGMENTS) &&
+                        (boot_hdr.chip_id == ESP_IMAGE_CHIP_ID_ESP32C6);
+
+    /* 4. Corrupted Image Header Rejection */
+    uint8_t corrupt_buf[ESP_IMAGE_HEADER_SIZE];
+    memset(corrupt_buf, 0, sizeof(corrupt_buf));
+    esp_image_header_t dummy_hdr;
+    int corrupt_rejected = (ota_parse_image_header(corrupt_buf, sizeof(corrupt_buf), &dummy_hdr) == OTA_ERR_INVALID_IMAGE);
+
+    /* 5. Slot Switching & Safe Rollback State Machine */
+    ota_slot_t orig_slot = active_slot;
+    ota_slot_t target_slot = inactive_slot;
+    int switch_ok = (ota_switch_slot(target_slot) == OTA_OK) &&
+                    (ota_get_active_slot() == target_slot) &&
+                    (ota_get_slot_state(target_slot) == OTA_STATE_TESTING);
+
+    int rollback_ok = (ota_rollback() == OTA_OK) &&
+                      (ota_get_active_slot() == orig_slot) &&
+                      (ota_get_slot_state(orig_slot) == OTA_STATE_VALID);
+
+    /* 6. Mark Valid State Commitment */
+    int mark_valid_ok = (ota_mark_valid() == OTA_OK) &&
+                        (ota_get_slot_state(orig_slot) == OTA_STATE_VALID);
+
+    /* 7. Telemetry & Guard Verification */
+    ota_status_report_t ota_rep;
+    int ota_telem_ok = (ota_get_status(&ota_rep) == OTA_OK) &&
+                       (ota_rep.total_switches >= 1U) &&
+                       (ota_rep.total_rollbacks >= 1U) &&
+                       (ota_rep.verified_images >= 1U);
+
+    int ota_guards_ok = (ota_get_status(NULL) == OTA_ERR_INVALID_PARAM) &&
+                        (ota_get_partition_info(OTA_SLOT_INVALID, &p0) == OTA_ERR_INVALID_PARAM) &&
+                        (ota_parse_image_header(NULL, 0, &dummy_hdr) == OTA_ERR_INVALID_PARAM);
+
+    wdt_feed();
+    lp_wdt_feed();
+
+    int t40_pass = ota_init_ok && slots_valid && part_geom_ok &&
+                   img_verify_ok && img_hdr_valid && corrupt_rejected &&
+                   switch_ok && rollback_ok && mark_valid_ok &&
+                   ota_telem_ok && ota_guards_ok;
+
+    uart_puts("  Expected:    Init=1, SlotsValid=1, PartGeom=1, ImgVerify=1, CorruptRej=1, Switch=1, Rollback=1\r\n");
+    uart_puts("  Actual:      Init=");
+    put_dec(ota_init_ok);
+    uart_puts(", SlotsValid=");
+    put_dec(slots_valid);
+    uart_puts(", PartGeom=");
+    put_dec(part_geom_ok);
+    uart_puts(", ImgVerify=");
+    put_dec(img_verify_ok && img_hdr_valid);
+    uart_puts(", CorruptRej=");
+    put_dec(corrupt_rejected);
+    uart_puts(", Switch=");
+    put_dec(switch_ok);
+    uart_puts(", Rollback=");
+    put_dec(rollback_ok);
+    uart_puts("\r\n");
+
+    uart_puts("  Diag: ActiveSlot=");
+    put_dec(ota_rep.active_slot);
+    uart_puts(", ActiveSeq=");
+    put_dec(ota_rep.active_seq);
+    uart_puts(", EntryAddr=0x");
+    put_hex(boot_hdr.entry_addr);
+    uart_puts(", Segments=");
+    put_dec(boot_hdr.segment_count);
+    uart_puts(", ChipID=");
+    put_dec(boot_hdr.chip_id);
+    uart_puts(", Switches=");
+    put_dec(ota_rep.total_switches);
+    uart_puts(", Rollbacks=");
+    put_dec(ota_rep.total_rollbacks);
+    uart_puts("\r\n");
+
+    if (t40_pass) passed_tests++;
+    print_result(t40_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

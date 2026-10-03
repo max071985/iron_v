@@ -39,6 +39,7 @@
 #include "matter.h"
 #include "efuse.h"
 #include "soak.h"
+#include "ota.h"
 
 
 /* ========================================================================= */
@@ -250,6 +251,7 @@ void FLASH_TEXT_ATTR shell_print_help(void)
     console_puts("  matter [info|code|qr|onoff|state|commission|reset] - Google Home Matter commissioning & bridge\r\n");
     console_puts("  efuse [status|summary|security|mac] - Silicon eFuse controller & security seal state\r\n");
     console_puts("  soak [status|audit|cycles] - 24/7 stability soak, memory leak audit & anti-starvation telemetry\r\n");
+    console_puts("  ota [status|partitions|switch|rollback|mark-valid|verify] - Dual-slot Flash OTA upgrade & rollback\r\n");
     console_puts("  do-test             - Run full baseline validation test suite\r\n");
 }
 
@@ -585,6 +587,20 @@ void FLASH_TEXT_ATTR shell_print_info(void)
     console_puts(", Drops: ");
     put_dec(dpc_get_drop_count());
     console_puts("\r\n");
+
+    ota_status_report_t ota_rep;
+    ota_get_status(&ota_rep);
+    console_puts(" OTA:     Active: Slot ");
+    put_dec(ota_rep.active_slot);
+    console_puts(" (Seq: ");
+    put_dec(ota_rep.active_seq);
+    console_puts(", State: ");
+    if (ota_rep.active_state == OTA_STATE_VALID) console_puts("VALID");
+    else if (ota_rep.active_state == OTA_STATE_TESTING) console_puts("TESTING");
+    else console_puts("OTHER");
+    console_puts("), Switches: ");
+    put_dec(ota_rep.total_switches);
+    console_puts("\r\n");
     console_puts("========================================\r\n");
 }
 
@@ -680,6 +696,107 @@ void FLASH_TEXT_ATTR shell_execute(char *input_buffer)
                 }
             }
             test_soak_run(cycles, TEST_SOAK_DEFAULT_DELAY_MS);
+        }
+    }
+    else if (strncmp(input_buffer, "ota", 3) == 0 && (input_buffer[3] == ' ' || input_buffer[3] == '\0'))
+    {
+        char *p = input_buffer + 3;
+        skip_space(&p);
+
+        if (strncmp(p, "partitions", 10) == 0)
+        {
+            ota_print_partitions();
+        }
+        else if (strncmp(p, "switch", 6) == 0)
+        {
+            p += 6;
+            skip_space(&p);
+            uint32_t target_slot = 1U;
+            if (*p == '0') target_slot = 0U;
+            else if (*p == '1') target_slot = 1U;
+            ota_status_t rc = ota_switch_slot((ota_slot_t)target_slot);
+            if (rc == OTA_OK)
+            {
+                console_puts("Switched active slot to Slot ");
+                put_dec(target_slot);
+                console_puts(" (State: TESTING). Reboot to run new firmware.\r\n");
+            }
+            else if (rc == OTA_ERR_ALREADY_ACTIVE)
+            {
+                console_puts("Slot ");
+                put_dec(target_slot);
+                console_puts(" is already the active slot.\r\n");
+            }
+            else
+            {
+                console_puts("Failed to switch slot: error ");
+                put_dec((uint32_t)(-rc));
+                console_puts("\r\n");
+            }
+        }
+        else if (strncmp(p, "rollback", 8) == 0)
+        {
+            ota_status_t rc = ota_rollback();
+            if (rc == OTA_OK)
+            {
+                console_puts("Rolled back to previous slot (State: VALID). Reboot to run fallback firmware.\r\n");
+            }
+            else
+            {
+                console_puts("Rollback failed: error ");
+                put_dec((uint32_t)(-rc));
+                console_puts("\r\n");
+            }
+        }
+        else if (strncmp(p, "mark-valid", 10) == 0)
+        {
+            ota_status_t rc = ota_mark_valid();
+            if (rc == OTA_OK)
+            {
+                console_puts("Current running slot marked as VALID & STABLE.\r\n");
+            }
+            else
+            {
+                console_puts("Failed to mark valid: error ");
+                put_dec((uint32_t)(-rc));
+                console_puts("\r\n");
+            }
+        }
+        else if (strncmp(p, "verify", 6) == 0)
+        {
+            p += 6;
+            skip_space(&p);
+            uint32_t target_slot = 0U;
+            if (*p == '1') target_slot = 1U;
+            esp_image_header_t hdr;
+            ota_status_t rc = ota_verify_image((ota_slot_t)target_slot, &hdr);
+            if (rc == OTA_OK)
+            {
+                console_puts("Slot ");
+                put_dec(target_slot);
+                console_puts(" Image Header: VALID (ESP32-C6)\r\n");
+                console_puts("  Entrypoint:  0x");
+                put_hex(hdr.entry_addr);
+                console_puts("\r\n  Segments:    ");
+                put_dec(hdr.segment_count);
+                console_puts("\r\n  SPI Mode:    ");
+                put_dec(hdr.spi_mode);
+                console_puts(", Chip ID: ");
+                put_dec(hdr.chip_id);
+                console_puts("\r\n");
+            }
+            else
+            {
+                console_puts("Slot ");
+                put_dec(target_slot);
+                console_puts(" Image Header: INVALID or CORRUPTED (error ");
+                put_dec((uint32_t)(-rc));
+                console_puts(")\r\n");
+            }
+        }
+        else
+        {
+            ota_print_status();
         }
     }
     else if (strncmp(input_buffer, "peek", 4) == 0 && (input_buffer[4] == ' ' || input_buffer[4] == '\0'))

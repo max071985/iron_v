@@ -1322,6 +1322,50 @@ def run_suite():
         t38_pass
     )
 
+    # TEST 39: Dual-Slot Flash OTA Firmware Upgrade & Rollback Linkage (Task 7.3)
+    total += 1
+    ota_iram_syms = [
+        "ota_init",
+        "ota_get_active_slot",
+        "ota_get_inactive_slot",
+        "ota_get_slot_state",
+        "ota_get_partition_info",
+        "ota_parse_image_header",
+        "ota_verify_image",
+        "ota_switch_slot",
+        "ota_mark_valid",
+        "ota_rollback",
+        "ota_get_status",
+        "ota_read_slot",
+        "ota_write_chunk",
+        "ota_erase_slot",
+    ]
+    ota_flash_syms = [
+        "ota_print_status",
+        "ota_print_partitions",
+    ]
+    all_ota_syms = ota_iram_syms + ota_flash_syms
+    found_ota_syms = [s for s in all_ota_syms if s in symbols]
+    all_ota_found = len(found_ota_syms) == len(all_ota_syms)
+    all_ota_iram_ok = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        for s in ota_iram_syms if s in symbols
+    )
+    all_ota_flash_ok = all(
+        (symbols[s]["value"] >= 0x42000000 and symbols[s]["value"] < 0x42800000)
+        for s in ota_flash_syms if s in symbols
+    )
+    t39_pass = all_ota_found and all_ota_iram_ok and all_ota_flash_ok
+    t39_actual = f"Found {len(found_ota_syms)}/{len(all_ota_syms)} symbols (IRAM={all_ota_iram_ok}, FlashXIP={all_ota_flash_ok})"
+    passed += print_result_line(
+        total,
+        "Dual-Slot Flash OTA Firmware Upgrade & Rollback Linkage",
+        "Verify ota_init, switch, rollback, verify APIs in IRAM and diagnostic visualizers in Flash XIP (.flash.text)",
+        f"All {len(all_ota_syms)} OTA subsystem symbols properly allocated across IRAM and Flash XIP",
+        t39_actual,
+        t39_pass
+    )
+
     print("\n" + "=" * 70)
     print("                       TEST SUITE SUMMARY                             ")
     print("=" * 70)

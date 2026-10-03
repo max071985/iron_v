@@ -49,7 +49,7 @@ else
   MONITOR_FLAGS ?= --noreset --lower-rts --lower-dtr
 endif
 
-.PHONY: all flash monitor clean test
+.PHONY: all flash monitor clean test docs
 all: firmware.bin
 
 # LP Core Firmware Targets
@@ -124,6 +124,9 @@ do-test: firmware.elf firmware.bin tests/test_freestanding
 	@python3 tests/test_runner.py
 
 test: do-test
+
+docs:
+	python3 scripts/generate_architecture_manual.py
 
 clean:
 	rm -f *.elf *.bin tests/test_freestanding lp_core/*.elf lp_core/*.bin src/lp_firmware_image.h src/*.o

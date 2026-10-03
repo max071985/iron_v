@@ -1,6 +1,7 @@
 *.bin
 *.elf
 *.o
+*.pdf
 .agent
 .*
 tests/test_freestanding

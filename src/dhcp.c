@@ -58,8 +58,16 @@ static dhcp_status_t dhcp_send_udp_frame(const uint8_t *dest_mac, uint32_t dest_
     net_get_config(&ncfg);
     memcpy(src_mac, ncfg.mac, ETH_ADDR_LEN);
 
-    /* 1. Ethernet Header: Always send directly to client station MAC */
-    memcpy(eth->dest_mac, dest_mac, ETH_ADDR_LEN);
+    /* 1. Ethernet Header: If destination IP is broadcast (255.255.255.255), Ethernet destination MUST be broadcast */
+    static const uint8_t s_bcast_mac[ETH_ADDR_LEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    if (dest_ip == 0xFFFFFFFFU)
+    {
+        memcpy(eth->dest_mac, s_bcast_mac, ETH_ADDR_LEN);
+    }
+    else
+    {
+        memcpy(eth->dest_mac, dest_mac, ETH_ADDR_LEN);
+    }
     memcpy(eth->src_mac, src_mac, ETH_ADDR_LEN);
     eth->ethertype = NET_HTONS(ETHERTYPE_IPV4);
 

@@ -396,9 +396,9 @@ net_status_t arp_lookup(uint32_t ip, uint8_t *out_mac)
 
 net_status_t arp_insert(uint32_t ip, const uint8_t *mac)
 {
-    if (mac == NULL)
+    if (mac == NULL || ip == 0U || ip == 0xFFFFFFFFU)
     {
-        return NET_ERR_INVALID_ARG;
+        return (mac == NULL) ? NET_ERR_INVALID_ARG : NET_OK;
     }
 
     /* 1. Check if IP already exists to update in-place */

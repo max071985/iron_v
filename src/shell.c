@@ -3258,10 +3258,24 @@ void FLASH_TEXT_ATTR shell_execute(char *input_buffer)
 
             if (ssid[0] != '\0')
             {
-                console_puts("Initiating WPA2-PSK connection to '");
-                console_puts(ssid);
-                console_puts("'...\r\n");
-                wpa2_client_handover(ssid, pass);
+                size_t plen = strlen(pass);
+                if (plen < 8U || plen > 64U)
+                {
+                    console_puts("Error: WPA2-PSK passphrase must be between 8 and 64 characters.\r\n");
+                }
+                else
+                {
+                    console_puts("Initiating WPA2-PSK connection to '");
+                    console_puts(ssid);
+                    console_puts("'...\r\n");
+                    wpa2_status_t wst = wpa2_client_handover(ssid, pass);
+                    if (wst != WPA2_OK)
+                    {
+                        console_puts("Error: connection handover failed (status=");
+                        put_dec((uint32_t)wst);
+                        console_puts(")\r\n");
+                    }
+                }
             }
             else
             {

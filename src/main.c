@@ -38,6 +38,7 @@
 #include "matter.h"
 #include "shell.h"
 #include "efuse.h"
+#include "soak.h"
 
 void main(void)
 {
@@ -76,6 +77,9 @@ void main(void)
 
     /* Initialize Cooperative Coroutine Scheduler */
     task_init();
+
+    /* Initialize 24/7 Stability Soak, Memory Leak & Anti-Starvation Subsystem */
+    soak_init();
 
     /* Initialize RISC-V Physical Memory Protection (PMP) & APM Fault Isolation */
     pmp_init();

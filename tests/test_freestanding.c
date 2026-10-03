@@ -47,9 +47,14 @@
 #include "trap.h"
 #include "shell.h"
 #include "efuse.h"
+#include "soak.h"
 
 /* Host test stubs for hardware-specific functions */
 void wdt_feed(void)
+{
+}
+
+void lp_wdt_feed(void)
 {
 }
 
@@ -137,6 +142,7 @@ uint32_t trap_get_ecall_count(void) { return 0U; }
 
 void task_get_status(task_scheduler_status_t *s) { if (s != NULL) memset(s, 0, sizeof(*s)); }
 const char *task_state_name(task_state_t st) { (void)st; return "READY"; }
+uint32_t task_get_count(void) { return 4U; }
 
 const uint8_t _sflash_xip[1] = {0};
 const uint8_t _eflash_xip[1] = {0};
@@ -3001,6 +3007,89 @@ static void test_efuse_subsystem(void)
     TEST_ASSERT(!telem.jtag_pad_disabled, "Telemetry captures JTAG PAD state");
 }
 
+static void test_soak_anti_starvation_subsystem(void)
+{
+    printf("  [TEST] 24/7 Stability Soak, Memory Leak & Anti-Starvation (Task 7.2)...\n");
+
+    /* 1. Lifecycle and Initialization */
+    soak_mock_reset();
+    TEST_ASSERT(soak_init() == SOAK_OK, "soak_init initializes cleanly");
+
+    /* 2. Quiescent Memory Audit */
+    soak_mem_audit_t mem_audit;
+    TEST_ASSERT(soak_audit_memory(NULL) == SOAK_ERR_INVALID_PARAM, "soak_audit_memory rejects NULL");
+    TEST_ASSERT(soak_audit_memory(&mem_audit) == SOAK_OK, "soak_audit_memory succeeds");
+    TEST_ASSERT(mem_audit.is_leak_free, "Quiescent memory state is 100% leak free");
+    TEST_ASSERT(mem_audit.small_pool_active == 0U, "Small pool active count is 0");
+    TEST_ASSERT(mem_audit.med_pool_active == 0U, "Medium pool active count is 0");
+    TEST_ASSERT(mem_audit.scratch_bytes_used == 0U, "Scratch arena bytes used is 0");
+
+    /* 3. Memory Leak Detection Mutation */
+    void *p1 = arena_alloc(ARENA_POOL_BLOCK_SIZE_SMALL);
+    TEST_ASSERT(p1 != NULL, "Arena allocation succeeds");
+    TEST_ASSERT(soak_audit_memory(&mem_audit) == SOAK_OK, "soak_audit_memory succeeds during allocation");
+    TEST_ASSERT(!mem_audit.is_leak_free, "Active allocation correctly flags leak state");
+    TEST_ASSERT(mem_audit.small_pool_active == 1U, "Small pool active count is 1");
+    arena_free(p1);
+    TEST_ASSERT(soak_audit_memory(&mem_audit) == SOAK_OK, "soak_audit_memory succeeds after free");
+    TEST_ASSERT(mem_audit.is_leak_free, "Freed allocation restores 100% leak-free state");
+    TEST_ASSERT(mem_audit.small_pool_active == 0U, "Small pool active count restored to 0");
+
+    /* 4. DPC Anti-Starvation Audit */
+    soak_dpc_audit_t dpc_audit;
+    TEST_ASSERT(soak_audit_dpc(NULL) == SOAK_ERR_INVALID_PARAM, "soak_audit_dpc rejects NULL");
+    TEST_ASSERT(soak_audit_dpc(&dpc_audit) == SOAK_OK, "soak_audit_dpc succeeds");
+    TEST_ASSERT(dpc_audit.is_starvation_free, "DPC queue starts starvation-free");
+    TEST_ASSERT(dpc_audit.dpc_drop_count == 0U, "DPC drop count is 0");
+
+    /* DPC Drop Detection Mutation */
+    soak_mock_set_dpc_drops(3U);
+    TEST_ASSERT(soak_audit_dpc(&dpc_audit) == SOAK_OK, "soak_audit_dpc succeeds during drops");
+    TEST_ASSERT(!dpc_audit.is_starvation_free, "DPC drops correctly flag starvation");
+    TEST_ASSERT(dpc_audit.dpc_drop_count == 3U, "DPC drop count matches mock");
+    soak_mock_set_dpc_drops(0U);
+    TEST_ASSERT(soak_audit_dpc(&dpc_audit) == SOAK_OK, "soak_audit_dpc succeeds after reset");
+    TEST_ASSERT(dpc_audit.is_starvation_free, "DPC starvation-free restored");
+
+    /* 5. Scheduler Latency & Fairness Audit */
+    soak_sched_audit_t sched_audit;
+    TEST_ASSERT(soak_audit_scheduler(NULL) == SOAK_ERR_INVALID_PARAM, "soak_audit_scheduler rejects NULL");
+    TEST_ASSERT(soak_audit_scheduler(&sched_audit) == SOAK_OK, "soak_audit_scheduler succeeds");
+    TEST_ASSERT(sched_audit.fairness_preserved, "Scheduler fairness preserved with bounded latency");
+    TEST_ASSERT(sched_audit.max_yield_latency_us <= SOAK_SCHED_LATENCY_THRESHOLD_US, "Scheduler latency within threshold");
+
+    /* Scheduler Starvation Mutation */
+    soak_mock_set_sched_latency(SOAK_SCHED_LATENCY_THRESHOLD_US + 500U);
+    TEST_ASSERT(soak_audit_scheduler(&sched_audit) == SOAK_OK, "soak_audit_scheduler succeeds on high latency");
+    TEST_ASSERT(!sched_audit.fairness_preserved, "High latency flags scheduler starvation risk");
+    soak_mock_set_sched_latency(15U);
+    TEST_ASSERT(soak_audit_scheduler(&sched_audit) == SOAK_OK, "soak_audit_scheduler restored");
+    TEST_ASSERT(sched_audit.fairness_preserved, "Scheduler fairness restored");
+
+    /* 6. Stability Soak Cycle Execution */
+    soak_mock_reset();
+    TEST_ASSERT(soak_run_stability_cycle(1U) == SOAK_OK, "soak_run_stability_cycle completes cleanly");
+    TEST_ASSERT(soak_run_stability_cycle(2U) == SOAK_OK, "Second soak stability cycle completes cleanly");
+
+    /* 7. Subsystem Telemetry Snapshot */
+    soak_telemetry_t telem;
+    TEST_ASSERT(soak_get_telemetry(NULL) == SOAK_ERR_INVALID_PARAM, "soak_get_telemetry rejects NULL");
+    TEST_ASSERT(soak_get_telemetry(&telem) == SOAK_OK, "soak_get_telemetry succeeds");
+    TEST_ASSERT(telem.completed_cycles == 2U, "Telemetry records 2 completed cycles");
+    TEST_ASSERT(telem.clean_streak == 2U, "Telemetry records clean streak of 2");
+    TEST_ASSERT(telem.failed_cycles == 0U, "Telemetry records 0 failed cycles");
+    TEST_ASSERT(!telem.mem_leak_detected, "No memory leaks detected across cycles");
+    TEST_ASSERT(!telem.dpc_drop_detected, "No DPC drops detected across cycles");
+    TEST_ASSERT(!telem.starvation_detected, "No task starvation detected across cycles");
+    TEST_ASSERT(telem.wdt_feeds_count >= 2U, "Watchdog fed on each soak cycle");
+
+    /* 8. Telemetry Reset */
+    soak_reset_telemetry();
+    TEST_ASSERT(soak_get_telemetry(&telem) == SOAK_OK, "soak_get_telemetry succeeds after reset");
+    TEST_ASSERT(telem.completed_cycles == 0U, "Reset clears completed cycles");
+    TEST_ASSERT(telem.clean_streak == 0U, "Reset clears clean streak");
+}
+
 /* ========================================================================= */
 /* Phase 0-3 Host Test Hardening: Cross-Module Integration & Edge Case Tests */
 /* ========================================================================= */
@@ -4125,6 +4214,7 @@ int main(void)
     test_matter_subsystem();
     test_shell_subsystem();
     test_efuse_subsystem();
+    test_soak_anti_starvation_subsystem();
 
     /* Hardened cross-module integration and edge case tests */
     test_coroutine_systimer_dpc_integration();

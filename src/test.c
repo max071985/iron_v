@@ -33,6 +33,7 @@
 #include "matter.h"
 #include "shell.h"
 #include "efuse.h"
+#include "soak.h"
 
 /* Route all test output to unified dual-console multiplexer */
 #define uart_puts console_puts
@@ -3044,6 +3045,148 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
 
     if (t38_pass) passed_tests++;
     print_result(t38_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 39: 24/7 Soak Stability, Memory Leak & Anti-Starvation   */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(39, "24/7 Soak Stability, Memory Leak & Anti-Starvation",
+                      "Verify quiescent zero-leak invariant, DPC drop-free bottom-half, and bounded coroutine yield latency");
+
+    wdt_feed();
+    lp_wdt_feed();
+
+    /* 1. Subsystem Initialization & Memory Audit */
+    int soak_init_ok = (soak_init() == SOAK_OK);
+    soak_mem_audit_t mem_audit;
+    int mem_audit_ok = (soak_audit_memory(&mem_audit) == SOAK_OK);
+    int quiescent_leak_free = mem_audit.is_leak_free &&
+                              (mem_audit.small_pool_active == 0U) &&
+                              (mem_audit.med_pool_active == 0U) &&
+                              (mem_audit.scratch_bytes_used == 0U);
+
+    /* 2. Dynamic Memory Stress Allocation & Complete Reclamation */
+    void *stress_sm[SOAK_TEST_SMALL_BLOCKS] = {0};
+    void *stress_md[SOAK_TEST_MED_BLOCKS] = {0};
+    bool stress_alloc_ok = true;
+
+    for (uint32_t i = 0U; i < SOAK_TEST_SMALL_BLOCKS; i++)
+    {
+        stress_sm[i] = arena_alloc(ARENA_POOL_BLOCK_SIZE_SMALL);
+        if (stress_sm[i] == NULL) stress_alloc_ok = false;
+    }
+    for (uint32_t i = 0U; i < SOAK_TEST_MED_BLOCKS; i++)
+    {
+        stress_md[i] = arena_alloc(ARENA_POOL_BLOCK_SIZE_MEDIUM);
+        if (stress_md[i] == NULL) stress_alloc_ok = false;
+    }
+    arena_scratch_mark_t stress_mark = arena_scratch_mark();
+    void *stress_sc = arena_scratch_alloc(SOAK_TEST_SCRATCH_SIZE);
+    if (stress_sc == NULL) stress_alloc_ok = false;
+
+    /* Verify active counts match during stress */
+    soak_mem_audit_t active_audit;
+    soak_audit_memory(&active_audit);
+    bool active_matched = (active_audit.small_pool_active == SOAK_TEST_SMALL_BLOCKS) &&
+                          (active_audit.med_pool_active == SOAK_TEST_MED_BLOCKS) &&
+                          (active_audit.scratch_bytes_used >= SOAK_TEST_SCRATCH_SIZE);
+
+    /* Free all and reset scratch arena */
+    for (uint32_t i = 0U; i < SOAK_TEST_SMALL_BLOCKS; i++)
+    {
+        if (stress_sm[i] != NULL) arena_free(stress_sm[i]);
+    }
+    for (uint32_t i = 0U; i < SOAK_TEST_MED_BLOCKS; i++)
+    {
+        if (stress_md[i] != NULL) arena_free(stress_md[i]);
+    }
+    arena_scratch_reset(stress_mark);
+
+    /* Verify 100% reclamation */
+    soak_mem_audit_t post_audit;
+    soak_audit_memory(&post_audit);
+    bool reclaimed_ok = post_audit.is_leak_free &&
+                        (post_audit.small_pool_active == 0U) &&
+                        (post_audit.med_pool_active == 0U) &&
+                        (post_audit.scratch_bytes_used == 0U);
+
+    /* 3. DPC Queue Anti-Starvation & Drop-Free Audit */
+    soak_dpc_audit_t dpc_audit;
+    int dpc_audit_ok = (soak_audit_dpc(&dpc_audit) == SOAK_OK);
+    int dpc_starvation_free = dpc_audit.is_starvation_free && (dpc_audit.dpc_drop_count == 0U);
+
+    /* 4. Coroutine Scheduler Fairness & Latency Bounding */
+    soak_sched_audit_t sched_audit;
+    int sched_audit_ok = (soak_audit_scheduler(&sched_audit) == SOAK_OK);
+    int sched_fair_ok = sched_audit.fairness_preserved &&
+                        (sched_audit.max_yield_latency_us <= (uint64_t)SOAK_SCHED_LATENCY_THRESHOLD_US);
+
+    /* 5. Single Stability Soak Cycle Execution */
+    int cycle_run_ok = (soak_run_stability_cycle(1U) == SOAK_OK);
+
+    /* 6. Telemetry & Parameter Guards */
+    soak_telemetry_t s_telem;
+    int soak_telem_ok = (soak_get_telemetry(&s_telem) == SOAK_OK) &&
+                        (s_telem.completed_cycles >= 1U) &&
+                        (s_telem.failed_cycles == 0U) &&
+                        (s_telem.clean_streak >= 1U) &&
+                        (!s_telem.mem_leak_detected) &&
+                        (!s_telem.dpc_drop_detected) &&
+                        (!s_telem.starvation_detected);
+
+    int param_guards_ok = (soak_audit_memory(NULL) == SOAK_ERR_INVALID_PARAM) &&
+                          (soak_audit_dpc(NULL) == SOAK_ERR_INVALID_PARAM) &&
+                          (soak_audit_scheduler(NULL) == SOAK_ERR_INVALID_PARAM) &&
+                          (soak_get_telemetry(NULL) == SOAK_ERR_INVALID_PARAM);
+
+    wdt_feed();
+    lp_wdt_feed();
+
+    int t39_pass = soak_init_ok && mem_audit_ok && quiescent_leak_free &&
+                   stress_alloc_ok && active_matched && reclaimed_ok &&
+                   dpc_audit_ok && dpc_starvation_free &&
+                   sched_audit_ok && sched_fair_ok &&
+                   cycle_run_ok && soak_telem_ok && param_guards_ok;
+
+    uart_puts("  Expected:    Init=1, QuiescentLeakFree=1, StressReclaim=1, DPCDropFree=1, SchedFair=1, CycleRun=1\r\n");
+    uart_puts("  Actual:      Init=");
+    put_dec(soak_init_ok);
+    uart_puts(", QuiescentLeakFree=");
+    put_dec(quiescent_leak_free);
+    uart_puts(", StressReclaim=");
+    put_dec(reclaimed_ok);
+    uart_puts(", DPCDropFree=");
+    put_dec(dpc_starvation_free);
+    uart_puts(", SchedFair=");
+    put_dec(sched_fair_ok);
+    uart_puts(", CycleRun=");
+    put_dec(cycle_run_ok);
+    uart_puts("\r\n");
+
+    uart_puts("  Diag: SmActive=");
+    put_dec(post_audit.small_pool_active);
+    uart_puts(", MedActive=");
+    put_dec(post_audit.med_pool_active);
+    uart_puts(", ScratchUse=");
+    put_dec(post_audit.scratch_bytes_used);
+    uart_puts(", DPCDrops=");
+    put_dec(dpc_audit.dpc_drop_count);
+    uart_puts(", YieldLatUs=");
+    put_dec((uint32_t)sched_audit.max_yield_latency_us);
+    uart_puts(", Cycles=");
+    put_dec(s_telem.completed_cycles);
+    uart_puts(", Streak=");
+    put_dec(s_telem.clean_streak);
+    uart_puts(", ActMatch=");
+    put_dec(active_matched);
+    uart_puts(", TelOk=");
+    put_dec(soak_telem_ok);
+    uart_puts(", GrdOk=");
+    put_dec(param_guards_ok);
+    uart_puts("\r\n");
+
+    if (t39_pass) passed_tests++;
+    print_result(t39_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

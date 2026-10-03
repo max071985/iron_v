@@ -38,6 +38,7 @@
 #include "speedtest.h"
 #include "matter.h"
 #include "efuse.h"
+#include "soak.h"
 
 
 /* ========================================================================= */
@@ -248,7 +249,7 @@ void FLASH_TEXT_ATTR shell_print_help(void)
     console_puts("  speedtest [run|burst|udp|status|reset] - Run or inspect LAN network & Wi-Fi throughput benchmark\r\n");
     console_puts("  matter [info|code|qr|onoff|state|commission|reset] - Google Home Matter commissioning & bridge\r\n");
     console_puts("  efuse [status|summary|security|mac] - Silicon eFuse controller & security seal state\r\n");
-    console_puts("  soak [cycles|status] - Run or inspect 24/7 multi-protocol automated stability soak engine\r\n");
+    console_puts("  soak [status|audit|cycles] - 24/7 stability soak, memory leak audit & anti-starvation telemetry\r\n");
     console_puts("  do-test             - Run full baseline validation test suite\r\n");
 }
 
@@ -572,6 +573,18 @@ void FLASH_TEXT_ATTR shell_print_info(void)
     console_puts(", SecBoot: "); console_puts(efuse_is_secure_boot_enabled() ? "ON" : "OFF");
     console_puts(", FlashCrypt: "); console_puts(efuse_is_flash_encryption_enabled() ? "ON" : "OFF");
     console_puts("\r\n");
+
+    soak_telemetry_t soak_tel;
+    soak_get_telemetry(&soak_tel);
+    console_puts(" Soak:    Cycles: ");
+    put_dec(soak_tel.completed_cycles);
+    console_puts(", Streak: ");
+    put_dec(soak_tel.clean_streak);
+    console_puts(", LeakFree: ");
+    console_puts(!soak_tel.mem_leak_detected ? "YES" : "NO");
+    console_puts(", Drops: ");
+    put_dec(dpc_get_drop_count());
+    console_puts("\r\n");
     console_puts("========================================\r\n");
 }
 
@@ -642,55 +655,11 @@ void FLASH_TEXT_ATTR shell_execute(char *input_buffer)
 
         if (strncmp(subcmd, "status", 6) == 0)
         {
-            test_soak_telemetry_t st;
-            test_soak_get_telemetry(&st);
-            console_puts("24/7 Multi-Protocol Stability Soak Engine Telemetry:\r\n");
-            console_puts("  Status:            ");
-            console_puts(st.is_running ? "RUNNING\r\n" : "IDLE\r\n");
-            console_puts("  Target Cycles:     ");
-            if (st.target_cycles == 0U)
-            {
-                console_puts("Continuous Soak (24/7)\r\n");
-            }
-            else
-            {
-                put_dec(st.target_cycles);
-                console_puts(" cycles\r\n");
-            }
-            console_puts("  Completed Cycles:  ");
-            put_dec(st.completed_cycles);
-            console_puts("\r\n");
-            console_puts("  Failed Cycles:     ");
-            put_dec(st.failed_cycles);
-            console_puts("\r\n");
-            console_puts("  Clean Streak:      ");
-            put_dec(st.consecutive_clean_cycles);
-            console_puts(" cycles\r\n");
-            console_puts("  Total Assertions:  ");
-            put_dec(st.total_tests_run);
-            console_puts(" (Passed: ");
-            put_dec(st.total_tests_passed);
-            console_puts(", Failed: ");
-            put_dec(st.total_tests_failed);
-            console_puts(")\r\n");
-            console_puts("  Elapsed Time:      ");
-            put_dec((uint32_t)(st.elapsed_time_ms / 1000U));
-            console_puts(" s\r\n");
-            console_puts("  Last Cycle Time:   ");
-            put_dec(st.last_cycle_duration_ms);
-            console_puts(" ms\r\n");
-            console_puts("  WDT Feeds:         ");
-            put_dec(st.wdt_feeds_count);
-            console_puts("\r\n");
-            console_puts("  Peak Small Active: ");
-            put_dec(st.peak_small_active);
-            console_puts(" / 32\r\n");
-            console_puts("  Peak Med Active:   ");
-            put_dec(st.peak_med_active);
-            console_puts(" / 16\r\n");
-            console_puts("  Peak Scratch Use:  ");
-            put_dec(st.peak_scratch_bytes);
-            console_puts(" B\r\n");
+            soak_print_status();
+        }
+        else if (strncmp(subcmd, "audit", 5) == 0)
+        {
+            soak_print_audit();
         }
         else
         {

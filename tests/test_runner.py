@@ -1285,6 +1285,43 @@ def run_suite():
         t37_pass
     )
 
+    # TEST 38: 24/7 Stability Soak, Memory Leak & Anti-Starvation Linkage (Task 7.2)
+    total += 1
+    soak_iram_syms = [
+        "soak_init",
+        "soak_audit_memory",
+        "soak_audit_dpc",
+        "soak_audit_scheduler",
+        "soak_run_stability_cycle",
+        "soak_get_telemetry",
+        "soak_reset_telemetry",
+    ]
+    soak_flash_syms = [
+        "soak_print_status",
+        "soak_print_audit",
+    ]
+    all_soak_syms = soak_iram_syms + soak_flash_syms
+    found_soak_syms = [s for s in all_soak_syms if s in symbols]
+    all_soak_found = len(found_soak_syms) == len(all_soak_syms)
+    all_soak_iram_ok = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        for s in soak_iram_syms if s in symbols
+    )
+    all_soak_flash_ok = all(
+        (symbols[s]["value"] >= 0x42000000 and symbols[s]["value"] < 0x42800000)
+        for s in soak_flash_syms if s in symbols
+    )
+    t38_pass = all_soak_found and all_soak_iram_ok and all_soak_flash_ok
+    t38_actual = f"Found {len(found_soak_syms)}/{len(all_soak_syms)} symbols (IRAM={all_soak_iram_ok}, FlashXIP={all_soak_flash_ok})"
+    passed += print_result_line(
+        total,
+        "24/7 Stability Soak, Memory Leak & Anti-Starvation Linkage",
+        "Verify soak_init, audit and stability APIs in IRAM (.text) and diagnostic visualizers in Flash XIP (.flash.text)",
+        f"All {len(all_soak_syms)} Soak stability symbols properly allocated across IRAM and Flash XIP",
+        t38_actual,
+        t38_pass
+    )
+
     print("\n" + "=" * 70)
     print("                       TEST SUITE SUMMARY                             ")
     print("=" * 70)

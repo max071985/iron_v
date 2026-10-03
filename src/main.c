@@ -169,6 +169,7 @@ void main(void)
         wdt_supervisor_tick();
         dpc_process_all();
         tcp_tick();
+        dhcp_client_tick();
         wifi_os_adapter_poll();
         wifi_poll_rx_traffic();
         ble_npl_service_background();

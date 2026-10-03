@@ -182,6 +182,7 @@ dhcp_status_t dhcp_client_process_packet(const uint8_t *eth_frame, const uint8_t
 dhcp_client_state_t dhcp_client_get_state(void) DHCP_FLASH_TEXT;
 dhcp_status_t dhcp_client_get_telemetry(dhcp_client_telemetry_t *out_telem) DHCP_FLASH_TEXT;
 void dhcp_client_set_static_fallback(uint32_t ip, uint32_t netmask, uint32_t gateway, uint32_t dns) DHCP_FLASH_TEXT;
+void dhcp_client_tick(void) DHCP_FLASH_TEXT;
 
 #endif /* IRON_V_DHCP_H */
 

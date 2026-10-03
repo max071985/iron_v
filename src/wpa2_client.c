@@ -894,8 +894,11 @@ void wpa2_client_on_connected(const uint8_t *bssid)
         memcpy(s_ap_bssid, bssid, WPA2_MAC_ADDR_LEN);
         memcpy(s_wpa2_telem.target_bssid, bssid, WPA2_MAC_ADDR_LEN);
     }
-    s_wpa2_state = WPA2_STATE_CONNECTING;
-    s_wpa2_telem.state = WPA2_STATE_CONNECTING;
+    if (s_wpa2_state != WPA2_STATE_AUTHENTICATED)
+    {
+        s_wpa2_state = WPA2_STATE_CONNECTING;
+        s_wpa2_telem.state = WPA2_STATE_CONNECTING;
+    }
 }
 
 WPA2_FLASH_TEXT
@@ -952,6 +955,10 @@ wpa2_status_t wpa2_client_handover(const char *ssid, const char *passphrase)
     {
         wifi_stop_ap();
     }
+
+    /* Reset IP configuration until DHCP client binds */
+    net_set_ip(0U, 0U, 0U);
+    dhcp_client_init();
 
     /* 2. Configure Station Interface */
     uint8_t mac[WPA2_MAC_ADDR_LEN];

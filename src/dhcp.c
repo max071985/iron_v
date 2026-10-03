@@ -14,6 +14,7 @@
 #include "string.h"
 #include "config.h"
 #include "mdns.h"
+#include "systimer.h"
 
 #if defined(__riscv)
 #include "console.h"
@@ -79,7 +80,14 @@ static dhcp_status_t dhcp_send_udp_frame(const uint8_t *dest_mac, uint32_t dest_
     ip->flags_frag_offset = NET_HTONS(IPV4_FLAGS_DF);
     ip->ttl               = IPV4_TTL_DEFAULT;
     ip->protocol          = IPV4_PROTO_UDP;
-    ip->src_ip            = NET_HTONL(DHCP_DEFAULT_GATEWAY);
+    if (src_port == DHCP_CLIENT_PORT)
+    {
+        ip->src_ip = 0U; /* 0.0.0.0 per RFC 2131 Section 4.1 */
+    }
+    else
+    {
+        ip->src_ip = (ncfg.ip != 0U) ? NET_HTONL(ncfg.ip) : NET_HTONL(DHCP_DEFAULT_GATEWAY);
+    }
     ip->dest_ip           = NET_HTONL(dest_ip);
     ip->checksum          = 0U;
     ip->checksum          = NET_HTONS(net_ipv4_checksum(ip));
@@ -627,28 +635,11 @@ dhcp_status_t dhcp_get_telemetry(dhcp_telemetry_t *out_telemetry)
 /* ========================================================================= */
 static dhcp_client_telemetry_t s_dhcp_client_telem;
 static bool s_dhcp_client_initialized = false;
+static uint64_t s_last_discover_us = 0ULL;
 
 DHCP_FLASH_TEXT
-dhcp_status_t dhcp_client_init(void)
+static dhcp_status_t dhcp_client_send_discover(void)
 {
-    memset(&s_dhcp_client_telem, 0, sizeof(s_dhcp_client_telem));
-    s_dhcp_client_telem.state = DHCP_CLIENT_STATE_IDLE;
-    s_dhcp_client_telem.xid = 0x5A4F0001U;
-    s_dhcp_client_initialized = true;
-    return DHCP_OK;
-}
-
-DHCP_FLASH_TEXT
-dhcp_status_t dhcp_client_start(void)
-{
-    if (!s_dhcp_client_initialized)
-    {
-        dhcp_client_init();
-    }
-
-    s_dhcp_client_telem.state = DHCP_CLIENT_STATE_DISCOVERING;
-    s_dhcp_client_telem.xid++;
-
     /* Format DHCPDISCOVER packet */
     dhcp_packet_t pkt;
     memset(&pkt, 0, sizeof(pkt));
@@ -688,8 +679,63 @@ dhcp_status_t dhcp_client_start(void)
     if (st == DHCP_OK)
     {
         s_dhcp_client_telem.discovers_sent++;
+#if defined(__riscv)
+        console_puts("[DHCP] DHCPDISCOVER sent (attempt ");
+        put_dec(s_dhcp_client_telem.discovers_sent);
+        console_puts(")\r\n");
+#endif
     }
     return st;
+}
+
+DHCP_FLASH_TEXT
+dhcp_status_t dhcp_client_init(void)
+{
+    memset(&s_dhcp_client_telem, 0, sizeof(s_dhcp_client_telem));
+    s_dhcp_client_telem.state = DHCP_CLIENT_STATE_IDLE;
+    s_dhcp_client_telem.xid = 0x5A4F0001U;
+    s_last_discover_us = 0ULL;
+    s_dhcp_client_initialized = true;
+    return DHCP_OK;
+}
+
+DHCP_FLASH_TEXT
+dhcp_status_t dhcp_client_start(void)
+{
+    if (!s_dhcp_client_initialized)
+    {
+        dhcp_client_init();
+    }
+
+    s_dhcp_client_telem.state = DHCP_CLIENT_STATE_DISCOVERING;
+    s_dhcp_client_telem.xid++;
+    s_last_discover_us = systimer_get_us();
+
+    return dhcp_client_send_discover();
+}
+
+DHCP_FLASH_TEXT
+void dhcp_client_tick(void)
+{
+    if (!s_dhcp_client_initialized)
+    {
+        return;
+    }
+
+    uint64_t now = systimer_get_us();
+
+    if (s_dhcp_client_telem.state == DHCP_CLIENT_STATE_DISCOVERING)
+    {
+        /* Retransmit DISCOVER every 2 seconds up to 8 attempts */
+        if ((now - s_last_discover_us) >= 2000000ULL)
+        {
+            s_last_discover_us = now;
+            if (s_dhcp_client_telem.discovers_sent < 8U)
+            {
+                dhcp_client_send_discover();
+            }
+        }
+    }
 }
 
 DHCP_FLASH_TEXT
@@ -852,6 +898,14 @@ dhcp_status_t dhcp_client_process_packet(const uint8_t *eth_frame, const uint8_t
 
         s_dhcp_client_telem.requests_sent++;
         s_dhcp_client_telem.state = DHCP_CLIENT_STATE_REQUESTING;
+#if defined(__riscv)
+        console_puts("[DHCP] DHCPOFFER received: IP=");
+        put_dec((offered_ip >> 24U) & 0xFFU); console_puts(".");
+        put_dec((offered_ip >> 16U) & 0xFFU); console_puts(".");
+        put_dec((offered_ip >> 8U) & 0xFFU);  console_puts(".");
+        put_dec(offered_ip & 0xFFU);
+        console_puts(", sent DHCPREQUEST\r\n");
+#endif
         return DHCP_OK;
     }
     else if (msg_type == DHCP_MSG_ACK && s_dhcp_client_telem.state == DHCP_CLIENT_STATE_REQUESTING)
@@ -867,6 +921,20 @@ dhcp_status_t dhcp_client_process_packet(const uint8_t *eth_frame, const uint8_t
 
         /* Apply IP configuration to network stack */
         net_set_ip(s_dhcp_client_telem.assigned_ip, s_dhcp_client_telem.netmask, s_dhcp_client_telem.gateway);
+
+#if defined(__riscv)
+        console_puts("[DHCP] DHCPACK bound! IP: ");
+        put_dec((s_dhcp_client_telem.assigned_ip >> 24U) & 0xFFU); console_puts(".");
+        put_dec((s_dhcp_client_telem.assigned_ip >> 16U) & 0xFFU); console_puts(".");
+        put_dec((s_dhcp_client_telem.assigned_ip >> 8U) & 0xFFU);  console_puts(".");
+        put_dec(s_dhcp_client_telem.assigned_ip & 0xFFU);
+        console_puts(", GW: ");
+        put_dec((s_dhcp_client_telem.gateway >> 24U) & 0xFFU); console_puts(".");
+        put_dec((s_dhcp_client_telem.gateway >> 16U) & 0xFFU); console_puts(".");
+        put_dec((s_dhcp_client_telem.gateway >> 8U) & 0xFFU);  console_puts(".");
+        put_dec(s_dhcp_client_telem.gateway & 0xFFU);
+        console_puts("\r\n");
+#endif
 
         /* Trigger mDNS announcement */
         mdns_announce();

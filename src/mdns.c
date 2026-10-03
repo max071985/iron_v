@@ -194,7 +194,11 @@ mdns_status_t mdns_announce(void)
     /* IPv4 Address */
     net_config_t ncfg;
     net_get_config(&ncfg);
-    uint32_t ip = (ncfg.ip != 0U) ? ncfg.ip : NET_IP4_ADDR(192, 168, 1, 150);
+    if (ncfg.ip == 0U)
+    {
+        return MDNS_ERR_INVALID_ARG;
+    }
+    uint32_t ip = ncfg.ip;
     s_mdns_telem.advertised_ip = ip;
 
     packet[pos++] = (uint8_t)((ip >> 24U) & 0xFFU);
@@ -309,7 +313,11 @@ mdns_status_t mdns_process_packet(const uint8_t *eth_frame, const uint8_t *paylo
 
     net_config_t ncfg;
     net_get_config(&ncfg);
-    uint32_t ip = (ncfg.ip != 0U) ? ncfg.ip : NET_IP4_ADDR(192, 168, 1, 150);
+    if (ncfg.ip == 0U)
+    {
+        return MDNS_OK;
+    }
+    uint32_t ip = ncfg.ip;
     s_mdns_telem.advertised_ip = ip;
 
     response[pos++] = (uint8_t)((ip >> 24U) & 0xFFU);

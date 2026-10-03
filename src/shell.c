@@ -3231,6 +3231,46 @@ void FLASH_TEXT_ATTR shell_execute(char *input_buffer)
         {
             wpa2_client_print_status();
             mdns_print_status();
+
+            dhcp_client_telemetry_t dcli;
+            if (dhcp_client_get_telemetry(&dcli) == DHCP_OK)
+            {
+                char s[NET_IP_STR_BUF_LEN];
+                console_puts("\r\n=======================================================\r\n");
+                console_puts("            DHCP CLIENT (IPv4) TELEMETRY               \r\n");
+                console_puts("=======================================================\r\n");
+                console_puts("  State:               ");
+                switch (dcli.state)
+                {
+                    case DHCP_CLIENT_STATE_IDLE:        console_puts("IDLE"); break;
+                    case DHCP_CLIENT_STATE_DISCOVERING: console_puts("DISCOVERING"); break;
+                    case DHCP_CLIENT_STATE_REQUESTING:  console_puts("REQUESTING"); break;
+                    case DHCP_CLIENT_STATE_BOUND:       console_puts("BOUND"); break;
+                    case DHCP_CLIENT_STATE_STATIC:      console_puts("STATIC"); break;
+                    default:                            console_puts("UNKNOWN"); break;
+                }
+                net_ip_to_str(dcli.assigned_ip, s, sizeof(s));
+                console_puts("\r\n  Assigned IP:         ");
+                console_puts(s);
+                net_ip_to_str(dcli.netmask, s, sizeof(s));
+                console_puts("\r\n  Subnet Mask:         ");
+                console_puts(s);
+                net_ip_to_str(dcli.gateway, s, sizeof(s));
+                console_puts("\r\n  Default Gateway:     ");
+                console_puts(s);
+                net_ip_to_str(dcli.dns_server, s, sizeof(s));
+                console_puts("\r\n  DNS Server:          ");
+                console_puts(s);
+                console_puts("\r\n  Discovers Sent:      ");
+                put_dec(dcli.discovers_sent);
+                console_puts("\r\n  Offers Received:     ");
+                put_dec(dcli.offers_received);
+                console_puts("\r\n  Requests Sent:       ");
+                put_dec(dcli.requests_sent);
+                console_puts("\r\n  Acks Received:       ");
+                put_dec(dcli.acks_received);
+                console_puts("\r\n=======================================================\r\n");
+            }
         }
         else if (strncmp(subcmd, "connect", 7) == 0)
         {

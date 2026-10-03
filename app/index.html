@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="description" content="Iron V Bare-Metal Operating System Companion Application">
+  <meta name="theme-color" content="#090d16">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="./manifest.json">
+  <link rel="stylesheet" href="./styles.css">
+  <title>Iron V Companion</title>
+</head>
+<body>
+
+  <!-- App Header & Subnet Discovery -->
+  <header class="app-header">
+    <div class="header-inner">
+      <div class="brand">
+        <div class="brand-icon">V</div>
+        <div>
+          <span class="brand-title">Iron V Companion</span>
+          <span class="brand-tag">Bare-Metal OS</span>
+        </div>
+      </div>
+
+      <div class="conn-panel">
+        <div id="connStatusBadge" class="conn-status-badge offline">
+          <span class="status-dot"></span>
+          <span id="connStatusText">Disconnected</span>
+        </div>
+
+        <div class="host-input-group">
+          <select id="hostSelect" class="host-select" aria-label="Select Target Host">
+            <option value="http://iron-v.local">iron-v.local (mDNS)</option>
+            <option value="http://192.168.4.1">192.168.4.1 (SoftAP)</option>
+            <option value="http://192.168.1.100">192.168.1.100 (LAN)</option>
+            <option value="custom">Custom IP / Host...</option>
+          </select>
+          <input type="text" id="hostCustomInput" class="host-input" placeholder="192.168.1.x:80" style="display:none;" aria-label="Custom Host Address">
+          <button id="btnProbeHost" class="btn btn-secondary btn-sm" title="Probe candidate host">Discover</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Navigation Tabs -->
+  <div class="nav-tabs-wrapper">
+    <nav class="nav-tabs" aria-label="Main Navigation">
+      <button class="tab-btn active" data-tab="tab-health">
+        <span>⚡</span> System Health
+      </button>
+      <button class="tab-btn" data-tab="tab-gpio">
+        <span>🔘</span> GPIO &amp; Relays
+      </button>
+      <button class="tab-btn" data-tab="tab-wifi">
+        <span>📶</span> Wi-Fi Provisioning
+      </button>
+      <button class="tab-btn" data-tab="tab-speed">
+        <span>🚀</span> LAN Diagnostics &amp; Speed
+      </button>
+      <button class="tab-btn" data-tab="tab-matter">
+        <span>🏠</span> Matter Commissioning
+      </button>
+    </nav>
+  </div>
+
+  <!-- Main View Container -->
+  <main class="app-main">
+
+    <!-- Tab 1: System Health & Telemetry -->
+    <section id="tab-health" class="tab-view active">
+      <div class="grid-4">
+        <div class="metric-tile">
+          <span class="metric-label">System Uptime</span>
+          <span id="valUptime" class="metric-value">--</span>
+          <span class="metric-sub">Continuous Super-Loop</span>
+        </div>
+        <div class="metric-tile">
+          <span class="metric-label">CPU Frequency</span>
+          <span id="valCpu" class="metric-value">160 MHz</span>
+          <span class="metric-sub">RISC-V HP Core (RV32IMAC)</span>
+        </div>
+        <div class="metric-tile">
+          <span class="metric-label">Static Arenas Free</span>
+          <span id="valArenaFree" class="metric-value">--</span>
+          <span class="metric-sub">Zero-Allocation Quiescent Heap</span>
+        </div>
+        <div class="metric-tile">
+          <span class="metric-label">Watchdog Feeds</span>
+          <span id="valWdtFeeds" class="metric-value">--</span>
+          <span class="metric-sub">MWDT0 &amp; LP_WDT Supervisor</span>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <!-- Memory Cartography Card -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title"><span>🧠</span> Static Memory Cartography</span>
+            <span class="brand-tag">Static Pools</span>
+          </div>
+          <div style="margin-bottom: 12px;">
+            <div style="display:flex; justify-content:space-between; font-size:12px; color:var(--text-muted);">
+              <span>Arena Memory Allocated</span>
+              <span id="valArenaUsed" style="font-family:var(--font-mono); font-weight:700;">0 B</span>
+            </div>
+            <div class="progress-bar-bg">
+              <div id="arenaBarFill" class="progress-bar-fill" style="width: 0%;"></div>
+            </div>
+            <div style="font-size:11px; color:var(--text-dim); display:flex; justify-content:space-between;">
+              <span>0% dynamic heap growth</span>
+              <span>512 KB Total Pool</span>
+            </div>
+          </div>
+          <div style="font-size:13px; color:var(--text-muted); line-height: 1.6;">
+            Memory allocations are partitioned strictly into deterministic static pools: Small (32-byte buffers), Medium (256-byte frames), and linear scratch arenas. Dynamic heap allocations are forbidden.
+          </div>
+        </div>
+
+        <!-- Reliability & Kernel Supervisors Card -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title"><span>🛡️</span> Kernel Supervisors &amp; Telemetry</span>
+            <button class="btn btn-secondary btn-sm" onclick="handleFeedWdt()">Feed Watchdog</button>
+          </div>
+          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-bottom:12px;">
+            <div>
+              <span class="metric-label">DPC Queue Drops</span>
+              <div id="valDpcDrops" class="metric-value" style="font-size:18px;">0</div>
+            </div>
+            <div>
+              <span class="metric-label">Hostname</span>
+              <div id="valHostname" class="metric-value" style="font-size:18px;">iron-v</div>
+            </div>
+          </div>
+          <div style="font-size:13px; color:var(--text-muted);">
+            Dual-watchdog supervision active. Hardware interrupts disembark high-frequency tasks via lock-free Single-Producer Single-Consumer (SPSC) Deferred Procedure Calls with zero drop guarantee.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 2: Interactive GPIO & Relay Controls -->
+    <section id="tab-gpio" class="tab-view">
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title"><span>⚡</span> Hardware Pins &amp; Relays</span>
+            <button class="btn btn-secondary btn-sm" onclick="fetchGpioState()">Refresh Pins</button>
+          </div>
+          <div id="gpioPinList" class="pin-control-list">
+            <!-- Populated via JavaScript -->
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title"><span>🔧</span> Arbitrary Pin Dispatcher</span>
+            <span class="brand-tag">GPIO 0 - 30</span>
+          </div>
+          <form onsubmit="handleCustomPinSubmit(event)">
+            <div class="form-group">
+              <label class="form-label" for="customPinInput">Target GPIO Pin Number (0 - 30)</label>
+              <input type="number" id="customPinInput" class="form-input" min="0" max="30" value="15" required>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="customLevelSelect">Output Level State</label>
+              <select id="customLevelSelect" class="form-input">
+                <option value="1">HIGH (1) - 3.3V Drive</option>
+                <option value="0">LOW (0) - 0.0V Ground</option>
+              </select>
+            </div>
+            <div style="display:flex; gap:10px; margin-top:16px;">
+              <button type="submit" class="btn btn-primary" style="flex:1;">Set Pin Level</button>
+              <button type="button" class="btn btn-secondary" onclick="toggleGpioPin(parseInt(document.getElementById('customPinInput').value, 10))">Toggle Pin</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 3: Wi-Fi Provisioning -->
+    <section id="tab-wifi" class="tab-view">
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title"><span>📡</span> Available 2.4 GHz Networks</span>
+            <button id="btnWifiScan" class="btn btn-primary btn-sm" onclick="triggerWifiScan()">Scan Networks</button>
+          </div>
+          <div class="data-table-wrapper">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>SSID</th>
+                  <th>RSSI</th>
+                  <th>Channel</th>
+                  <th>Security</th>
+                </tr>
+              </thead>
+              <tbody id="wifiScanTableBody">
+                <tr>
+                  <td colspan="4" style="text-align:center; color:var(--text-dim);">No networks scanned yet. Click "Scan Networks".</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div style="font-size:12px; color:var(--text-dim);">
+            Click on any scanned network row above to automatically select its SSID.
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title"><span>🔐</span> Wi-Fi Association &amp; Credentials</span>
+            <span id="wifiStateBadge" class="pin-status-pill low">UNPROVISIONED</span>
+          </div>
+          <div style="margin-bottom:14px; font-size:13px; color:var(--text-muted);">
+            Active Network: <strong id="wifiActiveSsid" style="color:var(--text-main);">None (SoftAP Mode)</strong>
+          </div>
+          <form onsubmit="handleWifiConfigure(event)">
+            <div class="form-group">
+              <label class="form-label" for="provSsidInput">Network SSID</label>
+              <input type="text" id="provSsidInput" class="form-input" placeholder="e.g. Home-Network-2.4G" required>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="provPassInput">Passphrase (WPA2-PSK)</label>
+              <input type="password" id="provPassInput" class="form-input" placeholder="Enter network password">
+            </div>
+            <button type="submit" class="btn btn-success" style="width:100%; margin-top:10px;">Save &amp; Associate to Home LAN</button>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 4: Speed-Test Benchmark -->
+    <section id="tab-speed" class="tab-view">
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title"><span>🚀</span> LAN Wi-Fi 6 Speed-Test Benchmark</span>
+            <button id="btnRunSpeedtest" class="btn btn-primary btn-sm" onclick="runSpeedtest()">Run Throughput Test</button>
+          </div>
+          <div class="speed-meter-container">
+            <div class="speedometer">
+              <span id="speedGaugeValue" class="speed-number">0</span>
+              <span class="speed-unit">Mbps</span>
+            </div>
+            <div style="margin-top: 16px; font-size: 13px; color: var(--text-muted); text-align: center;">
+              Microsecond SYSTIMER hardware benchmark over UDP
+            </div>
+          </div>
+          <div class="grid-3" style="margin-top: 10px;">
+            <div class="metric-tile">
+              <span class="metric-label">Throughput</span>
+              <span id="speedKbpsValue" class="metric-value" style="font-size:16px;">0 kbps</span>
+            </div>
+            <div class="metric-tile">
+              <span class="metric-label">Min Latency</span>
+              <span id="speedLatencyValue" class="metric-value" style="font-size:16px;">0 µs</span>
+            </div>
+            <div class="metric-tile">
+              <span class="metric-label">Packet Loss</span>
+              <span id="speedLossValue" class="metric-value" style="font-size:16px; color:var(--color-success);">0 pkts</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title"><span>📊</span> Benchmark History</span>
+            <span class="brand-tag">100-Packet Bursts</span>
+          </div>
+          <div class="data-table-wrapper">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Timestamp</th>
+                  <th>Throughput</th>
+                  <th>Raw Speed</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="speedHistoryBody">
+                <tr>
+                  <td colspan="4" style="text-align:center; color:var(--text-dim);">No benchmark runs recorded yet.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 5: Matter Commissioning Bridge -->
+    <section id="tab-matter" class="tab-view">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title"><span>🏠</span> "Works with Google Home" Matter Commissioning</span>
+          <span id="matterOnoffBadge" class="pin-status-pill low">OFF</span>
+        </div>
+
+        <div class="matter-payload-box">
+          <span class="metric-label">Matter 11-Digit Manual Pairing Code</span>
+          <div id="matterManualCode" class="pairing-code-display">3497-011-2332</div>
+          <button class="btn btn-secondary btn-sm" onclick="copyToClipboard(document.getElementById('matterManualCode').innerText, 'Pairing Code')">Copy Code</button>
+
+          <div id="matterQrContainer" class="qr-container">
+            <!-- Rendered SVG QR code -->
+          </div>
+
+          <div style="font-family:var(--font-mono); font-size:12px; color:var(--text-muted); margin: 6px 0;">
+            Base38 Payload: <span id="matterPayloadStr" style="color:var(--color-primary-light);">MT:Y.K9042C00KA0648G00</span>
+          </div>
+          <button class="btn btn-secondary btn-sm" onclick="copyToClipboard(document.getElementById('matterPayloadStr').innerText, 'QR Payload')">Copy Payload</button>
+        </div>
+
+        <div style="display:flex; justify-content:center; gap:12px; margin-top:16px;">
+          <button id="btnMatterToggle" class="btn btn-primary" onclick="toggleMatterOnOff()">Toggle On/Off (Cluster 0x0006)</button>
+          <button class="btn btn-secondary" onclick="fetchMatterPayload()">Refresh Payload</button>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Toast Notification Container -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <script src="./app.js"></script>
+</body>
+</html>

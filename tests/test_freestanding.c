@@ -2301,7 +2301,7 @@ static void test_http_server_subsystem(void)
     /* 2. Lifecycle & Route Registration */
     TEST_ASSERT(http_server_init() == HTTP_OK, "http_server_init succeeds");
     uint16_t initial_routes = http_server_get_route_count();
-    TEST_ASSERT(initial_routes >= 5U, "Default routes registered >= 5");
+    TEST_ASSERT(initial_routes >= 15U, "Default routes registered >= 15");
 
     /* Register custom route */
     TEST_ASSERT(http_route_register("/api/test", HTTP_METHOD_GET, test_custom_http_handler) == HTTP_OK, "Custom route register succeeds");
@@ -2321,6 +2321,65 @@ static void test_http_server_subsystem(void)
     TEST_ASSERT(strstr(resp, "HTTP/1.1 200 OK") != NULL, "Status 200 OK in response");
     TEST_ASSERT(strstr(resp, "uptime_ms") != NULL, "JSON contains uptime_ms");
     TEST_ASSERT(strstr(resp, "Content-Type: application/json") != NULL, "Content-Type is JSON");
+    TEST_ASSERT(strstr(resp, "Access-Control-Allow-Origin: *") != NULL, "CORS header present");
+
+    /* 4b. Request Processing: Valid GET /api/health */
+    const char req_health[] = "GET /api/health HTTP/1.1\r\n\r\n";
+    resp[0] = '\0';
+    TEST_ASSERT(http_process_request(req_health, strlen(req_health), resp, sizeof(resp), &resp_len) == HTTP_OK, "Process GET /api/health succeeds");
+    TEST_ASSERT(strstr(resp, "HTTP/1.1 200 OK") != NULL, "Health response is 200 OK");
+    TEST_ASSERT(strstr(resp, "uptime_seconds") != NULL, "Health contains uptime_seconds");
+    TEST_ASSERT(strstr(resp, "arena_bytes_used") != NULL, "Health contains arena_bytes_used");
+    TEST_ASSERT(strstr(resp, "dpc_queue_drops") != NULL, "Health contains dpc_queue_drops");
+
+    /* 4c. Request Processing: Valid GET & POST /api/speedtest */
+    const char req_speed_get[] = "GET /api/speedtest HTTP/1.1\r\n\r\n";
+    resp[0] = '\0';
+    TEST_ASSERT(http_process_request(req_speed_get, strlen(req_speed_get), resp, sizeof(resp), &resp_len) == HTTP_OK, "Process GET /api/speedtest succeeds");
+    TEST_ASSERT(strstr(resp, "HTTP/1.1 200 OK") != NULL, "Speedtest GET response is 200 OK");
+    TEST_ASSERT(strstr(resp, "bursts_run") != NULL, "Speedtest contains bursts_run");
+
+    const char req_speed_post[] = "POST /api/speedtest?run=1 HTTP/1.1\r\n\r\n";
+    resp[0] = '\0';
+    TEST_ASSERT(http_process_request(req_speed_post, strlen(req_speed_post), resp, sizeof(resp), &resp_len) == HTTP_OK, "Process POST /api/speedtest succeeds");
+    TEST_ASSERT(strstr(resp, "HTTP/1.1 200 OK") != NULL, "Speedtest POST response is 200 OK");
+    TEST_ASSERT(strstr(resp, "throughput_kbps") != NULL, "Speedtest burst contains throughput_kbps");
+
+    /* 4d. Request Processing: Valid GET /api/matter/payload */
+    const char req_matter[] = "GET /api/matter/payload HTTP/1.1\r\n\r\n";
+    resp[0] = '\0';
+    TEST_ASSERT(http_process_request(req_matter, strlen(req_matter), resp, sizeof(resp), &resp_len) == HTTP_OK, "Process GET /api/matter/payload succeeds");
+    TEST_ASSERT(strstr(resp, "HTTP/1.1 200 OK") != NULL, "Matter response is 200 OK");
+    TEST_ASSERT(strstr(resp, "manual_code") != NULL, "Matter contains manual_code");
+    TEST_ASSERT(strstr(resp, "qr_payload") != NULL, "Matter contains qr_payload");
+    TEST_ASSERT(strstr(resp, "MT:") != NULL, "Matter QR starts with MT:");
+
+    /* 4e. Request Processing: Valid GET & POST /api/gpio */
+    const char req_gpio_get[] = "GET /api/gpio HTTP/1.1\r\n\r\n";
+    resp[0] = '\0';
+    TEST_ASSERT(http_process_request(req_gpio_get, strlen(req_gpio_get), resp, sizeof(resp), &resp_len) == HTTP_OK, "Process GET /api/gpio succeeds");
+    TEST_ASSERT(strstr(resp, "HTTP/1.1 200 OK") != NULL, "GPIO GET response is 200 OK");
+    TEST_ASSERT(strstr(resp, "Status LED") != NULL, "GPIO GET lists Status LED");
+
+    const char req_gpio_set[] = "POST /api/gpio?pin=15&value=1 HTTP/1.1\r\n\r\n";
+    resp[0] = '\0';
+    TEST_ASSERT(http_process_request(req_gpio_set, strlen(req_gpio_set), resp, sizeof(resp), &resp_len) == HTTP_OK, "Process POST /api/gpio set succeeds");
+    TEST_ASSERT(strstr(resp, "\"pin\":15") != NULL, "GPIO set reports pin 15");
+    TEST_ASSERT(strstr(resp, "\"level\":1") != NULL, "GPIO set reports level 1");
+
+    const char req_gpio_toggle[] = "POST /api/gpio?pin=15&toggle=1 HTTP/1.1\r\n\r\n";
+    resp[0] = '\0';
+    TEST_ASSERT(http_process_request(req_gpio_toggle, strlen(req_gpio_toggle), resp, sizeof(resp), &resp_len) == HTTP_OK, "Process POST /api/gpio toggle succeeds");
+    TEST_ASSERT(strstr(resp, "\"pin\":15") != NULL, "GPIO toggle reports pin 15");
+    TEST_ASSERT(strstr(resp, "\"level\":0") != NULL, "GPIO toggle reports level 0");
+
+    /* 4f. Request Processing: OPTIONS CORS Preflight */
+    const char req_options[] = "OPTIONS /api/status HTTP/1.1\r\nOrigin: http://localhost:8080\r\n\r\n";
+    resp[0] = '\0';
+    TEST_ASSERT(http_process_request(req_options, strlen(req_options), resp, sizeof(resp), &resp_len) == HTTP_OK, "Process OPTIONS preflight succeeds");
+    TEST_ASSERT(strstr(resp, "HTTP/1.1 204 No Content") != NULL, "OPTIONS returns 204 No Content");
+    TEST_ASSERT(strstr(resp, "Access-Control-Allow-Methods: GET, POST, OPTIONS") != NULL, "CORS Allow-Methods present");
+    TEST_ASSERT(strstr(resp, "Access-Control-Allow-Headers: Content-Type, Authorization") != NULL, "CORS Allow-Headers present");
 
     /* 5. Request Processing: 404 Not Found */
     const char req_unknown[] = "POST /unknown HTTP/1.1\r\n\r\n";

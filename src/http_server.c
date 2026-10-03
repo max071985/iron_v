@@ -14,6 +14,10 @@
 #include "string.h"
 #include "wdt.h"
 #include "clock.h"
+#include "shell.h"
+#include "speedtest.h"
+#include "matter.h"
+#include "gpio.h"
 
 #if defined(__riscv)
 #include "systimer.h"
@@ -42,8 +46,10 @@ static bool s_http_initialized = false;
 
 #if defined(__riscv)
 #define HTTP_FLASH_TEXT __attribute__((section(".flash.text")))
+#define HTTP_FLASH_RODATA __attribute__((section(".flash.rodata")))
 #else
 #define HTTP_FLASH_TEXT
+#define HTTP_FLASH_RODATA
 #endif
 
 /* ========================================================================= */
@@ -308,18 +314,298 @@ static HTTP_FLASH_TEXT void http_handler_windows_ncsi(const char *query_params, 
     response_body[nlen] = '\0';
 }
 
-/* ========================================================================= */
-/* Core Lifecycle & Routing Implementations                                  */
-/* ========================================================================= */
-
-http_status_t http_server_init(void)
+static HTTP_FLASH_TEXT bool http_find_int_param(const char *buf, const char *key, int32_t *out_val)
 {
-    s_http_route_count = 0U;
-    memset(s_http_routes, 0, sizeof(s_http_routes));
-    memset(&s_http_telemetry, 0, sizeof(s_http_telemetry));
-    s_http_listener_pcb = NULL;
+    if (buf == NULL || key == NULL || out_val == NULL) return false;
+    const char *p = strstr(buf, key);
+    if (p == NULL) return false;
+    p += strlen(key);
+    while (*p == ' ' || *p == '\t' || *p == ':' || *p == '=' || *p == '"') p++;
+    bool neg = false;
+    if (*p == '-') { neg = true; p++; }
+    if (*p < '0' || *p > '9') return false;
+    int32_t val = 0;
+    while (*p >= '0' && *p <= '9') {
+        val = val * 10 + (*p - '0');
+        p++;
+    }
+    *out_val = neg ? -val : val;
+    return true;
+}
 
-    /* Register standard routes */
+static HTTP_FLASH_TEXT bool http_param_contains(const char *buf, const char *key)
+{
+    if (buf == NULL || key == NULL) return false;
+    return strstr(buf, key) != NULL;
+}
+
+/* Flash read-only string constants to preserve 32KB DRAM stack headroom */
+static const char s_str_health_prefix[] HTTP_FLASH_RODATA = "{\"status\":\"healthy\",\"uptime_seconds\":";
+static const char s_str_arena_used[] HTTP_FLASH_RODATA = ",\"arena_bytes_used\":";
+static const char s_str_arena_free[] HTTP_FLASH_RODATA = ",\"arena_bytes_free\":";
+static const char s_str_dpc_drops[] HTTP_FLASH_RODATA = ",\"dpc_queue_drops\":";
+static const char s_str_wdt_feeds[] HTTP_FLASH_RODATA = ",\"wdt_feeds_total\":";
+static const char s_str_wifi_rx[] HTTP_FLASH_RODATA = ",\"wifi_packets_rx\":";
+static const char s_str_wifi_tx[] HTTP_FLASH_RODATA = ",\"wifi_packets_tx\":";
+static const char s_str_uart_active[] HTTP_FLASH_RODATA = ",\"uart_active\":";
+static const char s_str_usb_active[] HTTP_FLASH_RODATA = ",\"usb_active\":";
+
+static const char s_str_sp_bursts[] HTTP_FLASH_RODATA = "{\"status\":\"ok\",\"bursts_run\":";
+static const char s_str_sp_thru_k[] HTTP_FLASH_RODATA = ",\"last_throughput_kbps\":";
+static const char s_str_sp_thru_m[] HTTP_FLASH_RODATA = ",\"last_throughput_mbps\":";
+static const char s_str_sp_lat_avg[] HTTP_FLASH_RODATA = ",\"last_latency_avg_us\":";
+static const char s_str_sp_pkt_loss[] HTTP_FLASH_RODATA = ",\"last_packet_loss\":";
+static const char s_str_sp_run_thru_k[] HTTP_FLASH_RODATA = "{\"status\":\"ok\",\"throughput_kbps\":";
+static const char s_str_sp_run_thru_m[] HTTP_FLASH_RODATA = ",\"throughput_mbps\":";
+static const char s_str_sp_run_lat_min[] HTTP_FLASH_RODATA = ",\"latency_min_us\":";
+static const char s_str_sp_run_lat_max[] HTTP_FLASH_RODATA = ",\"latency_max_us\":";
+static const char s_str_sp_run_pkt_loss[] HTTP_FLASH_RODATA = ",\"packet_loss_count\":";
+
+static const char s_str_mt_code_pre[] HTTP_FLASH_RODATA = "{\"manual_code\":\"";
+static const char s_str_mt_qr_pre[] HTTP_FLASH_RODATA = "\",\"qr_payload\":\"";
+static const char s_str_mt_vid[] HTTP_FLASH_RODATA = "\",\"vendor_id\":";
+static const char s_str_mt_pid[] HTTP_FLASH_RODATA = ",\"product_id\":";
+static const char s_str_mt_disc[] HTTP_FLASH_RODATA = ",\"discriminator\":";
+static const char s_str_mt_pass[] HTTP_FLASH_RODATA = ",\"passcode\":";
+static const char s_str_mt_onoff[] HTTP_FLASH_RODATA = ",\"onoff\":";
+static const char s_str_mt_state[] HTTP_FLASH_RODATA = ",\"state\":";
+
+static const char s_str_gpio_ok_pin[] HTTP_FLASH_RODATA = "{\"status\":\"ok\",\"pin\":";
+static const char s_str_gpio_level[] HTTP_FLASH_RODATA = ",\"level\":";
+static const char s_str_gpio_pins_pre[] HTTP_FLASH_RODATA = "{\"pins\":[";
+static const char s_str_gpio_p15[] HTTP_FLASH_RODATA = "{\"pin\":15,\"level\":";
+static const char s_str_gpio_n15[] HTTP_FLASH_RODATA = ",\"name\":\"Status LED\"},";
+static const char s_str_gpio_p2[] HTTP_FLASH_RODATA = "{\"pin\":2,\"level\":";
+static const char s_str_gpio_n2[] HTTP_FLASH_RODATA = ",\"name\":\"Relay 1\"},";
+static const char s_str_gpio_p3[] HTTP_FLASH_RODATA = "{\"pin\":3,\"level\":";
+static const char s_str_gpio_n3[] HTTP_FLASH_RODATA = ",\"name\":\"Relay 2\"},";
+static const char s_str_gpio_p8[] HTTP_FLASH_RODATA = "{\"pin\":8,\"level\":";
+static const char s_str_gpio_n8[] HTTP_FLASH_RODATA = ",\"name\":\"Output Pin 8\"}";
+static const char s_str_close_bracket[] HTTP_FLASH_RODATA = "]}\r\n";
+static const char s_str_close_brace[] HTTP_FLASH_RODATA = "}\r\n";
+static const char s_cors_methods_hdr[] HTTP_FLASH_RODATA = "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n";
+static const char s_cors_headers_hdr[] HTTP_FLASH_RODATA = "Access-Control-Allow-Headers: Content-Type, Authorization\r\n";
+static const char s_cors_preflight_resp[] HTTP_FLASH_RODATA =
+    "HTTP/1.1 204 No Content\r\n"
+    HTTP_SERVER_HEADER
+    HTTP_CONN_CLOSE_HEADER
+    "Access-Control-Allow-Origin: *\r\n"
+    "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+    "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
+    "Access-Control-Max-Age: 86400\r\n"
+    "Content-Length: 0\r\n\r\n";
+
+/* GET /api/health -> Aggregated 24/7 system health telemetry */
+static HTTP_FLASH_TEXT void http_handler_health(const char *query_params, char *response_body, size_t max_len)
+{
+    (void)query_params;
+    if (response_body == NULL || max_len == 0U) return;
+
+    system_health_telemetry_t h;
+    shell_get_health_telemetry(&h);
+
+    char num_buf[24];
+    response_body[0] = '\0';
+    http_str_append(response_body, max_len, s_str_health_prefix);
+    http_u32_to_dec(h.uptime_seconds, num_buf, sizeof(num_buf));
+    http_str_append(response_body, max_len, num_buf);
+    http_str_append(response_body, max_len, s_str_arena_used);
+    http_u32_to_dec(h.arena_bytes_used, num_buf, sizeof(num_buf));
+    http_str_append(response_body, max_len, num_buf);
+    http_str_append(response_body, max_len, s_str_arena_free);
+    http_u32_to_dec(h.arena_bytes_free, num_buf, sizeof(num_buf));
+    http_str_append(response_body, max_len, num_buf);
+    http_str_append(response_body, max_len, s_str_dpc_drops);
+    http_u32_to_dec(h.dpc_queue_drops, num_buf, sizeof(num_buf));
+    http_str_append(response_body, max_len, num_buf);
+    http_str_append(response_body, max_len, s_str_wdt_feeds);
+    http_u32_to_dec(h.wdt_feeds_total, num_buf, sizeof(num_buf));
+    http_str_append(response_body, max_len, num_buf);
+    http_str_append(response_body, max_len, s_str_wifi_rx);
+    http_u32_to_dec(h.wifi_packets_rx, num_buf, sizeof(num_buf));
+    http_str_append(response_body, max_len, num_buf);
+    http_str_append(response_body, max_len, s_str_wifi_tx);
+    http_u32_to_dec(h.wifi_packets_tx, num_buf, sizeof(num_buf));
+    http_str_append(response_body, max_len, num_buf);
+    http_str_append(response_body, max_len, s_str_uart_active);
+    http_u32_to_dec(h.uart_active, num_buf, sizeof(num_buf));
+    http_str_append(response_body, max_len, num_buf);
+    http_str_append(response_body, max_len, s_str_usb_active);
+    http_u32_to_dec(h.usb_active, num_buf, sizeof(num_buf));
+    http_str_append(response_body, max_len, num_buf);
+    http_str_append(response_body, max_len, s_str_close_brace);
+}
+
+/* GET & POST /api/speedtest -> Diagnostics & throughput benchmark */
+static HTTP_FLASH_TEXT void http_handler_speedtest(const char *query_params, char *response_body, size_t max_len)
+{
+    if (response_body == NULL || max_len == 0U) return;
+
+    char num_buf[24];
+    response_body[0] = '\0';
+
+    if (query_params != NULL && (http_param_contains(query_params, "run") || http_param_contains(query_params, "burst")))
+    {
+        speedtest_result_t res;
+        speedtest_run_synthetic_burst(100U, 1024U, &res);
+        http_str_append(response_body, max_len, s_str_sp_run_thru_k);
+        http_u32_to_dec(res.throughput_kbps, num_buf, sizeof(num_buf));
+        http_str_append(response_body, max_len, num_buf);
+        http_str_append(response_body, max_len, s_str_sp_run_thru_m);
+        http_u32_to_dec(speedtest_kbps_to_mbps(res.throughput_kbps), num_buf, sizeof(num_buf));
+        http_str_append(response_body, max_len, num_buf);
+        http_str_append(response_body, max_len, s_str_sp_run_lat_min);
+        http_u32_to_dec(res.latency_min_us, num_buf, sizeof(num_buf));
+        http_str_append(response_body, max_len, num_buf);
+        http_str_append(response_body, max_len, s_str_sp_run_lat_max);
+        http_u32_to_dec(res.latency_max_us, num_buf, sizeof(num_buf));
+        http_str_append(response_body, max_len, num_buf);
+        http_str_append(response_body, max_len, s_str_sp_run_pkt_loss);
+        http_u32_to_dec(res.packet_loss_count, num_buf, sizeof(num_buf));
+        http_str_append(response_body, max_len, num_buf);
+        http_str_append(response_body, max_len, s_str_close_brace);
+    }
+    else
+    {
+        speedtest_telemetry_t telem;
+        speedtest_get_telemetry(&telem);
+        http_str_append(response_body, max_len, s_str_sp_bursts);
+        http_u32_to_dec(telem.bursts_run, num_buf, sizeof(num_buf));
+        http_str_append(response_body, max_len, num_buf);
+        http_str_append(response_body, max_len, s_str_sp_thru_k);
+        http_u32_to_dec(telem.last_throughput_kbps, num_buf, sizeof(num_buf));
+        http_str_append(response_body, max_len, num_buf);
+        http_str_append(response_body, max_len, s_str_sp_thru_m);
+        http_u32_to_dec(telem.last_throughput_mbps, num_buf, sizeof(num_buf));
+        http_str_append(response_body, max_len, num_buf);
+        http_str_append(response_body, max_len, s_str_sp_lat_avg);
+        http_u32_to_dec(telem.last_latency_avg_us, num_buf, sizeof(num_buf));
+        http_str_append(response_body, max_len, num_buf);
+        http_str_append(response_body, max_len, s_str_sp_pkt_loss);
+        http_u32_to_dec(telem.last_packet_loss, num_buf, sizeof(num_buf));
+        http_str_append(response_body, max_len, num_buf);
+        http_str_append(response_body, max_len, s_str_close_brace);
+    }
+}
+
+/* GET /api/matter/payload -> Matter setup payload & QR Base38 string */
+static HTTP_FLASH_TEXT void http_handler_matter_payload(const char *query_params, char *response_body, size_t max_len)
+{
+    (void)query_params;
+    if (response_body == NULL || max_len == 0U) return;
+
+    matter_commissioning_info_t info;
+    char code_buf[32];
+    char qr_buf[64];
+    memset(code_buf, 0, sizeof(code_buf));
+    memset(qr_buf, 0, sizeof(qr_buf));
+
+    matter_get_commissioning_info(&info);
+    matter_generate_manual_pairing_code(&info, code_buf, sizeof(code_buf), true);
+    matter_generate_qr_code_payload(&info, qr_buf, sizeof(qr_buf));
+    bool onoff = matter_get_onoff();
+    matter_commissioning_state_t state = matter_get_state();
+
+    char num_buf[24];
+    response_body[0] = '\0';
+    http_str_append(response_body, max_len, s_str_mt_code_pre);
+    http_str_append(response_body, max_len, code_buf);
+    http_str_append(response_body, max_len, s_str_mt_qr_pre);
+    http_str_append(response_body, max_len, qr_buf);
+    http_str_append(response_body, max_len, s_str_mt_vid);
+    http_u32_to_dec(info.vendor_id, num_buf, sizeof(num_buf));
+    http_str_append(response_body, max_len, num_buf);
+    http_str_append(response_body, max_len, s_str_mt_pid);
+    http_u32_to_dec(info.product_id, num_buf, sizeof(num_buf));
+    http_str_append(response_body, max_len, num_buf);
+    http_str_append(response_body, max_len, s_str_mt_disc);
+    http_u32_to_dec(info.discriminator, num_buf, sizeof(num_buf));
+    http_str_append(response_body, max_len, num_buf);
+    http_str_append(response_body, max_len, s_str_mt_pass);
+    http_u32_to_dec(info.setup_passcode, num_buf, sizeof(num_buf));
+    http_str_append(response_body, max_len, num_buf);
+    http_str_append(response_body, max_len, s_str_mt_onoff);
+    http_str_append(response_body, max_len, onoff ? "true" : "false");
+    http_str_append(response_body, max_len, s_str_mt_state);
+    http_u32_to_dec((uint32_t)state, num_buf, sizeof(num_buf));
+    http_str_append(response_body, max_len, num_buf);
+    http_str_append(response_body, max_len, s_str_close_brace);
+}
+
+/* GET & POST /api/gpio -> Interactive GPIO pin & relay control */
+static HTTP_FLASH_TEXT void http_handler_gpio(const char *query_params, char *response_body, size_t max_len)
+{
+    if (response_body == NULL || max_len == 0U) return;
+
+    char num_buf[24];
+    response_body[0] = '\0';
+
+    int32_t pin = -1;
+    if (http_find_int_param(query_params, "pin", &pin) && pin >= 0 && pin <= (int32_t)GPIO_PIN_MAX)
+    {
+        uint32_t u_pin = (uint32_t)pin;
+        if (http_param_contains(query_params, "toggle"))
+        {
+            gpio_toggle_level(u_pin);
+        }
+        else
+        {
+            int32_t val = 0;
+            if (http_find_int_param(query_params, "value", &val) || http_find_int_param(query_params, "level", &val))
+            {
+                gpio_set_level(u_pin, (val != 0) ? 1U : 0U);
+            }
+        }
+
+        int curr_lvl = gpio_get_output_level(u_pin);
+        if (curr_lvl < 0) curr_lvl = 0;
+
+        if (u_pin == 15U)
+        {
+            matter_set_onoff(curr_lvl != 0);
+        }
+
+        http_str_append(response_body, max_len, s_str_gpio_ok_pin);
+        http_u32_to_dec(u_pin, num_buf, sizeof(num_buf));
+        http_str_append(response_body, max_len, num_buf);
+        http_str_append(response_body, max_len, s_str_gpio_level);
+        http_u32_to_dec((uint32_t)curr_lvl, num_buf, sizeof(num_buf));
+        http_str_append(response_body, max_len, num_buf);
+        http_str_append(response_body, max_len, s_str_close_brace);
+    }
+    else
+    {
+        int l15 = gpio_get_output_level(15U); if (l15 < 0) l15 = 0;
+        int l2  = gpio_get_output_level(2U);  if (l2 < 0)  l2 = 0;
+        int l3  = gpio_get_output_level(3U);  if (l3 < 0)  l3 = 0;
+        int l8  = gpio_get_output_level(8U);  if (l8 < 0)  l8 = 0;
+
+        http_str_append(response_body, max_len, s_str_gpio_pins_pre);
+        http_str_append(response_body, max_len, s_str_gpio_p15);
+        http_u32_to_dec((uint32_t)l15, num_buf, sizeof(num_buf));
+        http_str_append(response_body, max_len, num_buf);
+        http_str_append(response_body, max_len, s_str_gpio_n15);
+
+        http_str_append(response_body, max_len, s_str_gpio_p2);
+        http_u32_to_dec((uint32_t)l2, num_buf, sizeof(num_buf));
+        http_str_append(response_body, max_len, num_buf);
+        http_str_append(response_body, max_len, s_str_gpio_n2);
+
+        http_str_append(response_body, max_len, s_str_gpio_p3);
+        http_u32_to_dec((uint32_t)l3, num_buf, sizeof(num_buf));
+        http_str_append(response_body, max_len, num_buf);
+        http_str_append(response_body, max_len, s_str_gpio_n3);
+
+        http_str_append(response_body, max_len, s_str_gpio_p8);
+        http_u32_to_dec((uint32_t)l8, num_buf, sizeof(num_buf));
+        http_str_append(response_body, max_len, num_buf);
+        http_str_append(response_body, max_len, s_str_gpio_n8);
+        http_str_append(response_body, max_len, s_str_close_bracket);
+    }
+}
+
+static HTTP_FLASH_TEXT __attribute__((noinline)) void http_register_default_routes(void)
+{
     http_route_register("/", HTTP_METHOD_GET, http_handler_root);
     http_route_register("/index.html", HTTP_METHOD_GET, http_handler_root);
     http_route_register("/favicon.ico", HTTP_METHOD_GET, http_handler_favicon);
@@ -333,6 +619,26 @@ http_status_t http_server_init(void)
     http_route_register("/api/info", HTTP_METHOD_GET, http_handler_info);
     http_route_register("/api/telemetry", HTTP_METHOD_GET, http_handler_telemetry);
     http_route_register("/api/wdt/feed", HTTP_METHOD_POST, http_handler_wdt_feed);
+    http_route_register("/api/health", HTTP_METHOD_GET, http_handler_health);
+    http_route_register("/api/speedtest", HTTP_METHOD_GET, http_handler_speedtest);
+    http_route_register("/api/speedtest", HTTP_METHOD_POST, http_handler_speedtest);
+    http_route_register("/api/matter/payload", HTTP_METHOD_GET, http_handler_matter_payload);
+    http_route_register("/api/gpio", HTTP_METHOD_GET, http_handler_gpio);
+    http_route_register("/api/gpio", HTTP_METHOD_POST, http_handler_gpio);
+}
+
+/* ========================================================================= */
+/* Core Lifecycle & Routing Implementations                                  */
+/* ========================================================================= */
+
+http_status_t http_server_init(void)
+{
+    s_http_route_count = 0U;
+    memset(s_http_routes, 0, sizeof(s_http_routes));
+    memset(&s_http_telemetry, 0, sizeof(s_http_telemetry));
+    s_http_listener_pcb = NULL;
+
+    http_register_default_routes();
 
     s_http_telemetry.active_routes = s_http_route_count;
     s_http_telemetry.server_running = false;
@@ -434,6 +740,11 @@ http_status_t http_process_request(const char *raw_request, size_t req_len,
     {
         method = HTTP_METHOD_HEAD;
         pos = 5U;
+    }
+    else if (req_len >= 8U && strncmp(raw_request, "OPTIONS ", 8) == 0)
+    {
+        method = HTTP_METHOD_OPTIONS;
+        pos = 8U;
     }
     else
     {
@@ -567,7 +878,23 @@ http_status_t http_process_request(const char *raw_request, size_t req_len,
         return HTTP_ERR_MALFORMED;
     }
 
-    /* 3. Match Route */
+    /* 3. Handle OPTIONS CORS Preflight Requests */
+    if (method == HTTP_METHOD_OPTIONS)
+    {
+        s_http_telemetry.responses_200++;
+        size_t clen = strlen(s_cors_preflight_resp);
+        if (clen >= max_resp_len)
+        {
+            clen = max_resp_len - 1U;
+        }
+        memcpy(out_response, s_cors_preflight_resp, clen);
+        out_response[clen] = '\0';
+        *out_resp_len = clen;
+        s_http_telemetry.bytes_tx += (uint32_t)clen;
+        return HTTP_OK;
+    }
+
+    /* 4. Match Route */
     bool path_matched = false;
     const http_route_t *route = http_route_find(path_buf, method, &path_matched);
 
@@ -616,7 +943,7 @@ http_status_t http_process_request(const char *raw_request, size_t req_len,
         ret_status = HTTP_ERR_NOT_FOUND;
     }
 
-    /* 4. Format HTTP/1.1 Response */
+    /* 5. Format HTTP/1.1 Response */
     size_t body_len = strlen(body_buf);
     char len_buf[16];
     http_u32_to_dec((uint32_t)body_len, len_buf, sizeof(len_buf));
@@ -626,6 +953,8 @@ http_status_t http_process_request(const char *raw_request, size_t req_len,
     http_str_append(out_response, max_resp_len, HTTP_SERVER_HEADER);
     http_str_append(out_response, max_resp_len, HTTP_CONN_CLOSE_HEADER);
     http_str_append(out_response, max_resp_len, "Access-Control-Allow-Origin: *\r\n");
+    http_str_append(out_response, max_resp_len, s_cors_methods_hdr);
+    http_str_append(out_response, max_resp_len, s_cors_headers_hdr);
     http_str_append(out_response, max_resp_len, "Content-Type: ");
     http_str_append(out_response, max_resp_len, content_type);
     http_str_append(out_response, max_resp_len, "\r\nContent-Length: ");
@@ -803,6 +1132,7 @@ const char *http_method_to_str(http_method_t method)
         case HTTP_METHOD_GET:     return "GET";
         case HTTP_METHOD_POST:    return "POST";
         case HTTP_METHOD_HEAD:    return "HEAD";
+        case HTTP_METHOD_OPTIONS: return "OPTIONS";
         case HTTP_METHOD_UNKNOWN: return "UNKNOWN";
         default:                  return "INVALID";
     }

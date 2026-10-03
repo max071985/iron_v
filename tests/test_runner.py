@@ -15,11 +15,11 @@ Performs:
 9. Execution of host-native freestanding C unit test binary (tests/test_freestanding).
 10. Architectural documentation that on-board hardware register reads/writes execute via src/test.c on physical silicon.
 """
-
 import os
 import struct
 import subprocess
 import sys
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # ELF constants
 EI_MAG0 = 0
@@ -1509,6 +1509,44 @@ def run_suite():
         f"All {len(wpa2_sta_flash_syms)} WPA2 STA & mDNS symbols properly linked in Flash XIP (.flash.text)",
         t42_actual,
         t42_pass
+    )
+
+    # TEST 43: Dedicated Companion Application & Extended REST API Engine (Task 8.3)
+    total += 1
+    app_files = [
+        "app/index.html",
+        "app/styles.css",
+        "app/app.js",
+        "app/manifest.json",
+        "app/sw.js",
+        "app/README.md"
+    ]
+    all_files_exist = all(os.path.isfile(os.path.join(REPO_ROOT, f)) and os.path.getsize(os.path.join(REPO_ROOT, f)) > 50 for f in app_files)
+
+    companion_flash_syms = [
+        "http_handler_health",
+        "http_handler_speedtest",
+        "http_handler_matter_payload",
+        "http_handler_gpio",
+        "http_register_default_routes"
+    ]
+    found_comp_syms = [s for s in companion_flash_syms if s in symbols]
+    all_comp_found = len(found_comp_syms) == len(companion_flash_syms)
+    all_comp_flash_ok = all(
+        (symbols[s]["value"] >= 0x42000000 and symbols[s]["value"] < 0x42800000)
+        for s in companion_flash_syms if s in symbols
+    )
+
+    etext_ok = ("_etext" in symbols) and (symbols["_etext"]["value"] <= 0x40829000)
+    t43_pass = all_files_exist and all_comp_found and all_comp_flash_ok and etext_ok
+    t43_actual = f"ClientAssets={all_files_exist} ({len(app_files)}/6 files), Symbols={len(found_comp_syms)}/5 in FlashXIP, _etext=0x{symbols.get('_etext', {}).get('value', 0):08x} <= 0x40829000"
+    passed += print_result_line(
+        total,
+        "Dedicated Companion Application & Extended REST API Engine Linkage",
+        "Verify PWA client assets integrity, extended REST route handlers linked in Flash XIP, and IRAM boundary",
+        "All client assets validated, REST handlers linked in Flash XIP, and _etext <= 0x40829000",
+        t43_actual,
+        t43_pass
     )
 
     print("\n" + "=" * 70)

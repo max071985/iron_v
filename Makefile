@@ -121,6 +121,7 @@ tests/test_freestanding: tests/test_freestanding.c src/string.c src/string.h src
 
 do-test: firmware.elf firmware.bin tests/test_freestanding
 	@./tests/test_freestanding
+	@python3 tests/test_companion_app.py
 	@python3 tests/test_runner.py
 
 test: do-test

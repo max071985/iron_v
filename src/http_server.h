@@ -43,6 +43,7 @@ typedef enum {
     HTTP_METHOD_GET = 0,
     HTTP_METHOD_POST,
     HTTP_METHOD_HEAD,
+    HTTP_METHOD_OPTIONS,
     HTTP_METHOD_UNKNOWN
 } http_method_t;
 

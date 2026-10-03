@@ -199,6 +199,19 @@ uint8_t wifi_get_ap_channel(void);
 wifi_status_t wifi_set_cca_enabled(bool enabled);
 bool wifi_is_cca_enabled(void);
 
+#if defined(__riscv)
+#define WIFI_FLASH_TEXT __attribute__((section(".flash.text")))
+#else
+#define WIFI_FLASH_TEXT
+#endif
+
+/* Wi-Fi Station (STA) Subsystem (Task 8.2) */
+wifi_status_t wifi_start_sta(const char *ssid, const char *password) WIFI_FLASH_TEXT;
+wifi_status_t wifi_stop_sta(void) WIFI_FLASH_TEXT;
+bool wifi_is_sta_connected(void) WIFI_FLASH_TEXT;
+wifi_status_t wifi_sta_get_bssid(uint8_t *out_bssid) WIFI_FLASH_TEXT;
+
 #endif /* IRON_V_WIFI_H */
+
 
 

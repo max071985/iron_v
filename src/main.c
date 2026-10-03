@@ -42,6 +42,8 @@
 #include "ota.h"
 #include "nvs.h"
 #include "provisioning.h"
+#include "wpa2_client.h"
+#include "mdns.h"
 
 void main(void)
 {
@@ -133,6 +135,10 @@ void main(void)
 
     /* Initialize SoftAP Captive Portal Wi-Fi Provisioning Engine */
     provisioning_init();
+
+    /* Initialize Bare-Metal WPA2-PSK Station Client & Multicast DNS Responder */
+    wpa2_client_init();
+    mdns_init();
 
     /* Initialize LAN Network Diagnostics & Wi-Fi Speed-Test Benchmark Engine */
     speedtest_init();

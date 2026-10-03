@@ -28,6 +28,7 @@
 #include "wifi_phy_data.h"
 #include "wifi_vendor_types.h"
 #include "wdt.h"
+#include "wpa2_client.h"
 
 /* ========================================================================= */
 /* 1. Deterministic Static Memory Arena for Wi-Fi Subsystem (54 KB)          */
@@ -1758,30 +1759,42 @@ struct wpa_funcs {
 
 extern int esp_wifi_register_wpa_cb_internal(struct wpa_funcs *cb);
 
-static bool s_wpa_sta_init(void) { return true; }
-static bool s_wpa_sta_deinit(void) { return true; }
-static int s_wpa_sta_connect(uint8_t *bssid) { (void)bssid; return 0; }
+static bool s_wpa_sta_init(void)
+{
+    wpa2_client_init();
+    return true;
+}
+static bool s_wpa_sta_deinit(void)
+{
+    wpa2_client_stop();
+    return true;
+}
+static int s_wpa_sta_connect(uint8_t *bssid)
+{
+    wpa2_client_on_connected(bssid);
+    return 0;
+}
 static void s_wpa_sta_connected_cb(uint8_t *bssid)
 {
-    (void)bssid;
     console_puts("[WPA] Connected CB\r\n");
+    wpa2_client_on_connected(bssid);
 }
 static void s_wpa_sta_disconnected_cb(uint8_t reason)
 {
     console_puts("[WPA] Disconnected CB, reason=");
     put_dec((uint32_t)reason);
     console_puts("\r\n");
+    wpa2_client_on_disconnected(reason);
 }
 static int s_wpa_sta_rx_eapol(uint8_t *src_addr, uint8_t *buf, uint32_t len)
 {
-    (void)src_addr;
-    (void)buf;
-    console_puts("[WPA] RX EAPOL len=");
-    put_dec(len);
-    console_puts("\r\n");
-    return 0;
+    return (int)wpa2_client_rx_eapol(src_addr, buf, (uint16_t)len);
 }
-static bool s_wpa_sta_in_4way(void) { return false; }
+static bool s_wpa_sta_in_4way(void)
+{
+    return wpa2_client_is_in_4way();
+}
+
 static void *s_wpa_ap_init(void) { return NULL; }
 static bool s_wpa_ap_deinit(void *data) { (void)data; return true; }
 static bool s_wpa_ap_join(wpa_station_join_param_t *j) { (void)j; return true; }

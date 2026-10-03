@@ -13,6 +13,7 @@
 #include "wifi.h"
 #include "string.h"
 #include "config.h"
+#include "mdns.h"
 
 #if defined(__riscv)
 #include "console.h"
@@ -496,6 +497,7 @@ dhcp_status_t dhcp_process_packet(const uint8_t *eth_frame, const uint8_t *paylo
 /* Minimal DNS Captive Portal Catch-All Resolver (RFC 1035)                  */
 /* Resolves all A-record queries to AP Gateway IP (192.168.1.1)               */
 /* ========================================================================= */
+DHCP_FLASH_TEXT
 dhcp_status_t dns_process_packet(const uint8_t *eth_frame, const uint8_t *payload, uint16_t len)
 {
     if (eth_frame == NULL || payload == NULL || len < sizeof(dns_header_t))
@@ -611,3 +613,258 @@ dhcp_status_t dhcp_get_telemetry(dhcp_telemetry_t *out_telemetry)
     *out_telemetry = s_dhcp_telemetry;
     return DHCP_OK;
 }
+
+/* ========================================================================= */
+/* DHCP Client Subsystem (Task 8.2)                                          */
+/* ========================================================================= */
+static dhcp_client_telemetry_t s_dhcp_client_telem;
+static bool s_dhcp_client_initialized = false;
+
+DHCP_FLASH_TEXT
+dhcp_status_t dhcp_client_init(void)
+{
+    memset(&s_dhcp_client_telem, 0, sizeof(s_dhcp_client_telem));
+    s_dhcp_client_telem.state = DHCP_CLIENT_STATE_IDLE;
+    s_dhcp_client_telem.xid = 0x5A4F0001U;
+    s_dhcp_client_initialized = true;
+    return DHCP_OK;
+}
+
+DHCP_FLASH_TEXT
+dhcp_status_t dhcp_client_start(void)
+{
+    if (!s_dhcp_client_initialized)
+    {
+        dhcp_client_init();
+    }
+
+    s_dhcp_client_telem.state = DHCP_CLIENT_STATE_DISCOVERING;
+    s_dhcp_client_telem.xid++;
+
+    /* Format DHCPDISCOVER packet */
+    dhcp_packet_t pkt;
+    memset(&pkt, 0, sizeof(pkt));
+
+    pkt.op = DHCP_OP_BOOTREQUEST;
+    pkt.htype = DHCP_HTYPE_ETHERNET;
+    pkt.hlen = DHCP_HLEN_ETHERNET;
+    pkt.hops = DHCP_HOPS_DEFAULT;
+    pkt.xid = NET_HTONL(s_dhcp_client_telem.xid);
+    pkt.flags = NET_HTONS(0x8000U); /* Broadcast */
+
+    net_config_t ncfg;
+    net_get_config(&ncfg);
+    memcpy(pkt.chaddr, ncfg.mac, ETH_ADDR_LEN);
+    pkt.magic_cookie = NET_HTONL(DHCP_MAGIC_COOKIE);
+
+    /* Options */
+    size_t opt_idx = 0U;
+    pkt.options[opt_idx++] = DHCP_OPT_MSG_TYPE;
+    pkt.options[opt_idx++] = 1U;
+    pkt.options[opt_idx++] = DHCP_MSG_DISCOVER;
+
+    pkt.options[opt_idx++] = DHCP_OPT_PARAM_REQUEST_LIST;
+    pkt.options[opt_idx++] = 3U;
+    pkt.options[opt_idx++] = DHCP_OPT_SUBNET_MASK;
+    pkt.options[opt_idx++] = DHCP_OPT_ROUTER;
+    pkt.options[opt_idx++] = DHCP_OPT_DNS;
+
+    pkt.options[opt_idx++] = DHCP_OPT_END;
+
+    uint16_t pkt_len = (uint16_t)(sizeof(dhcp_packet_t) - DHCP_MIN_OPTIONS_LEN + opt_idx);
+    uint8_t broadcast_mac[ETH_ADDR_LEN] = {0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU};
+
+    dhcp_status_t st = dhcp_send_udp_frame(broadcast_mac, 0xFFFFFFFFU,
+                                           DHCP_CLIENT_PORT, DHCP_SERVER_PORT,
+                                           &pkt, pkt_len);
+    if (st == DHCP_OK)
+    {
+        s_dhcp_client_telem.discovers_sent++;
+    }
+    return st;
+}
+
+DHCP_FLASH_TEXT
+dhcp_status_t dhcp_client_stop(void)
+{
+    s_dhcp_client_telem.state = DHCP_CLIENT_STATE_IDLE;
+    return DHCP_OK;
+}
+
+DHCP_FLASH_TEXT
+dhcp_client_state_t dhcp_client_get_state(void)
+{
+    return s_dhcp_client_telem.state;
+}
+
+DHCP_FLASH_TEXT
+dhcp_status_t dhcp_client_get_telemetry(dhcp_client_telemetry_t *out_telem)
+{
+    if (out_telem == NULL)
+    {
+        return DHCP_ERR_INVALID_ARG;
+    }
+    *out_telem = s_dhcp_client_telem;
+    return DHCP_OK;
+}
+
+DHCP_FLASH_TEXT
+void dhcp_client_set_static_fallback(uint32_t ip, uint32_t netmask, uint32_t gateway, uint32_t dns)
+{
+    s_dhcp_client_telem.assigned_ip = ip;
+    s_dhcp_client_telem.netmask = netmask;
+    s_dhcp_client_telem.gateway = gateway;
+    s_dhcp_client_telem.dns_server = dns;
+    s_dhcp_client_telem.state = DHCP_CLIENT_STATE_STATIC;
+    net_set_ip(ip, netmask, gateway);
+    mdns_announce();
+}
+
+DHCP_FLASH_TEXT
+dhcp_status_t dhcp_client_process_packet(const uint8_t *eth_frame, const uint8_t *payload, uint16_t len)
+{
+    (void)eth_frame;
+    if (payload == NULL || len < (sizeof(dhcp_packet_t) - DHCP_MIN_OPTIONS_LEN))
+    {
+        return DHCP_ERR_CORRUPT_FRAME;
+    }
+
+    const dhcp_packet_t *pkt = (const dhcp_packet_t *)payload;
+    if (pkt->op != DHCP_OP_BOOTREPLY || NET_NTOHL(pkt->magic_cookie) != DHCP_MAGIC_COOKIE)
+    {
+        return DHCP_ERR_CORRUPT_FRAME;
+    }
+
+    if (NET_NTOHL(pkt->xid) != s_dhcp_client_telem.xid)
+    {
+        return DHCP_ERR_INVALID_ARG;
+    }
+
+    /* Parse options */
+    uint8_t msg_type = 0U;
+    uint32_t server_id = 0U;
+    uint32_t subnet_mask = 0U;
+    uint32_t router = 0U;
+    uint32_t dns = 0U;
+    uint32_t lease_time = 0U;
+
+    size_t opt_offset = 0U;
+    size_t max_opts = len - (sizeof(dhcp_packet_t) - DHCP_MIN_OPTIONS_LEN);
+    while (opt_offset < max_opts)
+    {
+        uint8_t opt = pkt->options[opt_offset++];
+        if (opt == DHCP_OPT_END) break;
+        if (opt == DHCP_OPT_PAD) continue;
+        if (opt_offset >= max_opts) break;
+        uint8_t opt_len = pkt->options[opt_offset++];
+        if (opt_offset + opt_len > max_opts) break;
+
+        if (opt == DHCP_OPT_MSG_TYPE && opt_len == 1U)
+        {
+            msg_type = pkt->options[opt_offset];
+        }
+        else if (opt == DHCP_OPT_SERVER_ID && opt_len == 4U)
+        {
+            memcpy(&server_id, &pkt->options[opt_offset], 4U);
+            server_id = NET_NTOHL(server_id);
+        }
+        else if (opt == DHCP_OPT_SUBNET_MASK && opt_len == 4U)
+        {
+            memcpy(&subnet_mask, &pkt->options[opt_offset], 4U);
+            subnet_mask = NET_NTOHL(subnet_mask);
+        }
+        else if (opt == DHCP_OPT_ROUTER && opt_len >= 4U)
+        {
+            memcpy(&router, &pkt->options[opt_offset], 4U);
+            router = NET_NTOHL(router);
+        }
+        else if (opt == DHCP_OPT_DNS && opt_len >= 4U)
+        {
+            memcpy(&dns, &pkt->options[opt_offset], 4U);
+            dns = NET_NTOHL(dns);
+        }
+        else if (opt == DHCP_OPT_LEASE_TIME && opt_len == 4U)
+        {
+            memcpy(&lease_time, &pkt->options[opt_offset], 4U);
+            lease_time = NET_NTOHL(lease_time);
+        }
+        opt_offset += opt_len;
+    }
+
+    if (msg_type == DHCP_MSG_OFFER && s_dhcp_client_telem.state == DHCP_CLIENT_STATE_DISCOVERING)
+    {
+        s_dhcp_client_telem.offers_received++;
+        uint32_t offered_ip = NET_NTOHL(pkt->yiaddr);
+        s_dhcp_client_telem.assigned_ip = offered_ip;
+        s_dhcp_client_telem.server_ip = server_id;
+        s_dhcp_client_telem.netmask = subnet_mask;
+        s_dhcp_client_telem.gateway = router;
+        s_dhcp_client_telem.dns_server = dns;
+        s_dhcp_client_telem.lease_time_sec = lease_time;
+
+        /* Synthesize DHCPREQUEST */
+        dhcp_packet_t req;
+        memset(&req, 0, sizeof(req));
+        req.op = DHCP_OP_BOOTREQUEST;
+        req.htype = DHCP_HTYPE_ETHERNET;
+        req.hlen = DHCP_HLEN_ETHERNET;
+        req.xid = NET_HTONL(s_dhcp_client_telem.xid);
+        req.flags = NET_HTONS(0x8000U);
+
+        net_config_t ncfg;
+        net_get_config(&ncfg);
+        memcpy(req.chaddr, ncfg.mac, ETH_ADDR_LEN);
+        req.magic_cookie = NET_HTONL(DHCP_MAGIC_COOKIE);
+
+        size_t idx = 0U;
+        req.options[idx++] = DHCP_OPT_MSG_TYPE;
+        req.options[idx++] = 1U;
+        req.options[idx++] = DHCP_MSG_REQUEST;
+
+        req.options[idx++] = DHCP_OPT_REQUESTED_IP;
+        req.options[idx++] = 4U;
+        uint32_t req_ip = NET_HTONL(offered_ip);
+        memcpy(&req.options[idx], &req_ip, 4U);
+        idx += 4U;
+
+        if (server_id != 0U)
+        {
+            req.options[idx++] = DHCP_OPT_SERVER_ID;
+            req.options[idx++] = 4U;
+            uint32_t srv_be = NET_HTONL(server_id);
+            memcpy(&req.options[idx], &srv_be, 4U);
+            idx += 4U;
+        }
+
+        req.options[idx++] = DHCP_OPT_END;
+
+        uint16_t req_len = (uint16_t)(sizeof(dhcp_packet_t) - DHCP_MIN_OPTIONS_LEN + idx);
+        uint8_t bcast_mac[ETH_ADDR_LEN] = {0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU};
+        dhcp_send_udp_frame(bcast_mac, 0xFFFFFFFFU, DHCP_CLIENT_PORT, DHCP_SERVER_PORT, &req, req_len);
+
+        s_dhcp_client_telem.requests_sent++;
+        s_dhcp_client_telem.state = DHCP_CLIENT_STATE_REQUESTING;
+        return DHCP_OK;
+    }
+    else if (msg_type == DHCP_MSG_ACK && s_dhcp_client_telem.state == DHCP_CLIENT_STATE_REQUESTING)
+    {
+        s_dhcp_client_telem.acks_received++;
+        s_dhcp_client_telem.assigned_ip = NET_NTOHL(pkt->yiaddr);
+        if (subnet_mask != 0U) s_dhcp_client_telem.netmask = subnet_mask;
+        if (router != 0U) s_dhcp_client_telem.gateway = router;
+        if (dns != 0U) s_dhcp_client_telem.dns_server = dns;
+        if (lease_time != 0U) s_dhcp_client_telem.lease_time_sec = lease_time;
+
+        s_dhcp_client_telem.state = DHCP_CLIENT_STATE_BOUND;
+
+        /* Apply IP configuration to network stack */
+        net_set_ip(s_dhcp_client_telem.assigned_ip, s_dhcp_client_telem.netmask, s_dhcp_client_telem.gateway);
+
+        /* Trigger mDNS announcement */
+        mdns_announce();
+        return DHCP_OK;
+    }
+
+    return DHCP_OK;
+}
+

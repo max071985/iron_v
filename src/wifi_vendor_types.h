@@ -846,6 +846,9 @@ esp_err_t esp_wifi_set_bandwidth(wifi_interface_t ifx, wifi_bandwidth_t bw);
 esp_err_t esp_wifi_config_11b_rate(wifi_interface_t ifx, bool disable);
 esp_err_t esp_wifi_internal_set_log_level(wifi_log_level_t level);
 esp_err_t esp_wifi_internal_set_log_mod(wifi_log_module_t module, uint32_t submodule, bool enable);
+esp_err_t esp_wifi_connect(void);
+esp_err_t esp_wifi_disconnect(void);
+
 esp_err_t esp_event_send_internal(esp_event_base_t event_base, int32_t event_id, void *event_data, size_t event_data_size, uint32_t ticks_to_wait);
 
 #ifdef __cplusplus

@@ -51,6 +51,8 @@
 #include "ota.h"
 #include "nvs.h"
 #include "provisioning.h"
+#include "wpa2_client.h"
+#include "mdns.h"
 
 /* Host test stubs for hardware-specific functions */
 void wdt_feed(void)
@@ -3359,6 +3361,384 @@ static void test_provisioning_subsystem(void)
     provisioning_clear_credentials();
 }
 
+static void test_wpa2_client_and_mdns_subsystem(void)
+{
+    printf("  [TEST] Bare-Metal Wi-Fi Station (STA) WPA2-PSK Client & Home LAN Join (Task 8.2)...\n");
+
+    /* Ensure Wi-Fi and Network submodules are initialized */
+    wifi_init();
+    net_init();
+
+    /* 1. Cryptographic Test Vectors */
+
+    /* 1a. PBKDF2-HMAC-SHA1: IEEE 802.11i standard vector */
+    /* Passphrase: "password", SSID: "IEEE", 4096 iterations -> 32 bytes PMK */
+    uint8_t pmk[WPA2_PMK_LEN];
+    const uint8_t exp_pmk[WPA2_PMK_LEN] = {
+        0xf4, 0x2c, 0x6f, 0xc5, 0x2d, 0xf0, 0xeb, 0xef,
+        0x9e, 0xbb, 0x4b, 0x90, 0xb3, 0x8a, 0x5f, 0x90,
+        0x2e, 0x83, 0xfe, 0x1b, 0x13, 0x5a, 0x70, 0xe2,
+        0x3a, 0xed, 0x76, 0x2e, 0x97, 0x10, 0xa1, 0x2e
+    };
+    TEST_ASSERT(wpa2_crypto_pbkdf2_sha1("password", "IEEE", 4096, pmk) == WPA2_OK,
+                "PBKDF2-HMAC-SHA1 computes IEEE 802.11i test vector");
+    TEST_ASSERT(memcmp(pmk, exp_pmk, WPA2_PMK_LEN) == 0,
+                "PBKDF2-HMAC-SHA1 matches standard 32-byte test vector output exactly");
+
+    /* Null parameter checks */
+    TEST_ASSERT(wpa2_crypto_pbkdf2_sha1(NULL, "IEEE", 4096, pmk) == WPA2_ERR_INVALID_ARG,
+                "PBKDF2 rejects NULL passphrase");
+    TEST_ASSERT(wpa2_crypto_pbkdf2_sha1("password", NULL, 4096, pmk) == WPA2_ERR_INVALID_ARG,
+                "PBKDF2 rejects NULL SSID");
+
+    /* 1b. RFC 3394 AES Key Wrap & Unwrap Test Vector (Section 4.1) */
+    const uint8_t rfc3394_kek[16] = {
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f
+    };
+    const uint8_t rfc3394_plain[16] = {
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+        0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff
+    };
+    const uint8_t rfc3394_exp_wrapped[24] = {
+        0x1f, 0xa6, 0x8b, 0x0a, 0x81, 0x12, 0xb4, 0x47,
+        0xae, 0xf3, 0x4b, 0xd8, 0xfb, 0x5a, 0x7b, 0x82,
+        0x9d, 0x3e, 0x86, 0x23, 0x71, 0xd2, 0xcf, 0xe5
+    };
+    uint8_t wrap_out[32];
+    uint16_t wrap_out_len = 0U;
+    TEST_ASSERT(wpa2_crypto_aes_wrap(rfc3394_kek, rfc3394_plain, 16, wrap_out, &wrap_out_len) == WPA2_OK,
+                "RFC 3394 AES Key Wrap succeeds");
+    TEST_ASSERT(wrap_out_len == 24U, "Wrapped key length is 24 bytes");
+    TEST_ASSERT(memcmp(wrap_out, rfc3394_exp_wrapped, 24) == 0,
+                "Wrapped key matches RFC 3394 test vector exactly");
+
+    uint8_t unwrap_out[32];
+    uint16_t unwrap_out_len = 0U;
+    TEST_ASSERT(wpa2_crypto_aes_unwrap(rfc3394_kek, wrap_out, wrap_out_len, unwrap_out, &unwrap_out_len) == WPA2_OK,
+                "RFC 3394 AES Key Unwrap succeeds on valid vector");
+    TEST_ASSERT(unwrap_out_len == 16U, "Unwrapped key length is 16 bytes");
+    TEST_ASSERT(memcmp(unwrap_out, rfc3394_plain, 16) == 0,
+                "Unwrapped key matches original plaintext");
+
+    /* Corrupted wrapped ciphertext -> integrity check must fail */
+    uint8_t corrupt_wrapped[24];
+    memcpy(corrupt_wrapped, wrap_out, 24);
+    corrupt_wrapped[10] ^= 0x55;
+    TEST_ASSERT(wpa2_crypto_aes_unwrap(rfc3394_kek, corrupt_wrapped, 24, unwrap_out, &unwrap_out_len) == WPA2_ERR_DECRYPT_FAIL,
+                "AES Key Unwrap detects corrupted ciphertext integrity failure");
+
+    /* 1c. PRF-512 PTK expansion */
+    const uint8_t sta_mac[6] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55};
+    const uint8_t ap_bssid[6] = {0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb};
+    const uint8_t snonce[32] = {
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+        0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+        0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
+        0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f
+    };
+    const uint8_t anonce[32] = {
+        0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
+        0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f,
+        0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47,
+        0x48, 0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e, 0x4f
+    };
+    wpa2_ptk_t ptk;
+    TEST_ASSERT(wpa2_crypto_prf512(pmk, sta_mac, ap_bssid, snonce, anonce, &ptk) == WPA2_OK,
+                "wpa2_crypto_prf512 expansion succeeds");
+    uint32_t ptk_nonzero = 0U;
+    for (size_t i = 0; i < sizeof(ptk); i++)
+    {
+        ptk_nonzero |= ((uint8_t *)&ptk)[i];
+    }
+    TEST_ASSERT(ptk_nonzero != 0U, "Derived PTK is non-zero");
+
+    /* 1d. HMAC-SHA1 MIC computation */
+    uint8_t dummy_frame[128];
+    memset(dummy_frame, 0x33, sizeof(dummy_frame));
+    uint8_t computed_mic[WPA2_MIC_LEN];
+    TEST_ASSERT(wpa2_crypto_compute_mic(ptk.kck, dummy_frame, sizeof(dummy_frame), computed_mic) == WPA2_OK,
+                "wpa2_crypto_compute_mic succeeds");
+
+    /* 2. 802.11i 4-Way Handshake Full Exchange (M1 -> M2 -> M3 -> M4 -> AUTHENTICATED) */
+    TEST_ASSERT(wpa2_client_init() == WPA2_OK, "wpa2_client_init succeeds");
+    TEST_ASSERT(wpa2_client_get_state() == WPA2_STATE_DISCONNECTED, "Initial state is DISCONNECTED");
+    TEST_ASSERT(!wpa2_client_is_in_4way(), "Initially not in 4-way handshake");
+    TEST_ASSERT(!wpa2_client_is_authenticated(), "Initially not authenticated");
+
+    /* Configure credentials (derives PMK) */
+    TEST_ASSERT(wpa2_client_configure("IEEE", "password") == WPA2_OK, "wpa2_client_configure derives PMK");
+
+    /* On-connected event: AP association */
+    wpa2_client_on_connected(ap_bssid);
+    TEST_ASSERT(wpa2_client_get_state() == WPA2_STATE_CONNECTING, "State is CONNECTING after connection");
+
+    /* 2a. Message 1 (AP -> STA) */
+    uint8_t m1_frame[sizeof(eapol_ethernet_hdr_t) + sizeof(eapol_key_header_t)];
+    memset(m1_frame, 0, sizeof(m1_frame));
+    eapol_ethernet_hdr_t *eth = (eapol_ethernet_hdr_t *)m1_frame;
+    memcpy(eth->dest_mac, sta_mac, 6);
+    memcpy(eth->src_mac, ap_bssid, 6);
+    eth->ethertype = NET_HTONS(ETHERTYPE_EAPOL);
+    eth->version = EAPOL_VERSION_1;
+    eth->type = EAPOL_TYPE_KEY;
+    eth->length = NET_HTONS(sizeof(eapol_key_header_t));
+
+    eapol_key_header_t *key_hdr = (eapol_key_header_t *)(m1_frame + sizeof(eapol_ethernet_hdr_t));
+    key_hdr->descriptor_type = EAPOL_DESC_TYPE_RSN;
+    key_hdr->key_info = NET_HTONS(WPA2_MSG1_KEY_INFO_NOMINAL);
+    key_hdr->key_length = NET_HTONS(WPA2_TK_LEN);
+    key_hdr->replay_counter[7] = 1U; /* Replay = 1 */
+    memcpy(key_hdr->key_nonce, anonce, WPA2_NONCE_LEN);
+
+    /* Process M1 -> Client sends M2 and transitions to M2_SENT */
+    TEST_ASSERT(wpa2_client_rx_eapol(ap_bssid, m1_frame, sizeof(m1_frame)) == WPA2_OK,
+                "Client processes EAPOL Message 1 successfully");
+    TEST_ASSERT(wpa2_client_get_state() == WPA2_STATE_4WAY_M2_SENT, "State transitions to 4WAY_M2_SENT");
+    TEST_ASSERT(wpa2_client_is_in_4way(), "wpa2_client_is_in_4way returns true");
+
+    wpa2_telemetry_t wtelem;
+    TEST_ASSERT(wpa2_client_get_telemetry(&wtelem) == WPA2_OK, "Get telemetry succeeds");
+    TEST_ASSERT(wtelem.m1_rx_count == 1U, "m1_rx_count incremented");
+    TEST_ASSERT(wtelem.m2_tx_count == 1U, "m2_tx_count incremented");
+    TEST_ASSERT(wtelem.has_ptk, "Telemetry reports PTK derived");
+
+    /* Obtain the client's derived PTK to construct authentic Message 3 */
+    wpa2_ptk_t client_ptk;
+    TEST_ASSERT(wpa2_client_get_ptk(&client_ptk) == WPA2_OK, "wpa2_client_get_ptk retrieves active session PTK");
+
+    /* Wrap a dummy GTK using client's KEK */
+    const uint8_t raw_gtk[16] = {
+        0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11,
+        0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99
+    };
+    uint8_t wrapped_gtk[24];
+    uint16_t wrapped_gtk_len = 0U;
+    TEST_ASSERT(wpa2_crypto_aes_wrap(client_ptk.kek, raw_gtk, sizeof(raw_gtk), wrapped_gtk, &wrapped_gtk_len) == WPA2_OK,
+                "Wrap GTK using client's KEK succeeds");
+    TEST_ASSERT(wrapped_gtk_len == 24U, "Wrapped GTK length is 24 bytes");
+
+    /* 2b. Replay Attack Detection */
+    uint8_t m3_frame[sizeof(eapol_ethernet_hdr_t) + sizeof(eapol_key_header_t) + 24U];
+    memset(m3_frame, 0, sizeof(m3_frame));
+    eth = (eapol_ethernet_hdr_t *)m3_frame;
+    memcpy(eth->dest_mac, sta_mac, 6);
+    memcpy(eth->src_mac, ap_bssid, 6);
+    eth->ethertype = NET_HTONS(ETHERTYPE_EAPOL);
+    eth->version = EAPOL_VERSION_1;
+    eth->type = EAPOL_TYPE_KEY;
+    eth->length = NET_HTONS((uint16_t)(sizeof(eapol_key_header_t) + 24U));
+
+    key_hdr = (eapol_key_header_t *)(m3_frame + sizeof(eapol_ethernet_hdr_t));
+    key_hdr->descriptor_type = EAPOL_DESC_TYPE_RSN;
+    key_hdr->key_info = NET_HTONS(WPA2_MSG3_KEY_INFO_NOMINAL);
+    key_hdr->key_length = NET_HTONS(WPA2_TK_LEN);
+    key_hdr->replay_counter[7] = 0U; /* Stale Replay Counter (0 < 1) */
+    memcpy(key_hdr->key_nonce, anonce, WPA2_NONCE_LEN);
+    key_hdr->key_data_length = NET_HTONS(24U);
+    memcpy(m3_frame + sizeof(eapol_ethernet_hdr_t) + sizeof(eapol_key_header_t), wrapped_gtk, 24U);
+
+    TEST_ASSERT(wpa2_client_rx_eapol(ap_bssid, m3_frame, sizeof(m3_frame)) == WPA2_ERR_REPLAY,
+                "EAPOL rejects stale replay counter in Message 3");
+    wpa2_client_get_telemetry(&wtelem);
+    TEST_ASSERT(wtelem.replay_errors >= 1U, "Replay error counter incremented");
+
+    /* 2c. MIC Tampering Detection */
+    key_hdr->replay_counter[7] = 2U; /* Valid Replay Counter (2 > 1) */
+    memset(key_hdr->key_mic, 0xFF, WPA2_MIC_LEN); /* Corrupt MIC */
+    TEST_ASSERT(wpa2_client_rx_eapol(ap_bssid, m3_frame, sizeof(m3_frame)) == WPA2_ERR_MIC_FAIL,
+                "EAPOL rejects corrupted MIC in Message 3");
+    wpa2_client_get_telemetry(&wtelem);
+    TEST_ASSERT(wtelem.mic_failures >= 1U, "MIC failure counter incremented");
+
+    /* 2d. Authentic Message 3 Handling & Key Installation */
+    /* Compute valid MIC over m3_frame with key_mic zeroed */
+    memset(key_hdr->key_mic, 0, WPA2_MIC_LEN);
+    TEST_ASSERT(wpa2_crypto_compute_mic(client_ptk.kck, m3_frame, sizeof(m3_frame), key_hdr->key_mic) == WPA2_OK,
+                "Compute authentic M3 MIC using client's KCK");
+
+    /* Process authentic Message 3 */
+    TEST_ASSERT(wpa2_client_rx_eapol(ap_bssid, m3_frame, sizeof(m3_frame)) == WPA2_OK,
+                "Client processes authentic Message 3 successfully");
+    TEST_ASSERT(wpa2_client_get_state() == WPA2_STATE_AUTHENTICATED, "State transitions to AUTHENTICATED");
+    TEST_ASSERT(wpa2_client_is_authenticated(), "wpa2_client_is_authenticated returns true");
+    TEST_ASSERT(!wpa2_client_is_in_4way(), "wpa2_client_is_in_4way returns false after completion");
+
+    wpa2_client_get_telemetry(&wtelem);
+    TEST_ASSERT(wtelem.m3_rx_count >= 1U, "m3_rx_count incremented");
+    TEST_ASSERT(wtelem.m4_tx_count == 1U, "m4_tx_count incremented");
+    TEST_ASSERT(wtelem.has_gtk, "GTK unwrapped and installed");
+    TEST_ASSERT(wtelem.handshakes_completed == 1U, "handshakes_completed incremented to 1");
+
+    /* 2e. AP Drop / Disconnection Notification */
+    wpa2_client_on_disconnected(3U);
+    TEST_ASSERT(wpa2_client_get_state() == WPA2_STATE_DISCONNECTED, "State resets to DISCONNECTED on AP drop");
+
+    /* 2f. SoftAP-to-Station Handover Orchestrator */
+    TEST_ASSERT(wpa2_client_handover("OfficeNet", "OfficeSecret123") == WPA2_OK,
+                "wpa2_client_handover reconfigures client and initiates STA join");
+
+    /* 3. DHCP Client State Machine */
+    TEST_ASSERT(dhcp_client_init() == DHCP_OK, "dhcp_client_init succeeds");
+    TEST_ASSERT(dhcp_client_get_state() == DHCP_CLIENT_STATE_IDLE, "Initial DHCP state is IDLE");
+
+    TEST_ASSERT(dhcp_client_start() == DHCP_OK, "dhcp_client_start transmits DHCPDISCOVER");
+    TEST_ASSERT(dhcp_client_get_state() == DHCP_CLIENT_STATE_DISCOVERING, "State is DISCOVERING");
+
+    dhcp_client_telemetry_t dtelem;
+    TEST_ASSERT(dhcp_client_get_telemetry(&dtelem) == DHCP_OK, "dhcp_client_get_telemetry succeeds");
+    TEST_ASSERT(dtelem.discovers_sent >= 1U, "discovers_sent tracked");
+
+    /* 3a. Inbound DHCPOFFER Simulation */
+    dhcp_packet_t offer_pkt;
+    memset(&offer_pkt, 0, sizeof(offer_pkt));
+    offer_pkt.op = DHCP_OP_BOOTREPLY;
+    offer_pkt.htype = DHCP_HTYPE_ETHERNET;
+    offer_pkt.hlen = DHCP_HLEN_ETHERNET;
+    offer_pkt.xid = NET_HTONL(dtelem.xid);
+    offer_pkt.yiaddr = NET_HTONL(0xC0A80132U); /* 192.168.1.50 */
+    offer_pkt.siaddr = NET_HTONL(0xC0A80101U); /* 192.168.1.1 */
+    offer_pkt.magic_cookie = NET_HTONL(DHCP_MAGIC_COOKIE);
+    size_t o_idx = 0U;
+    offer_pkt.options[o_idx++] = DHCP_OPT_MSG_TYPE;
+    offer_pkt.options[o_idx++] = 1U;
+    offer_pkt.options[o_idx++] = DHCP_MSG_OFFER;
+    offer_pkt.options[o_idx++] = DHCP_OPT_SERVER_ID;
+    offer_pkt.options[o_idx++] = 4U;
+    offer_pkt.options[o_idx++] = 192;
+    offer_pkt.options[o_idx++] = 168;
+    offer_pkt.options[o_idx++] = 1;
+    offer_pkt.options[o_idx++] = 1;
+    offer_pkt.options[o_idx++] = DHCP_OPT_END;
+
+    uint16_t offer_len = (uint16_t)(sizeof(dhcp_packet_t) - DHCP_MIN_OPTIONS_LEN + o_idx);
+    uint8_t dummy_eth[14] = {0};
+    TEST_ASSERT(dhcp_client_process_packet(dummy_eth, (const uint8_t *)&offer_pkt, offer_len) == DHCP_OK,
+                "dhcp_client_process_packet processes DHCPOFFER");
+    TEST_ASSERT(dhcp_client_get_state() == DHCP_CLIENT_STATE_REQUESTING, "State transitions to REQUESTING");
+
+    /* 3b. Inbound DHCPACK Simulation */
+    dhcp_packet_t ack_pkt;
+    memset(&ack_pkt, 0, sizeof(ack_pkt));
+    ack_pkt.op = DHCP_OP_BOOTREPLY;
+    ack_pkt.htype = DHCP_HTYPE_ETHERNET;
+    ack_pkt.hlen = DHCP_HLEN_ETHERNET;
+    ack_pkt.xid = NET_HTONL(dtelem.xid);
+    ack_pkt.yiaddr = NET_HTONL(0xC0A80132U); /* 192.168.1.50 */
+    ack_pkt.siaddr = NET_HTONL(0xC0A80101U); /* 192.168.1.1 */
+    ack_pkt.magic_cookie = NET_HTONL(DHCP_MAGIC_COOKIE);
+    size_t a_idx = 0U;
+    ack_pkt.options[a_idx++] = DHCP_OPT_MSG_TYPE;
+    ack_pkt.options[a_idx++] = 1U;
+    ack_pkt.options[a_idx++] = DHCP_MSG_ACK;
+    ack_pkt.options[a_idx++] = DHCP_OPT_SUBNET_MASK;
+    ack_pkt.options[a_idx++] = 4U;
+    ack_pkt.options[a_idx++] = 255;
+    ack_pkt.options[a_idx++] = 255;
+    ack_pkt.options[a_idx++] = 255;
+    ack_pkt.options[a_idx++] = 0;
+    ack_pkt.options[a_idx++] = DHCP_OPT_ROUTER;
+    ack_pkt.options[a_idx++] = 4U;
+    ack_pkt.options[a_idx++] = 192;
+    ack_pkt.options[a_idx++] = 168;
+    ack_pkt.options[a_idx++] = 1;
+    ack_pkt.options[a_idx++] = 1;
+    ack_pkt.options[a_idx++] = DHCP_OPT_DNS;
+    ack_pkt.options[a_idx++] = 4U;
+    ack_pkt.options[a_idx++] = 8;
+    ack_pkt.options[a_idx++] = 8;
+    ack_pkt.options[a_idx++] = 8;
+    ack_pkt.options[a_idx++] = 8;
+    ack_pkt.options[a_idx++] = DHCP_OPT_LEASE_TIME;
+    ack_pkt.options[a_idx++] = 4U;
+    ack_pkt.options[a_idx++] = 0;
+    ack_pkt.options[a_idx++] = 0;
+    ack_pkt.options[a_idx++] = 0x0E;
+    ack_pkt.options[a_idx++] = 0x10;
+    ack_pkt.options[a_idx++] = DHCP_OPT_END;
+
+    uint16_t ack_len = (uint16_t)(sizeof(dhcp_packet_t) - DHCP_MIN_OPTIONS_LEN + a_idx);
+    TEST_ASSERT(dhcp_client_process_packet(dummy_eth, (const uint8_t *)&ack_pkt, ack_len) == DHCP_OK,
+                "dhcp_client_process_packet processes DHCPACK");
+    TEST_ASSERT(dhcp_client_get_state() == DHCP_CLIENT_STATE_BOUND, "State transitions to BOUND");
+
+    dhcp_client_get_telemetry(&dtelem);
+    TEST_ASSERT(dtelem.assigned_ip == 0xC0A80132U, "Assigned IP is 192.168.1.50");
+    TEST_ASSERT(dtelem.gateway == 0xC0A80101U, "Gateway is 192.168.1.1");
+
+    /* 3c. Static Fallback Configuration */
+    dhcp_client_set_static_fallback(0x0A00000AU, 0xFFFFFF00U, 0x0A000001U, 0x08080808U);
+    TEST_ASSERT(dhcp_client_get_state() == DHCP_CLIENT_STATE_STATIC, "State is STATIC after static fallback");
+    dhcp_client_get_telemetry(&dtelem);
+    TEST_ASSERT(dtelem.assigned_ip == 0x0A00000AU, "Assigned IP is 10.0.0.10");
+
+    /* 4. Freestanding Multicast DNS (mDNS) Responder Engine */
+    TEST_ASSERT(mdns_init() == MDNS_OK, "mdns_init succeeds");
+    TEST_ASSERT(mdns_is_active(), "mDNS active flag is true");
+    TEST_ASSERT(strcmp(mdns_get_hostname(), "iron-v") == 0, "Default hostname is 'iron-v'");
+
+    /* Hostname modification */
+    TEST_ASSERT(mdns_set_hostname("iron-c6") == MDNS_OK, "mdns_set_hostname succeeds");
+    TEST_ASSERT(strcmp(mdns_get_hostname(), "iron-c6") == 0, "Updated hostname is 'iron-c6'");
+    TEST_ASSERT(mdns_set_hostname("") == MDNS_ERR_INVALID_ARG, "Rejects empty hostname");
+
+    /* Gratuitous announcement beacon */
+    TEST_ASSERT(mdns_announce() == MDNS_OK, "mdns_announce broadcasts unsolicited response");
+    mdns_telemetry_t mtelem;
+    TEST_ASSERT(mdns_get_telemetry(&mtelem) == MDNS_OK, "mdns_get_telemetry succeeds");
+    TEST_ASSERT(mtelem.announcements_sent >= 1U, "announcements_sent tracked");
+
+    /* 4a. Query matching: query for "iron-c6.local" Type A */
+    uint8_t mdns_query[128];
+    memset(mdns_query, 0, sizeof(mdns_query));
+    dns_header_t *dns_hdr = (dns_header_t *)mdns_query;
+    dns_hdr->id = 0;
+    dns_hdr->flags = 0; /* Standard Query */
+    dns_hdr->qdcount = NET_HTONS(1U);
+
+    size_t q_idx = sizeof(dns_header_t);
+    mdns_query[q_idx++] = 7U;
+    memcpy(&mdns_query[q_idx], "iron-c6", 7U);
+    q_idx += 7U;
+    mdns_query[q_idx++] = 5U;
+    memcpy(&mdns_query[q_idx], "local", 5U);
+    q_idx += 5U;
+    mdns_query[q_idx++] = 0U; /* Terminating zero label */
+
+    /* QTYPE = A (1), QCLASS = IN (1) */
+    mdns_query[q_idx++] = 0U;
+    mdns_query[q_idx++] = 1U;
+    mdns_query[q_idx++] = 0U;
+    mdns_query[q_idx++] = 1U;
+
+    TEST_ASSERT(mdns_process_packet(dummy_eth, mdns_query, (uint16_t)q_idx) == MDNS_OK,
+                "mdns_process_packet resolves iron-c6.local Type A query");
+    mdns_get_telemetry(&mtelem);
+    TEST_ASSERT(mtelem.host_queries_matched >= 1U, "host_queries_matched incremented");
+    TEST_ASSERT(mtelem.responses_sent >= 1U, "responses_sent incremented");
+
+    /* 4b. Unmatched query: query for "other-host.local" */
+    q_idx = sizeof(dns_header_t);
+    mdns_query[q_idx++] = 10U;
+    memcpy(&mdns_query[q_idx], "other-host", 10U);
+    q_idx += 10U;
+    mdns_query[q_idx++] = 5U;
+    memcpy(&mdns_query[q_idx], "local", 5U);
+    q_idx += 5U;
+    mdns_query[q_idx++] = 0U;
+    mdns_query[q_idx++] = 0U;
+    mdns_query[q_idx++] = 1U;
+    mdns_query[q_idx++] = 0U;
+    mdns_query[q_idx++] = 1U;
+
+    TEST_ASSERT(mdns_process_packet(dummy_eth, mdns_query, (uint16_t)q_idx) == MDNS_ERR_NO_MATCH,
+                "mDNS ignores non-matching hostname query");
+
+    /* Stop mDNS */
+    TEST_ASSERT(mdns_stop() == MDNS_OK, "mdns_stop succeeds");
+    TEST_ASSERT(!mdns_is_active(), "mDNS inactive after stop");
+}
+
 /* ========================================================================= */
 /* Phase 0-3 Host Test Hardening: Cross-Module Integration & Edge Case Tests */
 /* ========================================================================= */
@@ -4487,6 +4867,7 @@ int main(void)
     test_ota_subsystem();
     test_nvs_subsystem();
     test_provisioning_subsystem();
+    test_wpa2_client_and_mdns_subsystem();
 
     /* Hardened cross-module integration and edge case tests */
     test_coroutine_systimer_dpc_integration();

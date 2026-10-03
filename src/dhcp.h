@@ -133,13 +133,55 @@ typedef enum {
 } dhcp_status_t;
 
 /* ========================================================================= */
+/* DHCP Client Data Structures & Telemetry                                   */
+/* ========================================================================= */
+typedef enum {
+    DHCP_CLIENT_STATE_IDLE = 0,
+    DHCP_CLIENT_STATE_DISCOVERING,
+    DHCP_CLIENT_STATE_REQUESTING,
+    DHCP_CLIENT_STATE_BOUND,
+    DHCP_CLIENT_STATE_STATIC
+} dhcp_client_state_t;
+
+typedef struct {
+    dhcp_client_state_t state;
+    uint32_t assigned_ip;
+    uint32_t netmask;
+    uint32_t gateway;
+    uint32_t dns_server;
+    uint32_t server_ip;
+    uint32_t lease_time_sec;
+    uint32_t xid;
+    uint32_t discovers_sent;
+    uint32_t offers_received;
+    uint32_t requests_sent;
+    uint32_t acks_received;
+} dhcp_client_telemetry_t;
+
+#if defined(__riscv)
+#define DHCP_FLASH_TEXT __attribute__((section(".flash.text")))
+#else
+#define DHCP_FLASH_TEXT
+#endif
+
+/* ========================================================================= */
 /* Public API Declarations                                                   */
 /* ========================================================================= */
 dhcp_status_t dhcp_init(void);
 dhcp_status_t dhcp_process_packet(const uint8_t *eth_frame, const uint8_t *payload, uint16_t len);
-dhcp_status_t dns_process_packet(const uint8_t *eth_frame, const uint8_t *payload, uint16_t len);
+dhcp_status_t dns_process_packet(const uint8_t *eth_frame, const uint8_t *payload, uint16_t len) DHCP_FLASH_TEXT;
 dhcp_status_t dhcp_get_telemetry(dhcp_telemetry_t *out_telemetry);
 void dhcp_release_lease(const uint8_t *mac);
 const dhcp_lease_t *dhcp_get_lease(uint32_t index);
 
+/* DHCP Client APIs */
+dhcp_status_t dhcp_client_init(void) DHCP_FLASH_TEXT;
+dhcp_status_t dhcp_client_start(void) DHCP_FLASH_TEXT;
+dhcp_status_t dhcp_client_stop(void) DHCP_FLASH_TEXT;
+dhcp_status_t dhcp_client_process_packet(const uint8_t *eth_frame, const uint8_t *payload, uint16_t len) DHCP_FLASH_TEXT;
+dhcp_client_state_t dhcp_client_get_state(void) DHCP_FLASH_TEXT;
+dhcp_status_t dhcp_client_get_telemetry(dhcp_client_telemetry_t *out_telem) DHCP_FLASH_TEXT;
+void dhcp_client_set_static_fallback(uint32_t ip, uint32_t netmask, uint32_t gateway, uint32_t dns) DHCP_FLASH_TEXT;
+
 #endif /* IRON_V_DHCP_H */
+

@@ -14,6 +14,7 @@
 #include "wifi.h"
 #include "string.h"
 #include "speedtest.h"
+#include "mdns.h"
 
 #if defined(__riscv)
 #include "systimer.h"
@@ -684,9 +685,17 @@ net_status_t net_input(const uint8_t *frame, uint16_t len)
                     {
                         dhcp_process_packet(frame, payload, payload_len);
                     }
+                    else if (dest_port == DHCP_CLIENT_PORT)
+                    {
+                        dhcp_client_process_packet(frame, payload, payload_len);
+                    }
                     else if (dest_port == DNS_SERVER_PORT)
                     {
                         dns_process_packet(frame, payload, payload_len);
+                    }
+                    else if (dest_port == MDNS_PORT)
+                    {
+                        mdns_process_packet(frame, payload, payload_len);
                     }
                     else if (dest_port == SPEEDTEST_DEFAULT_PORT)
                     {
@@ -716,17 +725,30 @@ net_status_t net_send_udp(uint32_t dest_ip, uint16_t src_port, uint16_t dest_por
     }
 
     uint8_t dest_mac[ETH_ADDR_LEN];
-    net_status_t st = arp_lookup(dest_ip, dest_mac);
-    if (st != NET_OK)
+    if (dest_ip == MDNS_MULTICAST_IPV4)
     {
-        /* If destination IP is on local subnet, fail; else look up gateway */
-        st = arp_lookup(s_net_config.gateway, dest_mac);
+        dest_mac[0] = MDNS_MULTICAST_MAC_0;
+        dest_mac[1] = MDNS_MULTICAST_MAC_1;
+        dest_mac[2] = MDNS_MULTICAST_MAC_2;
+        dest_mac[3] = MDNS_MULTICAST_MAC_3;
+        dest_mac[4] = MDNS_MULTICAST_MAC_4;
+        dest_mac[5] = MDNS_MULTICAST_MAC_5;
+    }
+    else
+    {
+        net_status_t st = arp_lookup(dest_ip, dest_mac);
         if (st != NET_OK)
         {
-            /* Broadcast MAC as fallback */
-            memset(dest_mac, 0xFF, ETH_ADDR_LEN);
+            /* If destination IP is on local subnet, fail; else look up gateway */
+            st = arp_lookup(s_net_config.gateway, dest_mac);
+            if (st != NET_OK)
+            {
+                /* Broadcast MAC as fallback */
+                memset(dest_mac, 0xFF, ETH_ADDR_LEN);
+            }
         }
     }
+
 
     uint16_t total_frame_len = (uint16_t)(ETH_HDR_LEN + IPV4_MIN_HDR_LEN + UDP_HDR_LEN + len);
     if (total_frame_len > NET_MAX_FRAME_SIZE)

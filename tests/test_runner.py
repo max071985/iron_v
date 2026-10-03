@@ -1449,6 +1449,68 @@ def run_suite():
         t41_pass
     )
 
+    # TEST 42: Bare-Metal Wi-Fi Station (STA) WPA2-PSK Client & mDNS Linkage (Task 8.2)
+    total += 1
+    wpa2_sta_flash_syms = [
+        "wpa2_client_init",
+        "wpa2_client_configure",
+        "wpa2_client_start",
+        "wpa2_client_stop",
+        "wpa2_client_get_state",
+        "wpa2_client_is_in_4way",
+        "wpa2_client_is_authenticated",
+        "wpa2_client_get_telemetry",
+        "wpa2_client_rx_eapol",
+        "wpa2_client_on_connected",
+        "wpa2_client_on_disconnected",
+        "wpa2_client_handover",
+        "wpa2_crypto_pbkdf2_sha1",
+        "wpa2_crypto_prf512",
+        "wpa2_crypto_compute_mic",
+        "wpa2_crypto_aes_unwrap",
+        "wpa2_crypto_aes_wrap",
+        "wpa2_client_get_ptk",
+        "wpa2_client_print_status",
+        "wpa2_state_to_str",
+        "mdns_init",
+        "mdns_start",
+        "mdns_stop",
+        "mdns_is_active",
+        "mdns_get_hostname",
+        "mdns_set_hostname",
+        "mdns_process_packet",
+        "mdns_announce",
+        "mdns_get_telemetry",
+        "mdns_print_status",
+        "wifi_start_sta",
+        "wifi_stop_sta",
+        "wifi_is_sta_connected",
+        "wifi_sta_get_bssid",
+        "dhcp_client_init",
+        "dhcp_client_start",
+        "dhcp_client_stop",
+        "dhcp_client_process_packet",
+        "dhcp_client_get_state",
+        "dhcp_client_get_telemetry",
+        "dhcp_client_set_static_fallback",
+    ]
+    found_wpa2_syms = [s for s in wpa2_sta_flash_syms if s in symbols]
+    all_wpa2_found = len(found_wpa2_syms) == len(wpa2_sta_flash_syms)
+    all_wpa2_flash_ok = all(
+        (symbols[s]["value"] >= 0x42000000 and symbols[s]["value"] < 0x42800000)
+        for s in wpa2_sta_flash_syms if s in symbols
+    )
+    t42_pass = all_wpa2_found and all_wpa2_flash_ok
+    t42_actual = f"Found {len(found_wpa2_syms)}/{len(wpa2_sta_flash_syms)} symbols in Flash XIP (FlashXIP={all_wpa2_flash_ok})"
+    passed += print_result_line(
+        total,
+        "Wi-Fi Station (STA) WPA2-PSK Client & mDNS Linkage",
+        "Verify 802.11i 4-way handshake, PBKDF2/PRF/AES unwrap, DHCP client & mDNS symbols allocated in Flash XIP",
+        f"All {len(wpa2_sta_flash_syms)} WPA2 STA & mDNS symbols properly linked in Flash XIP (.flash.text)",
+        t42_actual,
+        t42_pass
+    )
+
     print("\n" + "=" * 70)
     print("                       TEST SUITE SUMMARY                             ")
     print("=" * 70)

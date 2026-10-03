@@ -42,6 +42,8 @@
 #include "ota.h"
 #include "nvs.h"
 #include "provisioning.h"
+#include "wpa2_client.h"
+#include "mdns.h"
 
 
 /* ========================================================================= */
@@ -256,6 +258,7 @@ void FLASH_TEXT_ATTR shell_print_help(void)
     console_puts("  ota [status|partitions|switch|rollback|mark-valid|verify] - Dual-slot Flash OTA upgrade & rollback\r\n");
     console_puts("  nvs [status|list|get|set|erase|format] - Non-Volatile Flash Key-Value storage\r\n");
     console_puts("  prov [status|scan|set|get|clear] - SoftAP Captive Portal Wi-Fi Provisioning Engine\r\n");
+    console_puts("  sta [status|connect|disconnect|mdns|eapol] - WPA2 Station & mDNS Client\r\n");
     console_puts("  seal                - Run Golden Master system-wide integrity seal audit\r\n");
     console_puts("  do-test             - Run full baseline validation test suite\r\n");
 }
@@ -3219,8 +3222,75 @@ void FLASH_TEXT_ATTR shell_execute(char *input_buffer)
             console_puts("Usage: prov [status|scan|set <ssid> [pass]|get|clear]\r\n");
         }
     }
+    else if (strncmp(input_buffer, "sta", 3) == 0 && (input_buffer[3] == ' ' || input_buffer[3] == '\0'))
+    {
+        char *subcmd = input_buffer + 3;
+        while (*subcmd == ' ') subcmd++;
+
+        if (*subcmd == '\0' || strncmp(subcmd, "status", 6) == 0)
+        {
+            wpa2_client_print_status();
+            mdns_print_status();
+        }
+        else if (strncmp(subcmd, "connect", 7) == 0)
+        {
+            char *args = subcmd + 7;
+            while (*args == ' ') args++;
+            char ssid[WPA2_MAX_SSID_LEN + 1U];
+            char pass[WPA2_MAX_PASS_LEN + 1U];
+            memset(ssid, 0, sizeof(ssid));
+            memset(pass, 0, sizeof(pass));
+
+            size_t sidx = 0U;
+            while (*args != ' ' && *args != '\0' && sidx < sizeof(ssid) - 1U)
+            {
+                ssid[sidx++] = *args++;
+            }
+            ssid[sidx] = '\0';
+            while (*args == ' ') args++;
+
+            size_t pidx = 0U;
+            while (*args != ' ' && *args != '\0' && pidx < sizeof(pass) - 1U)
+            {
+                pass[pidx++] = *args++;
+            }
+            pass[pidx] = '\0';
+
+            if (ssid[0] != '\0')
+            {
+                console_puts("Initiating WPA2-PSK connection to '");
+                console_puts(ssid);
+                console_puts("'...\r\n");
+                wpa2_client_handover(ssid, pass);
+            }
+            else
+            {
+                console_puts("Usage: sta connect <ssid> [passphrase]\r\n");
+            }
+        }
+        else if (strncmp(subcmd, "disconnect", 10) == 0)
+        {
+            wpa2_client_stop();
+            wifi_stop_sta();
+            console_puts("Station disconnected.\r\n");
+        }
+        else if (strncmp(subcmd, "mdns", 4) == 0)
+        {
+            mdns_announce();
+            mdns_print_status();
+        }
+        else if (strncmp(subcmd, "eapol", 5) == 0)
+        {
+            wpa2_client_print_status();
+        }
+        else
+        {
+            console_puts("Usage: sta [status|connect <ssid> [pass]|disconnect|mdns|eapol]\r\n");
+        }
+    }
     else
     {
+
         s_shell_telemetry.unknown_commands++;
         console_puts("Unknown command. Type 'help' for available commands.\r\n");
     }

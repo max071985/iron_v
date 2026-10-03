@@ -49,6 +49,10 @@ static char s_wifi_ap_ssid[WIFI_MAX_SSID_LEN + 1U] = {0};
 static uint8_t s_wifi_ap_channel = WIFI_DEFAULT_AP_CHANNEL;
 static bool s_wifi_cca_enabled = true;
 
+/* Station Subsystem Tracking (Task 8.2) */
+static bool s_wifi_sta_connected = false;
+static uint8_t s_wifi_sta_bssid[WIFI_MAC_ADDR_LEN] = {0};
+
 /* ========================================================================= */
 /* Static Storage: Pre-Allocated Packet Descriptor Rings in HP SRAM DRAM    */
 /* Zero dynamic heap memory calls permitted (AGENTS.md execution standard)   */
@@ -299,10 +303,12 @@ void wifi_handle_vendor_event(int32_t event_id, void *event_data)
     {
         console_puts("[Wi-Fi] Event: STA_CONNECTED\r\n");
         s_wifi_telemetry.state = WIFI_STATE_CONNECTED;
+        s_wifi_sta_connected = true;
         if (event_data != NULL)
         {
             const wifi_event_sta_connected_t *conn = (const wifi_event_sta_connected_t *)event_data;
             s_wifi_channel = conn->channel;
+            memcpy(s_wifi_sta_bssid, conn->bssid, WIFI_MAC_ADDR_LEN);
             console_puts("[Wi-Fi] Associated to AP on channel ");
             put_dec((uint32_t)conn->channel);
             console_puts("\r\n");
@@ -312,6 +318,7 @@ void wifi_handle_vendor_event(int32_t event_id, void *event_data)
     else if (event_id == WIFI_EVENT_STA_DISCONNECTED)
     {
         console_puts("[Wi-Fi] Event: STA_DISCONNECTED");
+        s_wifi_sta_connected = false;
         if (event_data != NULL)
         {
             const wifi_event_sta_disconnected_t *disconn = (const wifi_event_sta_disconnected_t *)event_data;
@@ -1322,3 +1329,89 @@ bool wifi_is_cca_enabled(void)
     return s_wifi_cca_enabled;
 #endif
 }
+
+/* ========================================================================= */
+/* Wi-Fi Station (STA) Subsystem (Task 8.2)                                  */
+/* ========================================================================= */
+
+WIFI_FLASH_TEXT
+wifi_status_t wifi_start_sta(const char *ssid, const char *password)
+{
+    if (ssid == NULL)
+    {
+        return WIFI_ERR_INVALID_ARG;
+    }
+
+    /* 1. Stop SoftAP if active */
+    if (s_wifi_ap_running)
+    {
+        wifi_stop_ap();
+    }
+
+#if !defined(__riscv)
+    (void)password;
+#endif
+
+#if defined(__riscv)
+    if (s_vendor_wifi_inited)
+    {
+        esp_wifi_set_mode(WIFI_MODE_STA);
+
+        wifi_config_t sta_cfg;
+        memset(&sta_cfg, 0, sizeof(sta_cfg));
+        strncpy((char *)sta_cfg.sta.ssid, ssid, sizeof(sta_cfg.sta.ssid) - 1);
+        if (password != NULL)
+        {
+            strncpy((char *)sta_cfg.sta.password, password, sizeof(sta_cfg.sta.password) - 1);
+        }
+        sta_cfg.sta.scan_method = WIFI_FAST_SCAN;
+        sta_cfg.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+        sta_cfg.sta.threshold.rssi = WIFI_DEFAULT_SCAN_RSSI_THRESHOLD;
+        sta_cfg.sta.threshold.authmode = (password != NULL && strlen(password) >= 8) ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+
+        esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
+
+        if (s_wifi_telemetry.state != WIFI_STATE_ACTIVE && s_wifi_telemetry.state != WIFI_STATE_CONNECTED)
+        {
+            esp_wifi_start();
+        }
+        esp_wifi_connect();
+    }
+#endif
+
+    s_wifi_telemetry.state = WIFI_STATE_ACTIVE;
+    s_wifi_sta_connected = false;
+    return WIFI_OK;
+}
+
+WIFI_FLASH_TEXT
+wifi_status_t wifi_stop_sta(void)
+{
+#if defined(__riscv)
+    if (s_vendor_wifi_inited)
+    {
+        esp_wifi_disconnect();
+    }
+#endif
+    s_wifi_telemetry.state = WIFI_STATE_IDLE;
+    s_wifi_sta_connected = false;
+    return WIFI_OK;
+}
+
+WIFI_FLASH_TEXT
+bool wifi_is_sta_connected(void)
+{
+    return s_wifi_sta_connected || (s_wifi_telemetry.state == WIFI_STATE_CONNECTED);
+}
+
+WIFI_FLASH_TEXT
+wifi_status_t wifi_sta_get_bssid(uint8_t *out_bssid)
+{
+    if (out_bssid == NULL)
+    {
+        return WIFI_ERR_INVALID_ARG;
+    }
+    memcpy(out_bssid, s_wifi_sta_bssid, WIFI_MAC_ADDR_LEN);
+    return WIFI_OK;
+}
+

@@ -37,6 +37,9 @@
 #include "ota.h"
 #include "nvs.h"
 #include "provisioning.h"
+#include "dhcp.h"
+#include "wpa2_client.h"
+#include "mdns.h"
 
 /* Route all test output to unified dual-console multiplexer */
 #define uart_puts console_puts
@@ -3539,6 +3542,195 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
 
     if (t42_pass) passed_tests++;
     print_result(t42_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 43: Bare-Metal Wi-Fi Station (STA) WPA2-PSK Client & Home LAN Join */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(43, "Bare-Metal Wi-Fi Station (STA) WPA2-PSK Client & Home LAN Join",
+                      "Verify IEEE 802.11i 4-way handshake, PBKDF2/PRF512/AES unwrap, DHCP client & mDNS responder");
+
+    wdt_feed();
+    lp_wdt_feed();
+
+    /* 1. Cryptographic Test Vectors */
+    uint8_t t43_pmk[WPA2_PMK_LEN];
+    const uint8_t t43_exp_pmk[WPA2_PMK_LEN] = {
+        0xf4, 0x2c, 0x6f, 0xc5, 0x2d, 0xf0, 0xeb, 0xef,
+        0x9e, 0xbb, 0x4b, 0x90, 0xb3, 0x8a, 0x5f, 0x90,
+        0x2e, 0x83, 0xfe, 0x1b, 0x13, 0x5a, 0x70, 0xe2,
+        0x3a, 0xed, 0x76, 0x2e, 0x97, 0x10, 0xa1, 0x2e
+    };
+    int pbkdf2_ok = (wpa2_crypto_pbkdf2_sha1("password", "IEEE", 4096, t43_pmk) == WPA2_OK) &&
+                    (memcmp(t43_pmk, t43_exp_pmk, WPA2_PMK_LEN) == 0);
+
+    wdt_feed();
+    lp_wdt_feed();
+
+    /* RFC 3394 AES Key Wrap & Unwrap */
+    const uint8_t t43_kek[16] = {
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f
+    };
+    const uint8_t t43_plain[16] = {
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+        0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff
+    };
+    uint8_t t43_wrapped[24];
+    uint16_t t43_wrapped_len = 0U;
+    uint8_t t43_unwrap[32];
+    uint16_t t43_unwrap_len = 0U;
+    int aes_wrap_ok = (wpa2_crypto_aes_wrap(t43_kek, t43_plain, 16, t43_wrapped, &t43_wrapped_len) == WPA2_OK) &&
+                      (t43_wrapped_len == 24U) &&
+                      (wpa2_crypto_aes_unwrap(t43_kek, t43_wrapped, t43_wrapped_len, t43_unwrap, &t43_unwrap_len) == WPA2_OK) &&
+                      (t43_unwrap_len == 16U) &&
+                      (memcmp(t43_unwrap, t43_plain, 16) == 0);
+
+    /* PRF-512 & MIC */
+    const uint8_t t43_sta_mac[6] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55};
+    const uint8_t t43_ap_bssid[6] = {0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb};
+    const uint8_t t43_snonce[32] = {
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+        0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+        0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
+        0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f
+    };
+    const uint8_t t43_anonce[32] = {
+        0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
+        0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f,
+        0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47,
+        0x48, 0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e, 0x4f
+    };
+    wpa2_ptk_t t43_ptk;
+    int prf_ok = (wpa2_crypto_prf512(t43_pmk, t43_sta_mac, t43_ap_bssid, t43_snonce, t43_anonce, &t43_ptk) == WPA2_OK);
+
+    /* 2. 802.11i 4-Way Handshake Full Exchange */
+    int wpa_init_ok = (wpa2_client_init() == WPA2_OK) &&
+                      (wpa2_client_configure("IEEE", "password") == WPA2_OK);
+    wpa2_client_on_connected(t43_ap_bssid);
+
+    /* Message 1 */
+    uint8_t t43_m1[sizeof(eapol_ethernet_hdr_t) + sizeof(eapol_key_header_t)];
+    memset(t43_m1, 0, sizeof(t43_m1));
+    eapol_ethernet_hdr_t *m1_eth = (eapol_ethernet_hdr_t *)t43_m1;
+    memcpy(m1_eth->dest_mac, t43_sta_mac, 6);
+    memcpy(m1_eth->src_mac, t43_ap_bssid, 6);
+    m1_eth->ethertype = NET_HTONS(ETHERTYPE_EAPOL);
+    m1_eth->version = EAPOL_VERSION_1;
+    m1_eth->type = EAPOL_TYPE_KEY;
+    m1_eth->length = NET_HTONS(sizeof(eapol_key_header_t));
+
+    eapol_key_header_t *m1_key = (eapol_key_header_t *)(t43_m1 + sizeof(eapol_ethernet_hdr_t));
+    m1_key->descriptor_type = EAPOL_DESC_TYPE_RSN;
+    m1_key->key_info = NET_HTONS(WPA2_MSG1_KEY_INFO_NOMINAL);
+    m1_key->key_length = NET_HTONS(WPA2_TK_LEN);
+    m1_key->replay_counter[7] = 1U;
+    memcpy(m1_key->key_nonce, t43_anonce, WPA2_NONCE_LEN);
+
+    int m1_ok = (wpa2_client_rx_eapol(t43_ap_bssid, t43_m1, sizeof(t43_m1)) == WPA2_OK) &&
+                (wpa2_client_get_state() == WPA2_STATE_4WAY_M2_SENT);
+
+    /* Message 3 */
+    wpa2_ptk_t act_ptk;
+    wpa2_client_get_ptk(&act_ptk);
+    uint8_t t43_wrapped_gtk[24];
+    uint16_t t43_wgtk_len = 0U;
+    wpa2_crypto_aes_wrap(act_ptk.kek, t43_plain, 16, t43_wrapped_gtk, &t43_wgtk_len);
+
+    uint8_t t43_m3[sizeof(eapol_ethernet_hdr_t) + sizeof(eapol_key_header_t) + 24U];
+    memset(t43_m3, 0, sizeof(t43_m3));
+    eapol_ethernet_hdr_t *m3_eth = (eapol_ethernet_hdr_t *)t43_m3;
+    memcpy(m3_eth->dest_mac, t43_sta_mac, 6);
+    memcpy(m3_eth->src_mac, t43_ap_bssid, 6);
+    m3_eth->ethertype = NET_HTONS(ETHERTYPE_EAPOL);
+    m3_eth->version = EAPOL_VERSION_1;
+    m3_eth->type = EAPOL_TYPE_KEY;
+    m3_eth->length = NET_HTONS((uint16_t)(sizeof(eapol_key_header_t) + 24U));
+
+    eapol_key_header_t *m3_key = (eapol_key_header_t *)(t43_m3 + sizeof(eapol_ethernet_hdr_t));
+    m3_key->descriptor_type = EAPOL_DESC_TYPE_RSN;
+    m3_key->key_info = NET_HTONS(WPA2_MSG3_KEY_INFO_NOMINAL);
+    m3_key->key_length = NET_HTONS(WPA2_TK_LEN);
+    m3_key->replay_counter[7] = 2U;
+    memcpy(m3_key->key_nonce, t43_anonce, WPA2_NONCE_LEN);
+    m3_key->key_data_length = NET_HTONS(24U);
+    memcpy(t43_m3 + sizeof(eapol_ethernet_hdr_t) + sizeof(eapol_key_header_t), t43_wrapped_gtk, 24U);
+
+    wpa2_crypto_compute_mic(act_ptk.kck, t43_m3, sizeof(t43_m3), m3_key->key_mic);
+
+    int m3_ok = (wpa2_client_rx_eapol(t43_ap_bssid, t43_m3, sizeof(t43_m3)) == WPA2_OK) &&
+                wpa2_client_is_authenticated();
+
+    /* 3. DHCP Client */
+    dhcp_client_init();
+    dhcp_client_set_static_fallback(0xC0A80164U, 0xFFFFFF00U, 0xC0A80101U, 0x08080808U);
+    dhcp_client_telemetry_t dtelem;
+    int dhcp_ok = (dhcp_client_get_telemetry(&dtelem) == DHCP_OK) &&
+                  (dtelem.assigned_ip == 0xC0A80164U) &&
+                  (dhcp_client_get_state() == DHCP_CLIENT_STATE_STATIC);
+
+    /* 4. mDNS Responder */
+    mdns_init();
+    mdns_set_hostname("iron-v");
+    int mdns_ann_ok = (mdns_announce() == MDNS_OK);
+
+    /* mDNS Query Match */
+    uint8_t t43_mdns[128];
+    memset(t43_mdns, 0, sizeof(t43_mdns));
+    dns_header_t *dhdr = (dns_header_t *)t43_mdns;
+    dhdr->qdcount = NET_HTONS(1U);
+    size_t q_idx = sizeof(dns_header_t);
+    t43_mdns[q_idx++] = 6U;
+    memcpy(&t43_mdns[q_idx], "iron-v", 6U);
+    q_idx += 6U;
+    t43_mdns[q_idx++] = 5U;
+    memcpy(&t43_mdns[q_idx], "local", 5U);
+    q_idx += 5U;
+    t43_mdns[q_idx++] = 0U;
+    t43_mdns[q_idx++] = 0U;
+    t43_mdns[q_idx++] = 1U;
+    t43_mdns[q_idx++] = 0U;
+    t43_mdns[q_idx++] = 1U;
+
+    uint8_t dummy_eth[14] = {0};
+    int mdns_query_ok = (mdns_process_packet(dummy_eth, t43_mdns, (uint16_t)q_idx) == MDNS_OK);
+
+    wdt_feed();
+    lp_wdt_feed();
+
+    int t43_pass = pbkdf2_ok && aes_wrap_ok && prf_ok && wpa_init_ok && m1_ok && m3_ok && dhcp_ok && mdns_ann_ok && mdns_query_ok;
+
+    uart_puts("  Expected:    PBKDF2=1, AESWrap=1, PRF=1, EAPOL_M1=1, EAPOL_M3=1, DHCP=1, mDNS=1\r\n");
+    uart_puts("  Actual:      PBKDF2=");
+    put_dec(pbkdf2_ok);
+    uart_puts(", AESWrap=");
+    put_dec(aes_wrap_ok);
+    uart_puts(", PRF=");
+    put_dec(prf_ok);
+    uart_puts(", EAPOL_M1=");
+    put_dec(m1_ok);
+    uart_puts(", EAPOL_M3=");
+    put_dec(m3_ok);
+    uart_puts(", DHCP=");
+    put_dec(dhcp_ok);
+    uart_puts(", mDNS=");
+    put_dec(mdns_ann_ok && mdns_query_ok);
+    uart_puts("\r\n");
+
+    wpa2_telemetry_t wtelem;
+    wpa2_client_get_telemetry(&wtelem);
+    uart_puts("  Diag: State=");
+    uart_puts(wpa2_state_to_str(wpa2_client_get_state()));
+    uart_puts(", Handshakes=");
+    put_dec(wtelem.handshakes_completed);
+    uart_puts(", AssignedIP=");
+    put_hex(dtelem.assigned_ip);
+    uart_puts(", mDNSHost='");
+    uart_puts(mdns_get_hostname());
+    uart_puts("'\r\n");
+
+    if (t43_pass) passed_tests++;
+    print_result(t43_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

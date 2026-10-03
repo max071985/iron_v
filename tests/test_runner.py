@@ -1366,6 +1366,48 @@ def run_suite():
         t39_pass
     )
 
+    # TEST 40: Production Hardening, NVS Storage Engine & Golden Master Linkage (Task 7.4)
+    total += 1
+    nvs_iram_syms = [
+        "nvs_init",
+        "nvs_set_u32",
+        "nvs_get_u32",
+        "nvs_set_str",
+        "nvs_get_str",
+        "nvs_set_blob",
+        "nvs_get_blob",
+        "nvs_erase_key",
+        "nvs_erase_all",
+        "nvs_get_stats",
+        "golden_master_verify",
+    ]
+    nvs_flash_syms = [
+        "nvs_print_stats",
+        "nvs_print_keys",
+        "golden_master_print_report",
+    ]
+    all_nvs_syms = nvs_iram_syms + nvs_flash_syms
+    found_nvs_syms = [s for s in all_nvs_syms if s in symbols]
+    all_nvs_found = len(found_nvs_syms) == len(all_nvs_syms)
+    all_nvs_iram_ok = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        for s in nvs_iram_syms if s in symbols
+    )
+    all_nvs_flash_ok = all(
+        (symbols[s]["value"] >= 0x42000000 and symbols[s]["value"] < 0x42800000)
+        for s in nvs_flash_syms if s in symbols
+    )
+    t40_pass = all_nvs_found and all_nvs_iram_ok and all_nvs_flash_ok
+    t40_actual = f"Found {len(found_nvs_syms)}/{len(all_nvs_syms)} symbols (IRAM={all_nvs_iram_ok}, FlashXIP={all_nvs_flash_ok})"
+    passed += print_result_line(
+        total,
+        "Production Hardening, NVS Storage Engine & Golden Master Linkage",
+        "Verify nvs_init, get/set/erase, stats in IRAM and visualizers in Flash XIP (.flash.text)",
+        f"All {len(all_nvs_syms)} NVS and Golden Master symbols properly allocated across IRAM and Flash XIP",
+        t40_actual,
+        t40_pass
+    )
+
     print("\n" + "=" * 70)
     print("                       TEST SUITE SUMMARY                             ")
     print("=" * 70)

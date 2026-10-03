@@ -49,6 +49,7 @@
 #include "efuse.h"
 #include "soak.h"
 #include "ota.h"
+#include "nvs.h"
 
 /* Host test stubs for hardware-specific functions */
 void wdt_feed(void)
@@ -3171,6 +3172,77 @@ static void test_ota_subsystem(void)
     TEST_ASSERT(ota_verify_image(OTA_SLOT_INVALID, &hdr) == OTA_ERR_INVALID_PARAM, "Verify rejects invalid slot");
 }
 
+static void test_nvs_subsystem(void)
+{
+    printf("  [TEST] Production Hardening, NVS Storage Engine & Golden Master (Task 7.4)...\n");
+
+    /* 1. Lifecycle and Initialization */
+    nvs_mock_reset();
+    TEST_ASSERT(nvs_init() == NVS_OK, "nvs_init initializes cleanly");
+
+    /* 2. Key-Value Storage & Retrieval (u32) */
+    TEST_ASSERT(nvs_set_u32("boot_count", 42U) == NVS_OK, "Set u32 key 'boot_count' succeeds");
+    uint32_t val_u32 = 0U;
+    TEST_ASSERT(nvs_get_u32("boot_count", &val_u32) == NVS_OK, "Get u32 key 'boot_count' succeeds");
+    TEST_ASSERT(val_u32 == 42U, "Read value matches written value (42)");
+
+    /* 3. Key-Value Storage & Retrieval (string) */
+    TEST_ASSERT(nvs_set_str("wifi_ssid", "IronV-SecureNet") == NVS_OK, "Set string key 'wifi_ssid' succeeds");
+    char str_buf[64];
+    TEST_ASSERT(nvs_get_str("wifi_ssid", str_buf, sizeof(str_buf)) == NVS_OK, "Get string key 'wifi_ssid' succeeds");
+    TEST_ASSERT(strcmp(str_buf, "IronV-SecureNet") == 0, "String value matches expected SSID");
+
+    TEST_ASSERT(nvs_set_str("wifi_pass", "SuperSecretPassphrase123") == NVS_OK, "Set string key 'wifi_pass' succeeds");
+    TEST_ASSERT(nvs_get_str("wifi_pass", str_buf, sizeof(str_buf)) == NVS_OK, "Get string key 'wifi_pass' succeeds");
+    TEST_ASSERT(strcmp(str_buf, "SuperSecretPassphrase123") == 0, "Passphrase matches expected string");
+
+    /* 4. Binary Blob Storage & Retrieval */
+    uint8_t blob_in[16] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    uint8_t blob_out[16];
+    size_t out_len = 0U;
+    TEST_ASSERT(nvs_set_blob("device_uuid", blob_in, sizeof(blob_in)) == NVS_OK, "Set blob key succeeds");
+    TEST_ASSERT(nvs_get_blob("device_uuid", blob_out, sizeof(blob_out), &out_len) == NVS_OK, "Get blob key succeeds");
+    TEST_ASSERT(out_len == sizeof(blob_in), "Blob length matches");
+    TEST_ASSERT(memcmp(blob_in, blob_out, sizeof(blob_in)) == 0, "Blob payload matches byte-for-byte");
+
+    /* 5. Key Update / Overwrite */
+    TEST_ASSERT(nvs_set_u32("boot_count", 43U) == NVS_OK, "Overwriting existing key succeeds");
+    TEST_ASSERT(nvs_get_u32("boot_count", &val_u32) == NVS_OK, "Get updated u32 succeeds");
+    TEST_ASSERT(val_u32 == 43U, "Updated value reflects new value (43)");
+
+    /* 6. Key Deletion / Erase */
+    TEST_ASSERT(nvs_erase_key("device_uuid") == NVS_OK, "Erase key 'device_uuid' succeeds");
+    TEST_ASSERT(nvs_get_blob("device_uuid", blob_out, sizeof(blob_out), &out_len) == NVS_ERR_NOT_FOUND, "Erased key returns NVS_ERR_NOT_FOUND");
+    TEST_ASSERT(nvs_erase_key("nonexistent_key") == NVS_ERR_NOT_FOUND, "Erasing non-existent key returns NVS_ERR_NOT_FOUND");
+
+    /* 7. Statistics & Geometry Tracking */
+    nvs_stats_t st;
+    TEST_ASSERT(nvs_get_stats(&st) == NVS_OK, "nvs_get_stats succeeds");
+    TEST_ASSERT(st.total_keys == 3U, "Stats report correct active key count (boot_count, wifi_ssid, wifi_pass)");
+    TEST_ASSERT(st.used_bytes > 0U && st.free_bytes < NVS_FLASH_SECTOR_SIZE, "Used and free bytes correctly partitioned");
+
+    /* 8. Error Guards & Parameter Validation */
+    TEST_ASSERT(nvs_set_str(NULL, "val") == NVS_ERR_INVALID_PARAM, "Reject NULL key");
+    TEST_ASSERT(nvs_set_str("key", NULL) == NVS_ERR_INVALID_PARAM, "Reject NULL value");
+    TEST_ASSERT(nvs_get_str(NULL, str_buf, sizeof(str_buf)) == NVS_ERR_INVALID_PARAM, "Get rejects NULL key");
+    TEST_ASSERT(nvs_get_str("key", NULL, sizeof(str_buf)) == NVS_ERR_INVALID_PARAM, "Get rejects NULL dest");
+    TEST_ASSERT(nvs_get_stats(NULL) == NVS_ERR_INVALID_PARAM, "Get stats rejects NULL report");
+
+    /* 9. Golden Master System Health & Sealing Audit */
+    ota_mock_reset();
+    golden_master_report_t gm_rep;
+    bool gm_ok = golden_master_verify(&gm_rep);
+    TEST_ASSERT(gm_ok, "Golden Master integrity verification reports PASS");
+    TEST_ASSERT(gm_rep.golden_seal_magic == GOLDEN_MASTER_MAGIC, "Golden Seal magic matches 0x5A5A5A5A");
+    TEST_ASSERT(gm_rep.memory_cartography_ok, "Memory cartography conforms to Harvard spec");
+    TEST_ASSERT(gm_rep.watchdogs_ok, "Watchdog supervisor status validated");
+    TEST_ASSERT(gm_rep.efuse_security_ok, "eFuse security seals verified");
+    TEST_ASSERT(gm_rep.rf_coexistence_ok, "RF baseband coexistence verified");
+    TEST_ASSERT(gm_rep.ota_partitions_ok, "OTA partitions & boot image header verified");
+    TEST_ASSERT(gm_rep.nvs_storage_ok, "NVS storage verified");
+    TEST_ASSERT(gm_rep.total_assertions_passed >= 6U, "All 6 subsystem audits pass");
+}
+
 /* ========================================================================= */
 /* Phase 0-3 Host Test Hardening: Cross-Module Integration & Edge Case Tests */
 /* ========================================================================= */
@@ -4297,6 +4369,7 @@ int main(void)
     test_efuse_subsystem();
     test_soak_anti_starvation_subsystem();
     test_ota_subsystem();
+    test_nvs_subsystem();
 
     /* Hardened cross-module integration and edge case tests */
     test_coroutine_systimer_dpc_integration();

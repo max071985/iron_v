@@ -40,6 +40,7 @@
 #include "efuse.h"
 #include "soak.h"
 #include "ota.h"
+#include "nvs.h"
 
 
 /* ========================================================================= */
@@ -252,6 +253,8 @@ void FLASH_TEXT_ATTR shell_print_help(void)
     console_puts("  efuse [status|summary|security|mac] - Silicon eFuse controller & security seal state\r\n");
     console_puts("  soak [status|audit|cycles] - 24/7 stability soak, memory leak audit & anti-starvation telemetry\r\n");
     console_puts("  ota [status|partitions|switch|rollback|mark-valid|verify] - Dual-slot Flash OTA upgrade & rollback\r\n");
+    console_puts("  nvs [status|list|get|set|erase|format] - Non-Volatile Flash Key-Value storage\r\n");
+    console_puts("  seal                - Run Golden Master system-wide integrity seal audit\r\n");
     console_puts("  do-test             - Run full baseline validation test suite\r\n");
 }
 
@@ -601,6 +604,17 @@ void FLASH_TEXT_ATTR shell_print_info(void)
     console_puts("), Switches: ");
     put_dec(ota_rep.total_switches);
     console_puts("\r\n");
+
+    nvs_stats_t nvs_st;
+    nvs_get_stats(&nvs_st);
+    console_puts(" NVS:     Keys: ");
+    put_dec(nvs_st.total_keys);
+    console_puts(", Used: ");
+    put_dec(nvs_st.used_bytes);
+    console_puts(" B, Seal: ");
+    golden_master_report_t gm_rep;
+    bool gm_ok = golden_master_verify(&gm_rep);
+    console_puts(gm_ok ? "CERTIFIED (0x5A5A5A5A)\r\n" : "UNCERTIFIED\r\n");
     console_puts("========================================\r\n");
 }
 
@@ -798,6 +812,160 @@ void FLASH_TEXT_ATTR shell_execute(char *input_buffer)
         {
             ota_print_status();
         }
+    }
+    else if (strncmp(input_buffer, "nvs", 3) == 0 && (input_buffer[3] == ' ' || input_buffer[3] == '\0'))
+    {
+        char *p = input_buffer + 3;
+        skip_space(&p);
+
+        if (strncmp(p, "list", 4) == 0)
+        {
+            nvs_print_keys();
+        }
+        else if (strncmp(p, "format", 6) == 0)
+        {
+            nvs_status_t rc = nvs_erase_all();
+            if (rc == NVS_OK)
+            {
+                console_puts("NVS partition formatted successfully (all keys cleared).\r\n");
+            }
+            else
+            {
+                console_puts("Failed to format NVS: error ");
+                put_dec((uint32_t)(-rc));
+                console_puts("\r\n");
+            }
+        }
+        else if (strncmp(p, "get", 3) == 0)
+        {
+            p += 3;
+            skip_space(&p);
+            char key[NVS_KEY_MAX_LEN];
+            char *k = key;
+            while (*p && *p != ' ' && (size_t)(k - key) < sizeof(key) - 1)
+            {
+                *k++ = *p++;
+            }
+            *k = '\0';
+
+            char val_str[NVS_VAL_MAX_LEN];
+            nvs_status_t rc = nvs_get_str(key, val_str, sizeof(val_str));
+            if (rc == NVS_OK)
+            {
+                console_puts("NVS [");
+                console_puts(key);
+                console_puts("] = \"");
+                console_puts(val_str);
+                console_puts("\"\r\n");
+            }
+            else
+            {
+                uint32_t val_u32 = 0U;
+                rc = nvs_get_u32(key, &val_u32);
+                if (rc == NVS_OK)
+                {
+                    console_puts("NVS [");
+                    console_puts(key);
+                    console_puts("] = ");
+                    put_dec(val_u32);
+                    console_puts(" (0x");
+                    put_hex(val_u32);
+                    console_puts(")\r\n");
+                }
+                else
+                {
+                    console_puts("Key '");
+                    console_puts(key);
+                    console_puts("' not found in NVS.\r\n");
+                }
+            }
+        }
+        else if (strncmp(p, "set", 3) == 0)
+        {
+            p += 3;
+            skip_space(&p);
+            char key[NVS_KEY_MAX_LEN];
+            char *k = key;
+            while (*p && *p != ' ' && (size_t)(k - key) < sizeof(key) - 1)
+            {
+                *k++ = *p++;
+            }
+            *k = '\0';
+            skip_space(&p);
+
+            nvs_status_t rc;
+            if (*p == '"')
+            {
+                p++;
+                char val_str[NVS_VAL_MAX_LEN];
+                char *v = val_str;
+                while (*p && *p != '"' && (size_t)(v - val_str) < sizeof(val_str) - 1)
+                {
+                    *v++ = *p++;
+                }
+                *v = '\0';
+                rc = nvs_set_str(key, val_str);
+            }
+            else
+            {
+                uint32_t val_u32 = 0U;
+                char *temp_p = p;
+                if (parse_uint(&temp_p, &val_u32))
+                {
+                    rc = nvs_set_u32(key, val_u32);
+                }
+                else
+                {
+                    rc = nvs_set_str(key, p);
+                }
+            }
+
+            if (rc == NVS_OK)
+            {
+                console_puts("Key '");
+                console_puts(key);
+                console_puts("' stored successfully in NVS.\r\n");
+            }
+            else
+            {
+                console_puts("Failed to store key: error ");
+                put_dec((uint32_t)(-rc));
+                console_puts("\r\n");
+            }
+        }
+        else if (strncmp(p, "erase", 5) == 0)
+        {
+            p += 5;
+            skip_space(&p);
+            char key[NVS_KEY_MAX_LEN];
+            char *k = key;
+            while (*p && *p != ' ' && (size_t)(k - key) < sizeof(key) - 1)
+            {
+                *k++ = *p++;
+            }
+            *k = '\0';
+            nvs_status_t rc = nvs_erase_key(key);
+            if (rc == NVS_OK)
+            {
+                console_puts("Key '");
+                console_puts(key);
+                console_puts("' erased from NVS.\r\n");
+            }
+            else
+            {
+                console_puts("Key '");
+                console_puts(key);
+                console_puts("' not found.\r\n");
+            }
+        }
+        else
+        {
+            nvs_print_stats();
+        }
+    }
+    else if (strncmp(input_buffer, "seal", 4) == 0 || strncmp(input_buffer, "golden", 6) == 0)
+    {
+        golden_master_print_report();
     }
     else if (strncmp(input_buffer, "peek", 4) == 0 && (input_buffer[4] == ' ' || input_buffer[4] == '\0'))
     {

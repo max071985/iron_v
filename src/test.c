@@ -35,6 +35,7 @@
 #include "efuse.h"
 #include "soak.h"
 #include "ota.h"
+#include "nvs.h"
 
 /* Route all test output to unified dual-console multiplexer */
 #define uart_puts console_puts
@@ -3299,6 +3300,103 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
 
     if (t40_pass) passed_tests++;
     print_result(t40_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 41: Production Hardening, NVS Storage Engine & Golden Seal */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(41, "Production Hardening, NVS Storage Engine & Golden Master Seal",
+                      "Verify wear-leveled NVS key-value storage in 448 KB partition and audit 100% system health");
+
+    wdt_feed();
+    lp_wdt_feed();
+
+    /* 1. NVS Subsystem Initialization */
+    int nvs_init_ok = (nvs_init() == NVS_OK);
+
+    /* 2. Key-Value Storage & Retrieval (u32) */
+    uint32_t test_u32_in = 0x12345678U;
+    int set_u32_ok = (nvs_set_u32("test_u32", test_u32_in) == NVS_OK);
+    uint32_t test_u32_out = 0U;
+    int get_u32_ok = (nvs_get_u32("test_u32", &test_u32_out) == NVS_OK) && (test_u32_out == test_u32_in);
+
+    /* 3. Key-Value Storage & Retrieval (string) */
+    const char *test_str_in = "IronV-GoldenMaster";
+    int set_str_ok = (nvs_set_str("test_str", test_str_in) == NVS_OK);
+    char test_str_out[32];
+    memset(test_str_out, 0, sizeof(test_str_out));
+    int get_str_ok = (nvs_get_str("test_str", test_str_out, sizeof(test_str_out)) == NVS_OK) &&
+                     (strncmp(test_str_out, test_str_in, sizeof(test_str_out)) == 0);
+
+    /* 4. Key Erasure & Not-Found Guard */
+    int erase_ok = (nvs_erase_key("test_u32") == NVS_OK);
+    int not_found_ok = (nvs_get_u32("test_u32", &test_u32_out) == NVS_ERR_NOT_FOUND);
+
+    /* 5. NVS Geometry & Statistics Verification */
+    nvs_stats_t nvs_stats;
+    int stats_ok = (nvs_get_stats(&nvs_stats) == NVS_OK) &&
+                   (nvs_stats.total_keys >= 1U) &&
+                   (nvs_stats.used_bytes > 0U) &&
+                   (nvs_stats.free_bytes < NVS_FLASH_SECTOR_SIZE);
+
+    /* 6. Golden Master System Health & Sealing Audit */
+    golden_master_report_t gm_rep;
+    bool gm_pass = golden_master_verify(&gm_rep);
+    int gm_seal_ok = gm_pass &&
+                     (gm_rep.golden_seal_magic == GOLDEN_MASTER_MAGIC) &&
+                     gm_rep.memory_cartography_ok &&
+                     gm_rep.watchdogs_ok &&
+                     gm_rep.efuse_security_ok &&
+                     gm_rep.rf_coexistence_ok &&
+                     gm_rep.ota_partitions_ok &&
+                     gm_rep.nvs_storage_ok;
+
+    wdt_feed();
+    lp_wdt_feed();
+
+    int t41_pass = nvs_init_ok && set_u32_ok && get_u32_ok &&
+                   set_str_ok && get_str_ok && erase_ok && not_found_ok &&
+                   stats_ok && gm_seal_ok;
+
+    uart_puts("  Expected:    Init=1, SetU32=1, GetU32=1, SetStr=1, GetStr=1, Erase=1, Stats=1, GoldenSeal=0x5A5A5A5A\r\n");
+    uart_puts("  Actual:      Init=");
+    put_dec(nvs_init_ok);
+    uart_puts(", SetU32=");
+    put_dec(set_u32_ok);
+    uart_puts(", GetU32=");
+    put_dec(get_u32_ok);
+    uart_puts(", SetStr=");
+    put_dec(set_str_ok);
+    uart_puts(", GetStr=");
+    put_dec(get_str_ok);
+    uart_puts(", Erase=");
+    put_dec(erase_ok && not_found_ok);
+    uart_puts(", Stats=");
+    put_dec(stats_ok);
+    uart_puts(", GoldenSeal=0x");
+    put_hex(gm_rep.golden_seal_magic);
+    uart_puts("\r\n");
+
+    uart_puts("  Diag: Keys=");
+    put_dec(nvs_stats.total_keys);
+    uart_puts(", Used=");
+    put_dec(nvs_stats.used_bytes);
+    uart_puts(", MemOk=");
+    put_dec(gm_rep.memory_cartography_ok);
+    uart_puts(", WdtOk=");
+    put_dec(gm_rep.watchdogs_ok);
+    uart_puts(", eFuseOk=");
+    put_dec(gm_rep.efuse_security_ok);
+    uart_puts(", CoexOk=");
+    put_dec(gm_rep.rf_coexistence_ok);
+    uart_puts(", OtaOk=");
+    put_dec(gm_rep.ota_partitions_ok);
+    uart_puts(", NvsOk=");
+    put_dec(gm_rep.nvs_storage_ok);
+    uart_puts("\r\n");
+
+    if (t41_pass) passed_tests++;
+    print_result(t41_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

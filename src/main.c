@@ -40,6 +40,7 @@
 #include "efuse.h"
 #include "soak.h"
 #include "ota.h"
+#include "nvs.h"
 
 void main(void)
 {
@@ -84,6 +85,9 @@ void main(void)
 
     /* Initialize Dual-Slot Flash OTA Firmware Upgrade & Rollback Subsystem */
     ota_init();
+
+    /* Initialize Non-Volatile Storage (NVS) & Golden Master Seal Subsystem */
+    nvs_init();
 
     /* Initialize RISC-V Physical Memory Protection (PMP) & APM Fault Isolation */
     pmp_init();

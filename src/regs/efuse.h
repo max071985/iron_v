@@ -1175,4 +1175,77 @@
 #define EFUSE_DATE_DATE_S (0)
 #define EFUSE_DATE_DATE_V(v) (((v) << 0) & 0x0FFFFFFFU)
 
+/* ========================================================================= */
+/* High-Level Parameterized Accessors & Architectural Bitfield Definitions   */
+/* (ESP32-C6 TRM Ch. 29 & SVD)                                              */
+/* ========================================================================= */
+
+#ifndef EFUSE_CONTROLLER_BASE
+#define EFUSE_CONTROLLER_BASE           0x600B0800U
+#endif
+
+/* Parameterized BLOCK2 Word Accessor (System Part 1) */
+#define EFUSE_RD_SYS_PART1_DATA_REG(word) \
+    ((volatile uint32_t *)(EFUSE_CONTROLLER_BASE + 0x5CU + ((word) * 4U)))
+
+/* Parameterized BLOCK3 Word Accessor (User Data) */
+#define EFUSE_RD_USR_DATA_REG(word) \
+    ((volatile uint32_t *)(EFUSE_CONTROLLER_BASE + 0x7CU + ((word) * 4U)))
+
+/* Parameterized BLOCK4-9 Word Accessor (Key0-Key5) */
+#define EFUSE_RD_KEY_DATA_REG(key_idx, word) \
+    ((volatile uint32_t *)(EFUSE_CONTROLLER_BASE + 0x9CU + ((key_idx) * 0x20U) + ((word) * 4U)))
+
+/* Controller Commands & Operations */
+#define EFUSE_CMD_READ                  (0x00000001U)
+#define EFUSE_CMD_PGM                   (0x00000002U)
+#define EFUSE_OP_CODE_READ              (0x5AA5U)
+#define EFUSE_OP_CODE_WRITE             (0x5A5AU)
+
+/* State Machine Constants */
+#define EFUSE_STATE_RESET               (0x0U)
+#define EFUSE_STATE_READ_INIT           (0x1U)
+#define EFUSE_STATE_READ_DONE           (0x2U)
+
+/* Sizing Invariants */
+#define EFUSE_MAC_LEN                   (6U)
+#define EFUSE_MAC_EXT_LEN               (2U)
+#define EFUSE_UNIQUE_ID_LEN             (16U)
+#define EFUSE_KEY_LEN                   (32U)
+
+/* Bitfield Masks & Shifts for BLOCK0/BLOCK1 Security & Identity Fields */
+/* BLOCK1 (MAC_SPI_SYS_3) Versioning */
+#define EFUSE_WAFER_VERSION_MINOR_S     (18U)
+#define EFUSE_WAFER_VERSION_MINOR_M     (0x003C0000U)
+#define EFUSE_WAFER_VERSION_MAJOR_S     (22U)
+#define EFUSE_WAFER_VERSION_MAJOR_M     (0x00C00000U)
+#define EFUSE_PKG_VERSION_S             (24U)
+#define EFUSE_PKG_VERSION_M             (0x07000000U)
+#define EFUSE_BLK_VERSION_MINOR_S       (27U)
+#define EFUSE_BLK_VERSION_MINOR_M       (0x38000000U)
+#define EFUSE_BLK_VERSION_MAJOR_S       (30U)
+#define EFUSE_BLK_VERSION_MAJOR_M       (0xC0000000U)
+
+/* BLOCK0 (REPEAT_DATA1) Security Bitfields */
+#define EFUSE_SPI_BOOT_CRYPT_CNT_S      (18U)
+#define EFUSE_SPI_BOOT_CRYPT_CNT_M      (0x001C0000U)
+
+/* BLOCK0 (REPEAT_DATA2) Security Bitfields */
+#define EFUSE_SEC_DPA_LEVEL_S           (16U)
+#define EFUSE_SEC_DPA_LEVEL_M           (0x00030000U)
+#define EFUSE_CRYPT_DPA_ENABLE_BIT      (0x00080000U)
+#define EFUSE_SECURE_BOOT_EN_BIT        (0x00100000U)
+#define EFUSE_SECURE_BOOT_AGG_REVOKE_BIT (0x00200000U)
+
+/* BLOCK0 (REPEAT_DATA3) Security Bitfields */
+#define EFUSE_DIS_DOWNLOAD_MODE_BIT     (0x00000001U)
+#define EFUSE_DIS_DIRECT_BOOT_BIT       (0x00000002U)
+#define EFUSE_ENABLE_SECURITY_DOWNLOAD_BIT (0x00000020U)
+
+/* BLOCK0 (REPEAT_DATA0) JTAG & Interface Security Bitfields */
+#define EFUSE_DIS_PAD_JTAG_BIT          (0x00080000U)
+#define EFUSE_DIS_USB_JTAG_BIT          (0x00000200U)
+#define EFUSE_SOFT_DIS_JTAG_S           (16U)
+#define EFUSE_SOFT_DIS_JTAG_M           (0x00070000U)
+
 #endif // EFUSE_H

@@ -37,6 +37,7 @@
 #include "wifi_vendor_types.h"
 #include "speedtest.h"
 #include "matter.h"
+#include "efuse.h"
 
 
 /* ========================================================================= */
@@ -246,6 +247,7 @@ void FLASH_TEXT_ATTR shell_print_help(void)
     console_puts("  http [status|routes|start|stop] - Show or control zero-allocation local REST/HTTP server\r\n");
     console_puts("  speedtest [run|burst|udp|status|reset] - Run or inspect LAN network & Wi-Fi throughput benchmark\r\n");
     console_puts("  matter [info|code|qr|onoff|state|commission|reset] - Google Home Matter commissioning & bridge\r\n");
+    console_puts("  efuse [status|summary|security|mac] - Silicon eFuse controller & security seal state\r\n");
     console_puts("  soak [cycles|status] - Run or inspect 24/7 multi-protocol automated stability soak engine\r\n");
     console_puts("  do-test             - Run full baseline validation test suite\r\n");
 }
@@ -551,6 +553,24 @@ void FLASH_TEXT_ATTR shell_print_info(void)
     console_puts(mtel.onoff_state ? "ON" : "OFF");
     console_puts(", Trans: ");
     console_puts((mtel.transport == MATTER_TRANSPORT_THREAD) ? "Thread" : "Wi-Fi");
+    console_puts("\r\n");
+
+    uint8_t efuse_mac[EFUSE_MAC_LEN];
+    efuse_get_mac(efuse_mac);
+    uint32_t wafer_maj = 0U, wafer_min = 0U;
+    efuse_get_chip_version(&wafer_maj, &wafer_min);
+    console_puts(" eFuse:   MAC: ");
+    const char hex_d[] = "0123456789abcdef";
+    for (int i = 0; i < (int)EFUSE_MAC_LEN; i++)
+    {
+        console_putc(hex_d[(efuse_mac[i] >> 4) & 0x0F]);
+        console_putc(hex_d[efuse_mac[i] & 0x0F]);
+        if (i < 5) console_putc(':');
+    }
+    console_puts(", Chip: v");
+    put_dec(wafer_maj); console_putc('.'); put_dec(wafer_min);
+    console_puts(", SecBoot: "); console_puts(efuse_is_secure_boot_enabled() ? "ON" : "OFF");
+    console_puts(", FlashCrypt: "); console_puts(efuse_is_flash_encryption_enabled() ? "ON" : "OFF");
     console_puts("\r\n");
     console_puts("========================================\r\n");
 }
@@ -2820,6 +2840,41 @@ void FLASH_TEXT_ATTR shell_execute(char *input_buffer)
             console_puts("  Crypto HW Accel:     "); console_puts(mtel.crypto_hw_accelerated ? "ACTIVE (ESP32-C6 SHA/ECC)" : "SOFTWARE"); console_puts("\r\n");
             console_puts("  SHA Silicon Date:    0x"); put_hex(matter_get_sha_date()); console_puts("\r\n");
             console_puts("  ECC Silicon Date:    0x"); put_hex(matter_get_ecc_date()); console_puts("\r\n");
+        }
+    }
+    else if (strncmp(input_buffer, "efuse", 5) == 0 && (input_buffer[5] == ' ' || input_buffer[5] == '\0'))
+    {
+        char *subcmd = input_buffer + 5;
+        while (*subcmd == ' ') subcmd++;
+
+        if (*subcmd == '\0' || strncmp(subcmd, "summary", 7) == 0)
+        {
+            efuse_print_summary();
+        }
+        else if (strncmp(subcmd, "security", 8) == 0)
+        {
+            efuse_print_security();
+        }
+        else if (strncmp(subcmd, "mac", 3) == 0)
+        {
+            efuse_print_mac();
+        }
+        else if (strncmp(subcmd, "status", 6) == 0)
+        {
+            efuse_telemetry_t t;
+            efuse_get_telemetry(&t);
+            console_puts("eFuse Controller Telemetry:\r\n");
+            console_puts("  Shadow Refreshes:    "); put_dec(t.read_count); console_puts("\r\n");
+            console_puts("  Write Disable Mask:  0x"); put_hex(t.wr_dis); console_puts("\r\n");
+            console_puts("  Read Disable Mask:   0x"); put_hex(t.rd_dis); console_puts("\r\n");
+            console_puts("  Secure Boot V2:      "); console_puts(t.secure_boot_en ? "ENABLED\r\n" : "DISABLED\r\n");
+            console_puts("  Flash Encryption:    "); console_puts(t.flash_encryption_en ? "ENABLED\r\n" : "DISABLED\r\n");
+            console_puts("  Hardware JTAG:       "); console_puts((t.jtag_pad_disabled || t.jtag_usb_disabled) ? "DISABLED\r\n" : "ENABLED\r\n");
+            console_puts("  Download Mode:       "); console_puts(t.download_mode_disabled ? "DISABLED\r\n" : "ENABLED\r\n");
+        }
+        else
+        {
+            console_puts("Usage: efuse [status|summary|security|mac]\r\n");
         }
     }
     else

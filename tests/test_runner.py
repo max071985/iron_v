@@ -1240,6 +1240,51 @@ def run_suite():
         t36_pass
     )
 
+    # TEST 37: eFuse Memory Controller & Silicon Security Sealing Linkage (Task 7.1)
+    total += 1
+    efuse_iram_syms = [
+        "efuse_init",
+        "efuse_refresh_shadow",
+        "efuse_get_mac",
+        "efuse_get_mac_ext",
+        "efuse_get_unique_id",
+        "efuse_get_chip_version",
+        "efuse_get_pkg_version",
+        "efuse_is_secure_boot_enabled",
+        "efuse_is_flash_encryption_enabled",
+        "efuse_is_jtag_disabled",
+        "efuse_is_download_mode_disabled",
+        "efuse_get_wr_dis",
+        "efuse_get_rd_dis",
+        "efuse_get_telemetry",
+    ]
+    efuse_flash_syms = [
+        "efuse_print_mac",
+        "efuse_print_security",
+        "efuse_print_summary",
+    ]
+    all_efuse_syms = efuse_iram_syms + efuse_flash_syms
+    found_efuse_syms = [s for s in all_efuse_syms if s in symbols]
+    all_efuse_found = len(found_efuse_syms) == len(all_efuse_syms)
+    all_efuse_iram_ok = all(
+        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        for s in efuse_iram_syms if s in symbols
+    )
+    all_efuse_flash_ok = all(
+        (symbols[s]["value"] >= 0x42000000 and symbols[s]["value"] < 0x42800000)
+        for s in efuse_flash_syms if s in symbols
+    )
+    t37_pass = all_efuse_found and all_efuse_iram_ok and all_efuse_flash_ok
+    t37_actual = f"Found {len(found_efuse_syms)}/{len(all_efuse_syms)} symbols (IRAM={all_efuse_iram_ok}, FlashXIP={all_efuse_flash_ok})"
+    passed += print_result_line(
+        total,
+        "eFuse Memory Controller & Silicon Security Sealing Linkage",
+        "Verify efuse_init, query APIs in IRAM (.text) and diagnostic visualizers in Flash XIP (.flash.text)",
+        f"All {len(all_efuse_syms)} eFuse Controller symbols properly allocated across IRAM and Flash XIP",
+        t37_actual,
+        t37_pass
+    )
+
     print("\n" + "=" * 70)
     print("                       TEST SUITE SUMMARY                             ")
     print("=" * 70)

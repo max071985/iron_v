@@ -46,6 +46,7 @@
 #include "timer.h"
 #include "trap.h"
 #include "shell.h"
+#include "efuse.h"
 
 /* Host test stubs for hardware-specific functions */
 void wdt_feed(void)
@@ -2873,6 +2874,133 @@ static void test_shell_subsystem(void)
     TEST_ASSERT(stelem.empty_commands == 0U, "Reset clears empty commands");
 }
 
+static void test_efuse_subsystem(void)
+{
+    printf("  [TEST] eFuse Memory Controller & Silicon Security Sealing (Task 7.1)...\n");
+
+    /* 1. Register Address & Offset Calculation Validation (AGENTS.md rule) */
+    TEST_ASSERT((uintptr_t)EFUSE_BASE == 0x600B0800U, "EFUSE_BASE address calculation");
+    TEST_ASSERT((uintptr_t)EFUSE_RD_WR_DIS_REG == 0x600B082CU, "EFUSE_RD_WR_DIS_REG address calculation");
+    TEST_ASSERT((uintptr_t)EFUSE_RD_REPEAT_DATA0_REG == 0x600B0830U, "EFUSE_RD_REPEAT_DATA0_REG address calculation");
+    TEST_ASSERT((uintptr_t)EFUSE_RD_REPEAT_DATA1_REG == 0x600B0834U, "EFUSE_RD_REPEAT_DATA1_REG address calculation");
+    TEST_ASSERT((uintptr_t)EFUSE_RD_REPEAT_DATA2_REG == 0x600B0838U, "EFUSE_RD_REPEAT_DATA2_REG address calculation");
+    TEST_ASSERT((uintptr_t)EFUSE_RD_REPEAT_DATA3_REG == 0x600B083CU, "EFUSE_RD_REPEAT_DATA3_REG address calculation");
+    TEST_ASSERT((uintptr_t)EFUSE_RD_REPEAT_DATA4_REG == 0x600B0840U, "EFUSE_RD_REPEAT_DATA4_REG address calculation");
+    TEST_ASSERT((uintptr_t)EFUSE_RD_MAC_SPI_SYS_0_REG == 0x600B0844U, "EFUSE_RD_MAC_SPI_SYS_0_REG address calculation");
+    TEST_ASSERT((uintptr_t)EFUSE_RD_MAC_SPI_SYS_1_REG == 0x600B0848U, "EFUSE_RD_MAC_SPI_SYS_1_REG address calculation");
+    TEST_ASSERT((uintptr_t)EFUSE_RD_MAC_SPI_SYS_2_REG == 0x600B084CU, "EFUSE_RD_MAC_SPI_SYS_2_REG address calculation");
+    TEST_ASSERT((uintptr_t)EFUSE_RD_MAC_SPI_SYS_3_REG == 0x600B0850U, "EFUSE_RD_MAC_SPI_SYS_3_REG address calculation");
+    TEST_ASSERT((uintptr_t)EFUSE_RD_SYS_PART1_DATA_REG(0) == 0x600B085CU, "EFUSE_RD_SYS_PART1_DATA_REG(0) address calculation");
+    TEST_ASSERT((uintptr_t)EFUSE_RD_SYS_PART1_DATA_REG(3) == 0x600B0868U, "EFUSE_RD_SYS_PART1_DATA_REG(3) address calculation");
+    TEST_ASSERT((uintptr_t)EFUSE_RD_USR_DATA_REG(0) == 0x600B087CU, "EFUSE_RD_USR_DATA_REG(0) address calculation");
+    TEST_ASSERT((uintptr_t)EFUSE_RD_KEY_DATA_REG(0, 0) == 0x600B089CU, "EFUSE_RD_KEY_DATA_REG(0, 0) address calculation");
+    TEST_ASSERT((uintptr_t)EFUSE_RD_KEY_DATA_REG(5, 0) == 0x600B093CU, "EFUSE_RD_KEY_DATA_REG(5, 0) address calculation");
+    TEST_ASSERT((uintptr_t)EFUSE_STATUS_REG == 0x600B09D0U, "EFUSE_STATUS_REG address calculation");
+    TEST_ASSERT((uintptr_t)EFUSE_CMD_REG == 0x600B09D4U, "EFUSE_CMD_REG address calculation");
+
+    /* 2. Lifecycle & Shadow Refresh */
+    efuse_mock_reset();
+    TEST_ASSERT(efuse_init() == EFUSE_OK, "efuse_init initializes cleanly");
+    TEST_ASSERT(efuse_refresh_shadow() == EFUSE_OK, "efuse_refresh_shadow succeeds");
+
+    /* 3. MAC & Extension Address Query and Parameter Guards */
+    uint8_t mac[EFUSE_MAC_LEN];
+    TEST_ASSERT(efuse_get_mac(NULL) == EFUSE_ERR_INVALID_PARAM, "efuse_get_mac rejects NULL pointer");
+    TEST_ASSERT(efuse_get_mac(mac) == EFUSE_OK, "efuse_get_mac succeeds");
+    TEST_ASSERT(mac[0] == 0x40U && mac[1] == 0x4CU && mac[2] == 0xCAU &&
+                mac[3] == 0x45U && mac[4] == 0x1EU && mac[5] == 0x14U,
+                "efuse_get_mac matches 40:4c:ca:45:1e:14");
+
+    uint16_t mac_ext = 0U;
+    TEST_ASSERT(efuse_get_mac_ext(NULL) == EFUSE_ERR_INVALID_PARAM, "efuse_get_mac_ext rejects NULL pointer");
+    TEST_ASSERT(efuse_get_mac_ext(&mac_ext) == EFUSE_OK, "efuse_get_mac_ext succeeds");
+    TEST_ASSERT(mac_ext == 0xFFFEU, "efuse_get_mac_ext matches 0xFFFE");
+
+    /* 4. 128-bit Hardware Unique ID Query */
+    uint8_t uid[EFUSE_UNIQUE_ID_LEN];
+    TEST_ASSERT(efuse_get_unique_id(NULL) == EFUSE_ERR_INVALID_PARAM, "efuse_get_unique_id rejects NULL pointer");
+    TEST_ASSERT(efuse_get_unique_id(uid) == EFUSE_OK, "efuse_get_unique_id succeeds");
+    TEST_ASSERT(uid[0] == 0xE6U && uid[1] == 0x2BU && uid[2] == 0x14U && uid[3] == 0x68U, "UID word 0 matches");
+    TEST_ASSERT(uid[4] == 0xBAU && uid[5] == 0x10U && uid[6] == 0xA2U && uid[7] == 0xDCU, "UID word 1 matches");
+    TEST_ASSERT(uid[8] == 0xC6U && uid[9] == 0x2DU && uid[10] == 0xEEU && uid[11] == 0x1FU, "UID word 2 matches");
+    TEST_ASSERT(uid[12] == 0x81U && uid[13] == 0xCFU && uid[14] == 0x68U && uid[15] == 0x51U, "UID word 3 matches");
+
+    /* 5. Wafer & Package Versioning */
+    uint32_t maj = 99U, min = 99U;
+    TEST_ASSERT(efuse_get_chip_version(NULL, &min) == EFUSE_ERR_INVALID_PARAM, "efuse_get_chip_version rejects NULL major");
+    TEST_ASSERT(efuse_get_chip_version(&maj, NULL) == EFUSE_ERR_INVALID_PARAM, "efuse_get_chip_version rejects NULL minor");
+    TEST_ASSERT(efuse_get_chip_version(&maj, &min) == EFUSE_OK, "efuse_get_chip_version succeeds");
+    TEST_ASSERT(maj == 0U && min == 0U, "Wafer version defaults to 0.0");
+    TEST_ASSERT(efuse_get_pkg_version() == 0U, "Package version defaults to 0");
+
+    /* Test version bitfield decoding mutation */
+    efuse_mock_set_reg(0x50U, (2U << EFUSE_WAFER_VERSION_MAJOR_S) |
+                              (3U << EFUSE_WAFER_VERSION_MINOR_S) |
+                              (5U << EFUSE_PKG_VERSION_S));
+    TEST_ASSERT(efuse_get_chip_version(&maj, &min) == EFUSE_OK, "Chip version query succeeds after mutation");
+    TEST_ASSERT(maj == 2U && min == 3U, "Wafer version decodes major=2 minor=3");
+    TEST_ASSERT(efuse_get_pkg_version() == 5U, "Package version decodes 5");
+    efuse_mock_reset();
+
+    /* 6. Security Seals: Secure Boot */
+    TEST_ASSERT(!efuse_is_secure_boot_enabled(), "Secure Boot initially disabled");
+    efuse_mock_set_reg(0x38U, EFUSE_SECURE_BOOT_EN_BIT);
+    TEST_ASSERT(efuse_is_secure_boot_enabled(), "Secure Boot detects active bit");
+    efuse_mock_set_reg(0x38U, 0U);
+    TEST_ASSERT(!efuse_is_secure_boot_enabled(), "Secure Boot cleared");
+
+    /* 7. Security Seals: Flash Encryption Parity Checks */
+    TEST_ASSERT(!efuse_is_flash_encryption_enabled(), "Flash encryption initially disabled (0b000)");
+    /* 1 bit set -> Enabled */
+    efuse_mock_set_reg(0x34U, (1U << EFUSE_SPI_BOOT_CRYPT_CNT_S));
+    TEST_ASSERT(efuse_is_flash_encryption_enabled(), "Flash encryption enabled on 1 bit set (0b001)");
+    /* 2 bits set -> Disabled */
+    efuse_mock_set_reg(0x34U, (3U << EFUSE_SPI_BOOT_CRYPT_CNT_S));
+    TEST_ASSERT(!efuse_is_flash_encryption_enabled(), "Flash encryption disabled on 2 bits set (0b011)");
+    /* 3 bits set -> Enabled */
+    efuse_mock_set_reg(0x34U, (7U << EFUSE_SPI_BOOT_CRYPT_CNT_S));
+    TEST_ASSERT(efuse_is_flash_encryption_enabled(), "Flash encryption enabled on 3 bits set (0b111)");
+    /* 1 bit set alternate -> Enabled */
+    efuse_mock_set_reg(0x34U, (4U << EFUSE_SPI_BOOT_CRYPT_CNT_S));
+    TEST_ASSERT(efuse_is_flash_encryption_enabled(), "Flash encryption enabled on 1 bit set (0b100)");
+    /* 2 bits set alternate -> Disabled */
+    efuse_mock_set_reg(0x34U, (5U << EFUSE_SPI_BOOT_CRYPT_CNT_S));
+    TEST_ASSERT(!efuse_is_flash_encryption_enabled(), "Flash encryption disabled on 2 bits set (0b101)");
+    efuse_mock_set_reg(0x34U, 0U);
+
+    /* 8. Security Seals: JTAG Permanent & Soft Disables */
+    TEST_ASSERT(!efuse_is_jtag_disabled(), "JTAG initially enabled");
+    efuse_mock_set_reg(0x30U, EFUSE_DIS_PAD_JTAG_BIT);
+    TEST_ASSERT(efuse_is_jtag_disabled(), "JTAG disabled via PAD JTAG fuse");
+    efuse_mock_set_reg(0x30U, EFUSE_DIS_USB_JTAG_BIT);
+    TEST_ASSERT(efuse_is_jtag_disabled(), "JTAG disabled via USB JTAG fuse");
+    efuse_mock_set_reg(0x30U, (1U << EFUSE_SOFT_DIS_JTAG_S)); /* odd=1 -> disabled */
+    TEST_ASSERT(efuse_is_jtag_disabled(), "JTAG disabled via soft JTAG odd fuse");
+    efuse_mock_set_reg(0x30U, (2U << EFUSE_SOFT_DIS_JTAG_S)); /* even=2 -> enabled */
+    TEST_ASSERT(!efuse_is_jtag_disabled(), "JTAG enabled via soft JTAG even fuse");
+    efuse_mock_set_reg(0x30U, 0U);
+
+    /* 9. Security Seals: Download Mode */
+    TEST_ASSERT(!efuse_is_download_mode_disabled(), "Download mode initially enabled");
+    efuse_mock_set_reg(0x3CU, EFUSE_DIS_DOWNLOAD_MODE_BIT);
+    TEST_ASSERT(efuse_is_download_mode_disabled(), "Download mode disabled via fuse bit");
+    efuse_mock_set_reg(0x3CU, 0U);
+
+    /* 10. Complete Telemetry Snapshot & Read Count */
+    efuse_mock_reset();
+    TEST_ASSERT(efuse_init() == EFUSE_OK, "efuse_init succeeds after mock reset");
+    efuse_telemetry_t telem;
+    TEST_ASSERT(efuse_get_telemetry(NULL) == EFUSE_ERR_INVALID_PARAM, "efuse_get_telemetry rejects NULL");
+    TEST_ASSERT(efuse_get_telemetry(&telem) == EFUSE_OK, "efuse_get_telemetry succeeds");
+    TEST_ASSERT(telem.read_count > 0U, "Telemetry captures valid read count");
+    TEST_ASSERT(telem.mac[0] == 0x40U && telem.mac[5] == 0x14U, "Telemetry captures MAC");
+    TEST_ASSERT(telem.unique_id[0] == 0xE6U && telem.unique_id[15] == 0x51U, "Telemetry captures 128-bit UID");
+    TEST_ASSERT(telem.wafer_version_major == 0U && telem.wafer_version_minor == 0U, "Telemetry captures wafer version");
+    TEST_ASSERT(!telem.secure_boot_en, "Telemetry captures Secure Boot state");
+    TEST_ASSERT(!telem.flash_encryption_en, "Telemetry captures Flash Encryption state");
+    TEST_ASSERT(!telem.jtag_pad_disabled, "Telemetry captures JTAG PAD state");
+}
+
 /* ========================================================================= */
 /* Phase 0-3 Host Test Hardening: Cross-Module Integration & Edge Case Tests */
 /* ========================================================================= */
@@ -3996,6 +4124,7 @@ int main(void)
     test_speedtest_subsystem();
     test_matter_subsystem();
     test_shell_subsystem();
+    test_efuse_subsystem();
 
     /* Hardened cross-module integration and edge case tests */
     test_coroutine_systimer_dpc_integration();

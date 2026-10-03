@@ -37,6 +37,7 @@
 #include "speedtest.h"
 #include "matter.h"
 #include "shell.h"
+#include "efuse.h"
 
 void main(void)
 {
@@ -45,6 +46,9 @@ void main(void)
 
     /* Initialize Flash Cache & MSPI MMU (Maps Flash XIP 0x42000000) */
     mmu_init();
+
+    /* Initialize eFuse Controller & Hardware Security Seals */
+    efuse_init();
 
     /* Initialize high-resolution 64-bit hardware system timer (SYSTIMER 16 MHz) */
     systimer_init();

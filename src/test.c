@@ -32,6 +32,7 @@
 #include "speedtest.h"
 #include "matter.h"
 #include "shell.h"
+#include "efuse.h"
 
 /* Route all test output to unified dual-console multiplexer */
 #define uart_puts console_puts
@@ -2951,6 +2952,98 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
 
     if (t37_pass) passed_tests++;
     print_result(t37_pass);
+
+    /* ------------------------------------------------------------- */
+    /* TEST 38: eFuse Memory Controller & Silicon Security State     */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header(38, "eFuse Memory Controller & Silicon Security State",
+                      "Verify eFuse shadow refresh, factory MAC, 128-bit unique ID, wafer rev, and security seals");
+
+    /* 1. Controller Shadow Refresh & Lifecycle */
+    int refresh_ok = (efuse_refresh_shadow() == EFUSE_OK);
+
+    /* 2. Factory MAC & Extension Query */
+    uint8_t mac[EFUSE_MAC_LEN];
+    int efuse_mac_ok = (efuse_get_mac(mac) == EFUSE_OK);
+    uint16_t mac_ext = 0U;
+    int mac_ext_ok = (efuse_get_mac_ext(&mac_ext) == EFUSE_OK) && (mac_ext == 0xFFFEU);
+
+    /* Expected bench MAC: 40:4c:ca:45:1e:14 */
+    int mac_match = (mac[0] == 0x40U && mac[1] == 0x4CU && mac[2] == 0xCAU &&
+                     mac[3] == 0x45U && mac[4] == 0x1EU && mac[5] == 0x14U);
+
+    /* 3. 128-bit Hardware Unique ID Query */
+    uint8_t uid[EFUSE_UNIQUE_ID_LEN];
+    int uid_ok = (efuse_get_unique_id(uid) == EFUSE_OK);
+    /* Bench UID starts with 0xE6 0x2B 0x14 0x68 ... */
+    int uid_match = (uid[0] == 0xE6U && uid[1] == 0x2BU && uid[2] == 0x14U && uid[3] == 0x68U);
+
+    /* 4. Silicon Wafer & Package Versioning */
+    uint32_t wafer_maj = 0xFFU, wafer_min = 0xFFU;
+    int wafer_ok = (efuse_get_chip_version(&wafer_maj, &wafer_min) == EFUSE_OK) &&
+                   (wafer_maj == 0U) && (wafer_min == 0U);
+    int pkg_ok = (efuse_get_pkg_version() == 0U);
+
+    /* 5. Security Seals Query (Development Board Baseline) */
+    int sec_boot_ok = (!efuse_is_secure_boot_enabled());
+    int flash_crypt_ok = (!efuse_is_flash_encryption_enabled());
+    int jtag_ok = (!efuse_is_jtag_disabled());
+    int dl_mode_ok = (!efuse_is_download_mode_disabled());
+
+    /* 6. Telemetry Snapshot & Parameter Guards */
+    efuse_telemetry_t telem;
+    int efuse_telem_ok = (efuse_get_telemetry(&telem) == EFUSE_OK) && (telem.read_count > 0U);
+    int param_guard_ok = (efuse_get_mac(NULL) == EFUSE_ERR_INVALID_PARAM) &&
+                         (efuse_get_unique_id(NULL) == EFUSE_ERR_INVALID_PARAM) &&
+                         (efuse_get_telemetry(NULL) == EFUSE_ERR_INVALID_PARAM);
+
+    wdt_feed();
+    lp_wdt_feed();
+
+    int t38_pass = refresh_ok && efuse_mac_ok && mac_ext_ok && mac_match &&
+                   uid_ok && uid_match && wafer_ok && pkg_ok &&
+                   sec_boot_ok && flash_crypt_ok && jtag_ok && dl_mode_ok &&
+                   efuse_telem_ok && param_guard_ok;
+
+    uart_puts("  Expected:    Refresh=1, MAC=40:4c:ca:45:1e:14, Ext=0xFFFE, UID0=0xE62B1468, Wafer=v0.0, SecBoot=0, FlashCrypt=0\r\n");
+    uart_puts("  Actual:      Refresh=");
+    put_dec(refresh_ok);
+    uart_puts(", MAC=");
+    const char t38_hex[] = "0123456789abcdef";
+    for (int i = 0; i < 6; i++)
+    {
+        uart_putc(t38_hex[(mac[i] >> 4) & 0x0F]);
+        uart_putc(t38_hex[mac[i] & 0x0F]);
+        if (i < 5) uart_putc(':');
+    }
+    uart_puts(", Ext=");
+    put_hex(mac_ext);
+    uart_puts(", Wafer=v");
+    put_dec(wafer_maj); uart_putc('.'); put_dec(wafer_min);
+    uart_puts(", SecBoot=");
+    put_dec(efuse_is_secure_boot_enabled());
+    uart_puts(", FlashCrypt=");
+    put_dec(efuse_is_flash_encryption_enabled());
+    uart_puts("\r\n");
+
+    uart_puts("  Diag: UID=");
+    for (int i = 0; i < 8; i++)
+    {
+        uart_putc(t38_hex[(uid[i] >> 4) & 0x0F]);
+        uart_putc(t38_hex[uid[i] & 0x0F]);
+        if (i < 7) uart_putc(' ');
+    }
+    uart_puts("..., Reads=");
+    put_dec(telem.read_count);
+    uart_puts(", WrDis=");
+    put_hex(telem.wr_dis);
+    uart_puts(", RdDis=");
+    put_hex(telem.rd_dis);
+    uart_puts("\r\n");
+
+    if (t38_pass) passed_tests++;
+    print_result(t38_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

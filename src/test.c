@@ -205,11 +205,88 @@ static void print_result(int pass)
     }
 }
 
+/* ========================================================================= */
+/* Self-test fixture: do-test must leave the board as it found it. The suite  */
+/* writes NVS (credentials, test keys), OTA selection records, the IP config  */
+/* and the Wi-Fi mode; all of it is saved first and restored at the end.      */
+/* ========================================================================= */
+typedef struct {
+    nvs_snapshot_t nvs;
+    ota_snapshot_t ota;
+    net_config_t   net;
+    bool           ap_running;
+    char           ap_ssid[WIFI_MAX_SSID_LEN + 1U];
+    uint8_t        ap_channel;
+} selftest_fixture_t;
+
+static selftest_fixture_t s_fixture;
+
+static void selftest_fixture_save(void)
+{
+    (void)nvs_snapshot_save(&s_fixture.nvs);
+    (void)ota_snapshot_save(&s_fixture.ota);
+    (void)net_get_config(&s_fixture.net);
+    s_fixture.ap_running = wifi_is_ap_active();
+    memset(s_fixture.ap_ssid, 0, sizeof(s_fixture.ap_ssid));
+    strncpy(s_fixture.ap_ssid, wifi_get_ap_ssid(), WIFI_MAX_SSID_LEN);
+    s_fixture.ap_channel = wifi_get_ap_channel();
+}
+
+/* Restores the saved state and reports whether everything matches again */
+static int selftest_fixture_restore(void)
+{
+    bool nvs_rewritten = false;
+    bool ota_rewritten = false;
+    int nvs_ok = (nvs_snapshot_restore(&s_fixture.nvs, &nvs_rewritten) == NVS_OK) &&
+                 nvs_snapshot_matches(&s_fixture.nvs);
+    (void)provisioning_reload_credentials();
+    int ota_ok = (ota_snapshot_restore(&s_fixture.ota, &ota_rewritten) == OTA_OK) &&
+                 ota_snapshot_matches(&s_fixture.ota);
+
+    /* Runtime state the network tests change */
+    (void)wpa2_client_init();
+    (void)dhcp_client_init();
+    (void)net_set_ip(s_fixture.net.ip, s_fixture.net.netmask, s_fixture.net.gateway);
+    net_config_t net_now;
+    (void)net_get_config(&net_now);
+    int net_ok = (net_now.ip == s_fixture.net.ip) &&
+                 (net_now.netmask == s_fixture.net.netmask) &&
+                 (net_now.gateway == s_fixture.net.gateway);
+
+    /* The Wi-Fi tests restart the SoftAP and start the station for scans */
+    if (s_fixture.ap_running)
+    {
+        (void)wifi_stop_ap();
+        (void)wifi_start_ap(s_fixture.ap_ssid, NULL, s_fixture.ap_channel);
+    }
+    else if (wifi_is_ap_active())
+    {
+        (void)wifi_stop_ap();
+    }
+    int wifi_ok = (wifi_is_ap_active() == s_fixture.ap_running);
+
+    uart_puts("  Expected:    NVS=1, OTA=1, IP=1, SoftAP=1 (state as before the suite)\r\n");
+    uart_puts("  Actual:      NVS=");
+    put_dec(nvs_ok);
+    uart_puts(nvs_rewritten ? " (restored)" : " (unchanged)");
+    uart_puts(", OTA=");
+    put_dec(ota_ok);
+    uart_puts(ota_rewritten ? " (restored)" : " (unchanged)");
+    uart_puts(", IP=");
+    put_dec(net_ok);
+    uart_puts(", SoftAP=");
+    put_dec(wifi_ok);
+    uart_puts("\r\n");
+
+    return nvs_ok && ota_ok && net_ok && wifi_ok;
+}
+
 void run_validation_suite_ex(test_suite_result_t *out_result)
 {
     int total_tests = 0;
     int passed_tests = 0;
     s_test_number = 0;
+    selftest_fixture_save();
 
     print_banner_line();
     uart_puts("                   IRON V BASELINE VALIDATION SUITE                   \r\n");
@@ -1509,14 +1586,16 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     volatile lp_shared_mailbox_t *mb = power_get_mailbox();
     int mb_valid = (mb != NULL) && (mb->magic == LP_MAILBOX_MAGIC);
 
-    /* 2. Ensure LP core is started and executing */
+    /* 2. Ensure LP core is started and executing (stopped again below if we started it) */
+    bool lp_was_running = lp_core_is_running();
     if (!lp_core_is_running())
     {
         lp_core_start();
     }
     int lp_executing = lp_core_is_running();
 
-    /* 3. Write retained seed value to LP_AON scratchpad STORE0 */
+    /* 3. Write retained seed value to LP_AON scratchpad STORE0 (original restored below) */
+    uint32_t store0_orig = power_read_retained_store(0U);
     uint32_t seed_val = 0xDEADBEEFU;
     int store_write_ok = (power_write_retained_store(0U, seed_val) == POWER_OK);
 
@@ -1539,6 +1618,12 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
                              (power_get_mode() == PM_STATE_LIGHT_SLEEP);
     int pwr_active_restore = (power_set_mode(PM_STATE_ACTIVE) == POWER_OK) &&
                              (power_get_mode() == PM_STATE_ACTIVE);
+
+    (void)power_write_retained_store(0U, store0_orig);
+    if (!lp_was_running)
+    {
+        (void)lp_core_stop();
+    }
 
     uart_puts("  Expected:    Init=1, Magic=0x49524F4E, LP=1, StoreWrite=1, CmdAck=1, WakeCnt>=1, StoreRetained=1, Mode=1\r\n");
     uart_puts("  Actual:      Init=");
@@ -3128,11 +3213,13 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     wifi_scan_item_t scan_aps[PROVISIONING_MAX_SCAN_APS];
     uint16_t scan_cnt = 0U;
     int scan_get_ok = (provisioning_get_scan_results(scan_aps, PROVISIONING_MAX_SCAN_APS, &scan_cnt) == PROV_OK) &&
-                      (scan_cnt >= 3U) &&
-                      (strcmp(scan_aps[0].ssid, "HomeNetwork-2.4G") == 0) &&
-                      (scan_aps[0].rssi == -45) &&
-                      (scan_aps[0].channel == 1U) &&
-                      (scan_aps[0].auth_mode == PROV_AUTH_WPA2_PSK);
+                      (scan_cnt <= PROVISIONING_MAX_SCAN_APS);
+    for (uint16_t i = 0U; scan_get_ok && i < scan_cnt; i++)
+    {
+        /* Structural checks only: the cache may still hold the made-up list (O-7, REV-29) */
+        scan_get_ok = (scan_aps[i].ssid[0] != '\0') && (scan_aps[i].rssi < 0) &&
+                      (scan_aps[i].channel >= 1U) && (scan_aps[i].channel <= WIFI_MAX_CHANNEL);
+    }
 
     /* 3. Trigger Wi-Fi Scan */
     int scan_trig_ok = (provisioning_start_scan() == PROV_OK);
@@ -3184,7 +3271,7 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     int http_scan_ok = (http_process_request(t_req_scan, strlen(t_req_scan), http_resp, sizeof(http_resp), &http_resp_len) == HTTP_OK) &&
                        (strstr(http_resp, "200 OK") != NULL) &&
                        (strstr(http_resp, "application/json") != NULL) &&
-                       (strstr(http_resp, "HomeNetwork-2.4G") != NULL);
+                       (strstr(http_resp, "\"aps\":[") != NULL);
 
     /* 6c. POST /api/wifi/configure (JSON payload) */
     const char t_req_cfg[] =
@@ -3250,8 +3337,8 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     /* Bare-Metal Wi-Fi Station (STA) WPA2-PSK Client & Home LAN Join          */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header("Bare-Metal Wi-Fi Station (STA) WPA2-PSK Client & Home LAN Join",
-                      "Verify IEEE 802.11i 4-way handshake, PBKDF2/PRF512/AES unwrap, DHCP client & mDNS responder");
+    print_test_header("WPA2 Supplicant Crypto & EAPOL Processing (synthetic frames, no association)",
+                      "PBKDF2-SHA1 and RFC 3394 known answers, PRF-512, supplicant M1/M3 processing on synthetic frames, mDNS responder; does not join a network");
 
     wdt_feed();
     lp_wdt_feed();
@@ -3283,8 +3370,15 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     uint16_t t43_wrapped_len = 0U;
     uint8_t t43_unwrap[32];
     uint16_t t43_unwrap_len = 0U;
+    /* RFC 3394 section 4.1: 128-bit key data with a 128-bit KEK */
+    const uint8_t t43_exp_wrapped[24] = {
+        0x1f, 0xa6, 0x8b, 0x0a, 0x81, 0x12, 0xb4, 0x47,
+        0xae, 0xf3, 0x4b, 0xd8, 0xfb, 0x5a, 0x7b, 0x82,
+        0x9d, 0x3e, 0x86, 0x23, 0x71, 0xd2, 0xcf, 0xe5
+    };
     int aes_wrap_ok = (wpa2_crypto_aes_wrap(t43_kek, t43_plain, 16, t43_wrapped, &t43_wrapped_len) == WPA2_OK) &&
                       (t43_wrapped_len == 24U) &&
+                      (memcmp(t43_wrapped, t43_exp_wrapped, sizeof(t43_exp_wrapped)) == 0) &&
                       (wpa2_crypto_aes_unwrap(t43_kek, t43_wrapped, t43_wrapped_len, t43_unwrap, &t43_unwrap_len) == WPA2_OK) &&
                       (t43_unwrap_len == 16U) &&
                       (memcmp(t43_unwrap, t43_plain, 16) == 0);
@@ -3307,7 +3401,9 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     wpa2_ptk_t t43_ptk;
     int prf_ok = (wpa2_crypto_prf512(t43_pmk, t43_sta_mac, t43_ap_bssid, t43_snonce, t43_anonce, &t43_ptk) == WPA2_OK);
 
-    /* 2. 802.11i 4-Way Handshake Full Exchange */
+    /* 2. Supplicant state machine on synthetic M1/M3. There is no AP: the M2/M4
+     *    replies are handed to the radio and refused because the station is
+     *    not associated (TX errors are expected here). */
     int wpa_init_ok = (wpa2_client_init() == WPA2_OK) &&
                       (wpa2_client_configure("IEEE", "password") == WPA2_OK);
     wpa2_client_on_connected(t43_ap_bssid);
@@ -3364,15 +3460,7 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     int m3_ok = (wpa2_client_rx_eapol(t43_ap_bssid, t43_m3, sizeof(t43_m3)) == WPA2_OK) &&
                 wpa2_client_is_authenticated();
 
-    /* 3. DHCP Client */
-    dhcp_client_init();
-    dhcp_client_set_static_fallback(0xC0A80164U, 0xFFFFFF00U, 0xC0A80101U, 0x08080808U);
-    dhcp_client_telemetry_t dtelem;
-    int dhcp_ok = (dhcp_client_get_telemetry(&dtelem) == DHCP_OK) &&
-                  (dtelem.assigned_ip == 0xC0A80164U) &&
-                  (dhcp_client_get_state() == DHCP_CLIENT_STATE_STATIC);
-
-    /* 4. mDNS Responder */
+    /* 3. mDNS Responder (the DHCP client is covered by host tests with synthetic ACKs) */
     mdns_init();
     mdns_set_hostname("iron-v");
     int mdns_ann_ok = (mdns_announce() == MDNS_OK);
@@ -3401,9 +3489,9 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     wdt_feed();
     lp_wdt_feed();
 
-    int t43_pass = pbkdf2_ok && aes_wrap_ok && prf_ok && wpa_init_ok && m1_ok && m3_ok && dhcp_ok && mdns_ann_ok && mdns_query_ok;
+    int t43_pass = pbkdf2_ok && aes_wrap_ok && prf_ok && wpa_init_ok && m1_ok && m3_ok && mdns_ann_ok && mdns_query_ok;
 
-    uart_puts("  Expected:    PBKDF2=1, AESWrap=1, PRF=1, EAPOL_M1=1, EAPOL_M3=1, DHCP=1, mDNS=1\r\n");
+    uart_puts("  Expected:    PBKDF2=1, AESWrap=1, PRF=1, EAPOL_M1=1, EAPOL_M3=1, mDNS=1\r\n");
     uart_puts("  Actual:      PBKDF2=");
     put_dec(pbkdf2_ok);
     uart_puts(", AESWrap=");
@@ -3414,26 +3502,32 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     put_dec(m1_ok);
     uart_puts(", EAPOL_M3=");
     put_dec(m3_ok);
-    uart_puts(", DHCP=");
-    put_dec(dhcp_ok);
     uart_puts(", mDNS=");
     put_dec(mdns_ann_ok && mdns_query_ok);
     uart_puts("\r\n");
 
     wpa2_telemetry_t wtelem;
     wpa2_client_get_telemetry(&wtelem);
-    uart_puts("  Diag: State=");
+    uart_puts("  Diag: Supplicant state (synthetic)=");
     uart_puts(wpa2_state_to_str(wpa2_client_get_state()));
     uart_puts(", Handshakes=");
     put_dec(wtelem.handshakes_completed);
-    uart_puts(", AssignedIP=");
-    put_hex(dtelem.assigned_ip);
     uart_puts(", mDNSHost='");
     uart_puts(mdns_get_hostname());
     uart_puts("'\r\n");
 
     if (t43_pass) passed_tests++;
     print_result(t43_pass);
+
+    /* ------------------------------------------------------------- */
+    /* Self-test leaves persistent and network state unchanged       */
+    /* ------------------------------------------------------------- */
+    total_tests++;
+    print_test_header("Self-Test Leaves Persistent & Network State Unchanged",
+                      "Restore NVS, OTA records, IP config, DHCP/WPA2 clients and SoftAP saved before the suite; verify they match");
+    int fixture_pass = selftest_fixture_restore();
+    if (fixture_pass) passed_tests++;
+    print_result(fixture_pass);
 
     /* ------------------------------------------------------------- */
     /* SUMMARY CALCULATION & REPORT                                  */

@@ -164,6 +164,19 @@ ota_status_t ota_read_slot(ota_slot_t slot, uint32_t offset, void *dest, size_t 
 ota_status_t ota_write_chunk(ota_slot_t slot, uint32_t offset, const void *data, size_t len);
 ota_status_t ota_erase_slot(ota_slot_t slot);
 
+/* Both selection records. The self-test saves them before its slot switch /
+ * rollback test and restores them afterwards; only changed sectors are
+ * rewritten (or erased, if the record was absent before). */
+typedef struct {
+    ota_select_t records[2];
+    bool         valid[2];
+} ota_snapshot_t;
+
+ota_status_t ota_snapshot_save(ota_snapshot_t *out_snap);
+ota_status_t ota_snapshot_restore(const ota_snapshot_t *snap, bool *out_rewritten);
+/* true if the live records equal the snapshot's */
+bool         ota_snapshot_matches(const ota_snapshot_t *snap);
+
 /* Flash XIP Diagnostic Visualizers */
 void ota_print_status(void);
 void ota_print_partitions(void);

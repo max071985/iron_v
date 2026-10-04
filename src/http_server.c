@@ -593,6 +593,16 @@ http_status_t http_route_register(const char *path, http_method_t method, http_r
         return HTTP_ERR_INVALID_ARG;
     }
 
+    /* Re-registering a path/method replaces its handler (re-init must not leak slots) */
+    for (uint32_t i = 0U; i < s_http_route_count; i++)
+    {
+        if (s_http_routes[i].method == method && strcmp(s_http_routes[i].path, path) == 0)
+        {
+            s_http_routes[i].handler = handler;
+            return HTTP_OK;
+        }
+    }
+
     if (s_http_route_count >= HTTP_MAX_ROUTES)
     {
         return HTTP_ERR_ROUTE_TABLE_FULL;

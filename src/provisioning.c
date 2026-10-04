@@ -288,7 +288,14 @@ provisioning_status_t provisioning_init(void)
     /* Populate baseline scan table */
     prov_populate_baseline_scan();
 
-    /* Check persistent NVS storage for existing Wi-Fi credentials */
+    s_prov_initialized = true;
+    return provisioning_reload_credentials();
+}
+
+/* Re-reads the saved credentials from NVS into the in-RAM state */
+provisioning_status_t provisioning_reload_credentials(void)
+{
+    memset(&s_prov_creds, 0, sizeof(s_prov_creds));
     char saved_ssid[PROVISIONING_MAX_SSID_LEN + 1U];
     memset(saved_ssid, 0, sizeof(saved_ssid));
     if (nvs_get_str(PROV_NVS_KEY_SSID, saved_ssid, sizeof(saved_ssid)) == NVS_OK && saved_ssid[0] != '\0')
@@ -309,8 +316,6 @@ provisioning_status_t provisioning_init(void)
     }
 
     s_prov_telemetry.state = s_prov_state;
-    s_prov_initialized = true;
-
     return PROV_OK;
 }
 

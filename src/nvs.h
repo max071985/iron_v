@@ -99,6 +99,19 @@ nvs_status_t nvs_erase_key(const char *key);
 nvs_status_t nvs_erase_all(void);
 nvs_status_t nvs_get_stats(nvs_stats_t *out_stats);
 
+/* Whole-store snapshot. The self-test saves the store before tests that write
+ * NVS and restores it afterwards; restore rewrites the sector only if the
+ * contents differ, so an unchanged store costs no flash wear. */
+typedef struct {
+    nvs_entry_t entries[NVS_MAX_ENTRIES];
+    uint32_t    count;
+} nvs_snapshot_t;
+
+nvs_status_t nvs_snapshot_save(nvs_snapshot_t *out_snap);
+nvs_status_t nvs_snapshot_restore(const nvs_snapshot_t *snap, bool *out_rewritten);
+/* true if the live store holds exactly the snapshot's entries */
+bool         nvs_snapshot_matches(const nvs_snapshot_t *snap);
+
 /* Flash XIP Diagnostic Visualizers */
 void nvs_print_stats(void);
 void nvs_print_keys(void);

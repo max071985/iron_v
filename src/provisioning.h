@@ -102,6 +102,7 @@ typedef struct {
 
 /* Core lifecycle & state control */
 provisioning_status_t provisioning_init(void);
+provisioning_status_t provisioning_reload_credentials(void);
 provisioning_status_t provisioning_start(void);
 provisioning_status_t provisioning_stop(void);
 provisioning_state_t  provisioning_get_state(void);

@@ -2028,6 +2028,9 @@ static void test_http_server_subsystem(void)
     /* Register custom route */
     TEST_ASSERT(http_route_register("/api/test", HTTP_METHOD_GET, test_custom_http_handler) == HTTP_OK, "Custom route register succeeds");
     TEST_ASSERT(http_server_get_route_count() == initial_routes + 1U, "Route count incremented");
+    TEST_ASSERT(http_route_register("/api/test", HTTP_METHOD_GET, test_custom_http_handler) == HTTP_OK &&
+                http_server_get_route_count() == initial_routes + 1U,
+                "Re-registering a path/method replaces it instead of adding a slot");
 
     /* 3. Route Lookup */
     bool path_match = false;
@@ -2782,6 +2785,46 @@ static void test_ota_subsystem(void)
     TEST_ASSERT(ota_get_partition_info(OTA_SLOT_INVALID, &p0) == OTA_ERR_INVALID_PARAM, "Reject invalid slot query");
     TEST_ASSERT(ota_parse_image_header(NULL, 10, &hdr) == OTA_ERR_INVALID_PARAM, "Parse rejects NULL pointer");
     TEST_ASSERT(ota_verify_image(OTA_SLOT_INVALID, &hdr) == OTA_ERR_INVALID_PARAM, "Verify rejects invalid slot");
+}
+
+/* REV-28: the self-test saves NVS and the OTA records first and restores them at the end */
+static void test_selftest_snapshots(void)
+{
+    printf("  [TEST] NVS / OTA snapshots behind the non-destructive self-test...\n");
+
+    nvs_mock_reset();
+    TEST_ASSERT(nvs_init() == NVS_OK, "nvs_init on a blank mock sector");
+    TEST_ASSERT(nvs_set_str("wifi_ssid", "HomeNet") == NVS_OK, "Seed a saved SSID");
+    nvs_snapshot_t nsnap;
+    bool rewritten = true;
+    TEST_ASSERT(nvs_snapshot_save(&nsnap) == NVS_OK, "nvs_snapshot_save succeeds");
+    TEST_ASSERT(nvs_snapshot_restore(&nsnap, &rewritten) == NVS_OK && !rewritten, "Restoring an unchanged store writes nothing");
+    TEST_ASSERT(nvs_set_str("wifi_ssid", "SelfTestAP") == NVS_OK && nvs_set_u32("test_u32", 7U) == NVS_OK,
+                "A test overwrites the SSID and adds a key");
+    TEST_ASSERT(!nvs_snapshot_matches(&nsnap), "Store differs from the snapshot");
+    TEST_ASSERT(nvs_snapshot_restore(&nsnap, &rewritten) == NVS_OK && rewritten, "Restore rewrites the changed store");
+    char ssid[NVS_VAL_MAX_LEN];
+    uint32_t val = 0U;
+    TEST_ASSERT(nvs_get_str("wifi_ssid", ssid, sizeof(ssid)) == NVS_OK && strcmp(ssid, "HomeNet") == 0, "Original SSID is back");
+    TEST_ASSERT(nvs_get_u32("test_u32", &val) == NVS_ERR_NOT_FOUND, "Test key is gone");
+    TEST_ASSERT(nvs_init() == NVS_OK && nvs_get_str("wifi_ssid", ssid, sizeof(ssid)) == NVS_OK && strcmp(ssid, "HomeNet") == 0,
+                "Restored store survives a reload from flash");
+    TEST_ASSERT(nvs_snapshot_restore(NULL, NULL) == NVS_ERR_INVALID_PARAM, "NULL snapshot rejected");
+
+    ota_mock_reset();
+    TEST_ASSERT(ota_init() == OTA_OK, "ota_init on blank mock flash");
+    ota_snapshot_t osnap;
+    ota_status_report_t before;
+    ota_status_report_t after;
+    TEST_ASSERT(ota_snapshot_save(&osnap) == OTA_OK && ota_get_status(&before) == OTA_OK, "ota_snapshot_save succeeds");
+    TEST_ASSERT(ota_switch_slot(OTA_SLOT_1) == OTA_OK && ota_rollback() == OTA_OK, "A test switches slots and rolls back");
+    TEST_ASSERT(!ota_snapshot_matches(&osnap), "Records differ after switch + rollback");
+    TEST_ASSERT(ota_snapshot_restore(&osnap, &rewritten) == OTA_OK && rewritten, "Restore rewrites the records");
+    TEST_ASSERT(ota_snapshot_matches(&osnap), "Records match the snapshot again");
+    TEST_ASSERT(ota_get_status(&after) == OTA_OK && after.active_slot == before.active_slot &&
+                ota_get_slot_state(after.active_slot) == OTA_STATE_VALID, "Active slot and state are back");
+    TEST_ASSERT(ota_init() == OTA_OK && ota_get_active_slot() == before.active_slot, "Restored records survive a reload from flash");
+    TEST_ASSERT(ota_snapshot_restore(NULL, NULL) == OTA_ERR_INVALID_PARAM, "NULL snapshot rejected");
 }
 
 static void test_nvs_subsystem(void)
@@ -4570,6 +4613,7 @@ int main(void)
     test_soak_anti_starvation_subsystem();
     test_ota_subsystem();
     test_nvs_subsystem();
+    test_selftest_snapshots();
     test_provisioning_subsystem();
     test_wpa2_client_and_mdns_subsystem();
 

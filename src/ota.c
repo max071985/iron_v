@@ -369,27 +369,10 @@ static ota_status_t write_select_record(uint32_t sector_idx, const ota_select_t 
     return OTA_OK;
 }
 
-/* Public Subsystem Initialization */
-ota_status_t ota_init(void)
+/* Derive the active slot/state from the two selection records (a blank flash
+ * gets a factory record for Slot 0) */
+static void ota_select_active_record(void)
 {
-#if defined(__riscv)
-    *(esp_rom_spiflash_chip_t **)0x4087ffec = &s_rom_flashchip;
-    spi_flash_attach(0, false);
-    esp_rom_spiflash_unlock();
-#endif
-
-    memset(&s_telemetry, 0, sizeof(s_telemetry));
-    memset(s_ota_records, 0, sizeof(s_ota_records));
-    s_record_valid[0] = false;
-    s_record_valid[1] = false;
-
-    /* Read both OTA Selection Sectors */
-    flash_read(OTA_DATA_SECTOR_0_OFFSET, &s_ota_records[0], sizeof(ota_select_t));
-    flash_read(OTA_DATA_SECTOR_1_OFFSET, &s_ota_records[1], sizeof(ota_select_t));
-
-    s_record_valid[0] = is_record_valid(&s_ota_records[0]);
-    s_record_valid[1] = is_record_valid(&s_ota_records[1]);
-
     if (!s_record_valid[0] && !s_record_valid[1])
     {
         /* Virgin Flash: default to Slot 0 as Factory Slot */
@@ -448,6 +431,30 @@ ota_status_t ota_init(void)
             s_active_sector_idx = 1U;
         }
     }
+}
+
+/* Public Subsystem Initialization */
+ota_status_t ota_init(void)
+{
+#if defined(__riscv)
+    *(esp_rom_spiflash_chip_t **)0x4087ffec = &s_rom_flashchip;
+    spi_flash_attach(0, false);
+    esp_rom_spiflash_unlock();
+#endif
+
+    memset(&s_telemetry, 0, sizeof(s_telemetry));
+    memset(s_ota_records, 0, sizeof(s_ota_records));
+    s_record_valid[0] = false;
+    s_record_valid[1] = false;
+
+    /* Read both OTA Selection Sectors */
+    flash_read(OTA_DATA_SECTOR_0_OFFSET, &s_ota_records[0], sizeof(ota_select_t));
+    flash_read(OTA_DATA_SECTOR_1_OFFSET, &s_ota_records[1], sizeof(ota_select_t));
+
+    s_record_valid[0] = is_record_valid(&s_ota_records[0]);
+    s_record_valid[1] = is_record_valid(&s_ota_records[1]);
+
+    ota_select_active_record();
 
     /* Auto-Rollback check if active state is TESTING */
     if (s_active_state == OTA_STATE_TESTING)
@@ -459,6 +466,78 @@ ota_status_t ota_init(void)
         }
     }
 
+    return OTA_OK;
+}
+
+ota_status_t ota_snapshot_save(ota_snapshot_t *out_snap)
+{
+    if (out_snap == NULL)
+    {
+        return OTA_ERR_INVALID_PARAM;
+    }
+    for (uint32_t i = 0U; i < 2U; i++)
+    {
+        out_snap->records[i] = s_ota_records[i];
+        out_snap->valid[i] = s_record_valid[i];
+    }
+    return OTA_OK;
+}
+
+static bool ota_record_matches(const ota_snapshot_t *snap, uint32_t idx)
+{
+    if (snap->valid[idx] != s_record_valid[idx])
+    {
+        return false;
+    }
+    return !snap->valid[idx] ||
+           (memcmp(&snap->records[idx], &s_ota_records[idx], sizeof(ota_select_t)) == 0);
+}
+
+bool ota_snapshot_matches(const ota_snapshot_t *snap)
+{
+    return (snap != NULL) && ota_record_matches(snap, 0U) && ota_record_matches(snap, 1U);
+}
+
+ota_status_t ota_snapshot_restore(const ota_snapshot_t *snap, bool *out_rewritten)
+{
+    if (out_rewritten != NULL)
+    {
+        *out_rewritten = false;
+    }
+    if (snap == NULL)
+    {
+        return OTA_ERR_INVALID_PARAM;
+    }
+
+    bool rewritten = false;
+    for (uint32_t i = 0U; i < 2U; i++)
+    {
+        if (ota_record_matches(snap, i))
+        {
+            continue;
+        }
+        rewritten = true;
+        if (snap->valid[i])
+        {
+            write_select_record(i, &snap->records[i]);
+        }
+        else
+        {
+            uint32_t offset = (i == 0U) ? OTA_DATA_SECTOR_0_OFFSET : OTA_DATA_SECTOR_1_OFFSET;
+            (void)flash_erase_sector(offset);
+            s_ota_records[i] = snap->records[i];
+            s_record_valid[i] = false;
+        }
+    }
+
+    if (rewritten)
+    {
+        ota_select_active_record();
+    }
+    if (out_rewritten != NULL)
+    {
+        *out_rewritten = rewritten;
+    }
     return OTA_OK;
 }
 

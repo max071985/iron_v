@@ -523,6 +523,51 @@ nvs_status_t nvs_get_str(const char *key, char *out_val, size_t max_len)
     return NVS_OK;
 }
 
+nvs_status_t nvs_snapshot_save(nvs_snapshot_t *out_snap)
+{
+    if (out_snap == NULL)
+    {
+        return NVS_ERR_INVALID_PARAM;
+    }
+
+    memset(out_snap, 0, sizeof(*out_snap));
+    memcpy(out_snap->entries, s_nvs_cache, sizeof(nvs_entry_t) * s_active_entries_count);
+    out_snap->count = s_active_entries_count;
+    return NVS_OK;
+}
+
+bool nvs_snapshot_matches(const nvs_snapshot_t *snap)
+{
+    return (snap != NULL) &&
+           (snap->count == s_active_entries_count) &&
+           (memcmp(snap->entries, s_nvs_cache, sizeof(nvs_entry_t) * snap->count) == 0);
+}
+
+nvs_status_t nvs_snapshot_restore(const nvs_snapshot_t *snap, bool *out_rewritten)
+{
+    if (out_rewritten != NULL)
+    {
+        *out_rewritten = false;
+    }
+    if (snap == NULL || snap->count > NVS_MAX_ENTRIES)
+    {
+        return NVS_ERR_INVALID_PARAM;
+    }
+    if (nvs_snapshot_matches(snap))
+    {
+        return NVS_OK;
+    }
+
+    memset(s_nvs_cache, 0, sizeof(s_nvs_cache));
+    memcpy(s_nvs_cache, snap->entries, sizeof(nvs_entry_t) * snap->count);
+    s_active_entries_count = snap->count;
+    if (out_rewritten != NULL)
+    {
+        *out_rewritten = true;
+    }
+    return flush_cache_to_flash();
+}
+
 nvs_status_t nvs_erase_key(const char *key)
 {
     if (key == NULL)

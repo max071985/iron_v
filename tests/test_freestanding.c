@@ -2376,6 +2376,24 @@ static void test_http_server_subsystem(void)
     TEST_ASSERT(strstr(resp, "Access-Control-Allow-Methods: GET, POST, OPTIONS") != NULL, "CORS Allow-Methods present");
     TEST_ASSERT(strstr(resp, "Access-Control-Allow-Headers: Content-Type, Authorization") != NULL, "CORS Allow-Headers present");
 
+    /* 4g. Captive portal: connectivity probes redirect to the setup page */
+    const char *probe_paths[] = {"/generate_204", "/gen_204", "/hotspot-detect.html", "/ncsi.txt", "/connecttest.txt"};
+    char probe_req[96];
+    char portal_loc[48];
+    net_config_t probe_cfg;
+    net_get_config(&probe_cfg);
+    snprintf(portal_loc, sizeof(portal_loc), "Location: http://%u.%u.%u.%u/setup\r\n",
+             (unsigned)((probe_cfg.ip >> 24) & 0xFFU), (unsigned)((probe_cfg.ip >> 16) & 0xFFU),
+             (unsigned)((probe_cfg.ip >> 8) & 0xFFU), (unsigned)(probe_cfg.ip & 0xFFU));
+    for (size_t pi = 0U; pi < sizeof(probe_paths) / sizeof(probe_paths[0]); pi++)
+    {
+        snprintf(probe_req, sizeof(probe_req), "GET %s HTTP/1.1\r\nHost: connectivitycheck.gstatic.com\r\n\r\n", probe_paths[pi]);
+        resp[0] = '\0';
+        TEST_ASSERT(http_process_request(probe_req, strlen(probe_req), resp, sizeof(resp), &resp_len) == HTTP_OK, "Connectivity probe processed");
+        TEST_ASSERT(strncmp(resp, "HTTP/1.1 302 Found\r\n", 20) == 0, "Connectivity probe answered with 302, not success");
+        TEST_ASSERT(strstr(resp, portal_loc) != NULL, "Connectivity probe redirects to http://<board ip>/setup");
+    }
+
     /* 5. Request Processing: 404 Not Found */
     const char req_unknown[] = "POST /unknown HTTP/1.1\r\n\r\n";
     resp[0] = '\0';

@@ -279,8 +279,8 @@ static HTTP_FLASH_TEXT void http_handler_favicon(const char *query_params, char 
     }
 }
 
-/* GET /generate_204 & /gen_204 -> HTTP 204 No Content (Android connectivity validation) */
-static HTTP_FLASH_TEXT void http_handler_generate_204(const char *query_params, char *response_body, size_t max_len)
+/* Connectivity probes (Android, Apple, Windows): empty body, answered with a 302 to the portal */
+static HTTP_FLASH_TEXT void http_handler_connectivity_probe(const char *query_params, char *response_body, size_t max_len)
 {
     (void)query_params;
     (void)max_len;
@@ -290,28 +290,32 @@ static HTTP_FLASH_TEXT void http_handler_generate_204(const char *query_params, 
     }
 }
 
-/* GET /hotspot-detect.html -> Apple Captive Network Assistant Success */
-static HTTP_FLASH_TEXT void http_handler_apple_cna(const char *query_params, char *response_body, size_t max_len)
+/* Android, Apple and Windows connectivity-check paths */
+static HTTP_FLASH_TEXT bool http_is_connectivity_probe(const char *path)
 {
-    (void)query_params;
-    if (response_body == NULL || max_len == 0U) return;
-    const char apple_ok[] = "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>";
-    size_t alen = strlen(apple_ok);
-    if (alen >= max_len) alen = max_len - 1U;
-    memcpy(response_body, apple_ok, alen);
-    response_body[alen] = '\0';
+    return strcmp(path, "/generate_204") == 0 || strcmp(path, "/gen_204") == 0 ||
+           strcmp(path, "/hotspot-detect.html") == 0 || strcmp(path, "/canonical.html") == 0 ||
+           strcmp(path, "/ncsi.txt") == 0 || strcmp(path, "/connecttest.txt") == 0;
 }
 
-/* GET /ncsi.txt & /connecttest.txt -> Windows NCSI Success */
-static HTTP_FLASH_TEXT void http_handler_windows_ncsi(const char *query_params, char *response_body, size_t max_len)
+/* Appends "Location: http://<board IP>/setup" for the current interface address */
+static HTTP_FLASH_TEXT void http_append_portal_location(char *out, size_t max_len)
 {
-    (void)query_params;
-    if (response_body == NULL || max_len == 0U) return;
-    const char ncsi_ok[] = "Microsoft NCSI";
-    size_t nlen = strlen(ncsi_ok);
-    if (nlen >= max_len) nlen = max_len - 1U;
-    memcpy(response_body, ncsi_ok, nlen);
-    response_body[nlen] = '\0';
+    net_config_t ncfg;
+    net_get_config(&ncfg);
+    char octet[4];
+    http_str_append(out, max_len, "Location: http://");
+    for (uint32_t i = 0U; i < 4U; i++)
+    {
+        uint32_t shift = 24U - (i * 8U);
+        http_u32_to_dec((ncfg.ip >> shift) & 0xFFU, octet, sizeof(octet));
+        http_str_append(out, max_len, octet);
+        if (i < 3U)
+        {
+            http_str_append(out, max_len, ".");
+        }
+    }
+    http_str_append(out, max_len, HTTP_CAPTIVE_PORTAL_PATH "\r\n");
 }
 
 static HTTP_FLASH_TEXT bool http_find_int_param(const char *buf, const char *key, int32_t *out_val)
@@ -609,12 +613,12 @@ static HTTP_FLASH_TEXT __attribute__((noinline)) void http_register_default_rout
     http_route_register("/", HTTP_METHOD_GET, http_handler_root);
     http_route_register("/index.html", HTTP_METHOD_GET, http_handler_root);
     http_route_register("/favicon.ico", HTTP_METHOD_GET, http_handler_favicon);
-    http_route_register("/generate_204", HTTP_METHOD_GET, http_handler_generate_204);
-    http_route_register("/gen_204", HTTP_METHOD_GET, http_handler_generate_204);
-    http_route_register("/hotspot-detect.html", HTTP_METHOD_GET, http_handler_apple_cna);
-    http_route_register("/ncsi.txt", HTTP_METHOD_GET, http_handler_windows_ncsi);
-    http_route_register("/connecttest.txt", HTTP_METHOD_GET, http_handler_windows_ncsi);
-    http_route_register("/canonical.html", HTTP_METHOD_GET, http_handler_root);
+    http_route_register("/generate_204", HTTP_METHOD_GET, http_handler_connectivity_probe);
+    http_route_register("/gen_204", HTTP_METHOD_GET, http_handler_connectivity_probe);
+    http_route_register("/hotspot-detect.html", HTTP_METHOD_GET, http_handler_connectivity_probe);
+    http_route_register("/ncsi.txt", HTTP_METHOD_GET, http_handler_connectivity_probe);
+    http_route_register("/connecttest.txt", HTTP_METHOD_GET, http_handler_connectivity_probe);
+    http_route_register("/canonical.html", HTTP_METHOD_GET, http_handler_connectivity_probe);
     http_route_register("/api/status", HTTP_METHOD_GET, http_handler_status);
     http_route_register("/api/info", HTTP_METHOD_GET, http_handler_info);
     http_route_register("/api/telemetry", HTTP_METHOD_GET, http_handler_telemetry);
@@ -901,6 +905,7 @@ http_status_t http_process_request(const char *raw_request, size_t req_len,
     char body_buf[HTTP_BODY_MAX_LEN];
     body_buf[0] = '\0';
     const char *status_line = "HTTP/1.1 200 OK\r\n";
+    bool captive_redirect = false;
     const char *content_type = HTTP_MIME_JSON;
     http_status_t ret_status = HTTP_OK;
 
@@ -910,20 +915,18 @@ http_status_t http_process_request(const char *raw_request, size_t req_len,
         route->handler(query_buf, body_buf, sizeof(body_buf));
         s_http_telemetry.responses_200++;
 
-        if (strcmp(path_buf, "/generate_204") == 0 || strcmp(path_buf, "/gen_204") == 0)
+        if (http_is_connectivity_probe(path_buf))
         {
-            status_line = "HTTP/1.1 204 No Content\r\n";
+            /* The SoftAP has no internet: never answer "connected", send the OS to the portal */
+            status_line = HTTP_STATUS_LINE_302;
             content_type = HTTP_MIME_TEXT;
+            captive_redirect = true;
+            body_buf[0] = '\0';
         }
         else if (strcmp(path_buf, "/") == 0 || strcmp(path_buf, "/index.html") == 0 ||
-                 strcmp(path_buf, "/setup") == 0 ||
-                 strcmp(path_buf, "/hotspot-detect.html") == 0 || strcmp(path_buf, "/canonical.html") == 0)
+                 strcmp(path_buf, "/setup") == 0)
         {
             content_type = HTTP_MIME_HTML;
-        }
-        else if (strcmp(path_buf, "/ncsi.txt") == 0 || strcmp(path_buf, "/connecttest.txt") == 0)
-        {
-            content_type = HTTP_MIME_TEXT;
         }
     }
     else if (path_matched)
@@ -950,6 +953,10 @@ http_status_t http_process_request(const char *raw_request, size_t req_len,
 
     out_response[0] = '\0';
     http_str_append(out_response, max_resp_len, status_line);
+    if (captive_redirect)
+    {
+        http_append_portal_location(out_response, max_resp_len);
+    }
     http_str_append(out_response, max_resp_len, HTTP_SERVER_HEADER);
     http_str_append(out_response, max_resp_len, HTTP_CONN_CLOSE_HEADER);
     http_str_append(out_response, max_resp_len, "Access-Control-Allow-Origin: *\r\n");

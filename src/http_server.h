@@ -32,6 +32,11 @@
 #define HTTP_VERSION_STR                 "HTTP/1.1"
 #define HTTP_SERVER_HEADER               "Server: Iron-V-BareMetal\r\n"
 #define HTTP_CONN_CLOSE_HEADER           "Connection: close\r\n"
+
+/* Captive portal: OS connectivity probes are redirected to the setup page so phones
+ * report "sign in to network" instead of believing the SoftAP has internet access. */
+#define HTTP_STATUS_LINE_302             "HTTP/1.1 302 Found\r\n"
+#define HTTP_CAPTIVE_PORTAL_PATH         "/setup"
 #define HTTP_MIME_JSON                   "application/json"
 #define HTTP_MIME_HTML                   "text/html; charset=utf-8"
 #define HTTP_MIME_TEXT                   "text/plain"

@@ -15,6 +15,7 @@ Performs:
 9. Execution of host-native freestanding C unit test binary (tests/test_freestanding).
 10. Architectural documentation that on-board hardware register reads/writes execute via src/test.c on physical silicon.
 """
+import argparse
 import os
 import struct
 import subprocess
@@ -141,9 +142,7 @@ def print_result_line(num, title, desc, expected, actual, pass_cond):
     print(f"  Result:      [ {'PASS' if pass_cond else 'FAIL'} ]")
     return 1 if pass_cond else 0
 
-def run_suite():
-    elf_path = "firmware.elf"
-    bin_path = "firmware.bin"
+def run_suite(elf_path, bin_path, native_test_bin):
 
     if not os.path.exists(elf_path):
         print(f"Error: {elf_path} not found. Run 'make' first.")
@@ -317,16 +316,8 @@ def run_suite():
 
     # TEST 9: Host-Native Freestanding C Unit Test Suite Execution
     total += 1
-    native_test_bin = os.path.join("tests", "test_freestanding")
     t9_pass = False
-    native_desc = ""
-    if not os.path.exists(native_test_bin):
-        comp = subprocess.run(
-            ["gcc", "-O2", "-fno-tree-loop-distribute-patterns", "-Wall", "-Wextra", "-Werror", "-Isrc", "tests/test_freestanding.c", "src/string.c", "src/mmu.c", "src/dpc.c", "src/arena.c", "src/pmp.c", "src/lp_core.c", "src/power.c", "src/gpio.c", "src/gdma.c", "src/modem.c", "src/ble.c", "src/ble_npl.c", "src/wifi.c", "src/ieee802154.c", "src/net.c", "src/tcp.c", "src/dhcp.c", "src/wifi_os_adapter.c", "src/wifi_regulatory.c", "src/wifi_ftm_cal.c", "src/wifi_phy_data.c", "src/http_server.c", "src/speedtest.c", "src/matter.c", "src/shell.c", "src/efuse.c", "src/soak.c", "src/ota.c", "src/nvs.c", "src/provisioning.c", "src/wpa2_client.c", "src/mdns.c", "-o", native_test_bin],
-            capture_output=True, text=True
-        )
-        if comp.returncode != 0:
-            native_desc = f"gcc compilation failed: {comp.stderr.strip()}"
+    native_desc = f"{native_test_bin} not found (run 'make host-test')"
     if os.path.exists(native_test_bin):
         run_res = subprocess.run([native_test_bin], capture_output=True, text=True)
         t9_pass = (run_res.returncode == 0)
@@ -1562,4 +1553,9 @@ def run_suite():
         sys.exit(1)
 
 if __name__ == "__main__":
-    run_suite()
+    parser = argparse.ArgumentParser(description="Iron-V firmware artifact checks (run via 'make test')")
+    parser.add_argument("--elf", default="build/firmware.elf")
+    parser.add_argument("--bin", default="build/firmware.bin")
+    parser.add_argument("--host-test", default="build/host/test_freestanding")
+    args = parser.parse_args()
+    run_suite(args.elf, args.bin, args.host_test)

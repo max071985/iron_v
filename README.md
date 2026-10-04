@@ -112,13 +112,19 @@ All lifecycle steps are managed through GNU Make:
 # Clean existing binaries
 make clean
 
-# Compile the LP firmware, kernel ELF, and final flashable image (firmware.bin)
+# Compile the LP firmware, kernel ELF, and final flashable image (build/firmware.bin)
 make all
 ```
+All outputs go to `build/`; `make clean` removes that directory. Header and linker-script
+edits trigger the right rebuilds (`-MMD -MP` dependency tracking).
 
 ### 2. Run Test Suites
-Executes the host unit tests and static binary analysis without requiring connected hardware:
+Neither target needs connected hardware:
 ```bash
+# Host C unit tests + companion app tests (native gcc only, no RISC-V toolchain needed)
+make host-test
+
+# host-test plus static analysis of build/firmware.elf and build/firmware.bin
 make test
 ```
 

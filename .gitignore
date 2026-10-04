@@ -9,8 +9,9 @@
 __pycache__/
 *.pyc
 
-# Local secrets and overrides
+# Local secrets and overrides (local.mk: optional untracked make targets)
 /src/config_local.h
+/local.mk
 
 # Local-only documentation (intentionally untracked)
 /docs/

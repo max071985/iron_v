@@ -11,13 +11,35 @@ CC = $(CROSS_COMPILE)gcc
 LD = $(CROSS_COMPILE)ld
 OBJCOPY = $(CROSS_COMPILE)objcopy
 
+# All build outputs live under $(BUILD)
+BUILD ?= build
+OBJ_DIR = $(BUILD)/obj
+GEN_DIR = $(BUILD)/gen
+LP_DIR = $(BUILD)/lp_core
+HOST_DIR = $(BUILD)/host
+ELF = $(BUILD)/firmware.elf
+BIN = $(BUILD)/firmware.bin
+LP_IMAGE_H = $(GEN_DIR)/lp_firmware_image.h
+HOST_TEST_BIN = $(HOST_DIR)/test_freestanding
+
 # Compiler flags
-CFLAGS = -march=rv32imac_zicsr_zifencei -mabi=ilp32 -ffreestanding -nostdlib -Os -g -Wall -Wextra -Werror -Isrc
+CFLAGS = -march=rv32imac_zicsr_zifencei -mabi=ilp32 -ffreestanding -nostdlib -Os -g -Wall -Wextra -Werror -Isrc -I$(GEN_DIR)
+
+DEPFLAGS = -MMD -MP
+
+# Host test build: native compiler, stub LP image (tests/host/), no cross toolchain needed
+HOST_CC ?= gcc
+HOST_CFLAGS = -O2 -fno-tree-loop-distribute-patterns -Wall -Wextra -Werror -Itests/host -Isrc
 
 # Linker flags
 LDFLAGS = -T ld/link.ld -T ld/rom/esp32c6.rom.ld -T ld/rom/esp32c6.rom.phy.ld -T ld/rom/esp32c6.rom.pp.ld -T ld/rom/esp32c6.rom.net80211.ld -T ld/rom/esp32c6.rom.coexist.ld -Llibs/esp32c6 -nostdlib -Wl,--wrap=ram_set_chan_freq_sw_start
 
 SRCS = src/crt0.S src/trap_entry.S src/task_switch.S src/main.c src/string.c src/utils.c src/test.c src/clock.c src/mmu.c src/wdt.c src/trap.c src/panic.c src/interrupt.c src/dpc.c src/usb_serial.c src/uart.c src/console.c src/timer.c src/arena.c src/systimer.c src/task.c src/pmp.c src/lp_core.c src/power.c src/gpio.c src/gdma.c src/modem.c src/ble.c src/ble_npl.c src/wifi.c src/ieee802154.c src/net.c src/tcp.c src/dhcp.c src/wifi_os_adapter.c src/wifi_regulatory.c src/wifi_ftm_cal.c src/wifi_phy_data.c src/http_server.c src/speedtest.c src/matter.c src/shell.c src/efuse.c src/soak.c src/ota.c src/nvs.c src/provisioning.c src/wpa2_client.c src/mdns.c
+
+# Sources that only make sense on the target (startup, traps, console, timers, scheduler,
+# the on-board self-test). Everything else in SRCS is also compiled into the host tests.
+TARGET_ONLY_SRCS = src/crt0.S src/trap_entry.S src/task_switch.S src/main.c src/utils.c src/test.c src/clock.c src/wdt.c src/trap.c src/panic.c src/interrupt.c src/usb_serial.c src/uart.c src/console.c src/timer.c src/systimer.c src/task.c
+HOST_SRCS = $(filter-out $(TARGET_ONLY_SRCS),$(SRCS))
 
 # Auto-detect hardware ports
 DETECTED_ACM ?= $(firstword $(wildcard /dev/ttyACM*))
@@ -48,38 +70,45 @@ else
   MONITOR_FLAGS ?= --noreset --lower-rts --lower-dtr
 endif
 
-.PHONY: all flash monitor clean test docs
-all: firmware.bin
+.PHONY: all flash erase_flash monitor clean test host-test
+all: $(BIN)
+
+# The LP image header is generated into $(GEN_DIR); a leftover copy in src/ would shadow it
+ifneq ($(wildcard src/lp_firmware_image.h),)
+  $(error src/lp_firmware_image.h is stale (now generated in $(GEN_DIR)); delete it)
+endif
 
 # LP Core Firmware Targets
-lp_core/lp_firmware.elf: lp_core/main.c lp_core/link.ld
+$(LP_DIR)/lp_firmware.elf: lp_core/main.c lp_core/link.ld
+	@mkdir -p $(@D)
 	$(CC) -march=rv32imac_zicsr -mabi=ilp32 -Os -nostdlib -Wl,-T,lp_core/link.ld $< -o $@
 
-lp_core/lp_firmware.bin: lp_core/lp_firmware.elf
+$(LP_DIR)/lp_firmware.bin: $(LP_DIR)/lp_firmware.elf
 	$(OBJCOPY) -O binary $< $@
 
-src/lp_firmware_image.h: lp_core/lp_firmware.bin
+$(LP_IMAGE_H): $(LP_DIR)/lp_firmware.bin
+	@mkdir -p $(@D)
 	@python3 -c "with open('$<','rb') as f: d=f.read(); \
 	open('$@','w').write('/* Auto-generated */\n#ifndef LP_FIRMWARE_IMAGE_H\n#define LP_FIRMWARE_IMAGE_H\n#include <stdint.h>\n#include <stddef.h>\nstatic const uint8_t g_lp_firmware_bin[] __attribute__((aligned(4))) = {' + ','.join(f'0x{b:02X}U' for b in d) + '};\nstatic const size_t g_lp_firmware_bin_len = ' + str(len(d)) + 'U;\n#endif\n')"
 
-# Targets
+# Firmware
+OBJS = $(patsubst src/%,$(OBJ_DIR)/%.o,$(basename $(SRCS)))
 
+$(OBJ_DIR)/%.o: src/%.c | $(LP_IMAGE_H)
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
-OBJS = $(patsubst %.S,%.o,$(patsubst %.c,%.o,$(SRCS)))
+$(OBJ_DIR)/%.o: src/%.S | $(LP_IMAGE_H)
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
-src/%.o: src/%.c src/lp_firmware_image.h
-	$(CC) $(CFLAGS) -c $< -o $@
-
-src/%.o: src/%.S src/lp_firmware_image.h
-	$(CC) $(CFLAGS) -c $< -o $@
-
-firmware.elf: $(OBJS)
+$(ELF): $(OBJS) $(wildcard ld/*.ld ld/rom/*.ld)
 	$(CC) $(CFLAGS) $(LDFLAGS) $(OBJS) -Wl,--start-group -lnet80211 -lpp -lphy -lcore -lbtbb -Wl,--end-group -lgcc -o $@
 
-firmware.bin: firmware.elf
+$(BIN): $(ELF)
 	esptool --chip esp32c6 elf2image --flash-mode dio --flash-size 8MB --flash-freq 80m -o $@ $<
 
-flash: firmware.bin
+flash: $(BIN)
 	esptool --chip esp32c6 --port $(PORT) --baud $(FLASH_BAUD) write_flash --flash-mode dio --flash-size 8MB --flash-freq 80m 0x0 $<
 
 erase_flash:
@@ -115,19 +144,27 @@ monitor:
 	echo "Connecting to $$port with picocom $$flags..."; \
 	exec picocom $$flags "$$port"
 
-tests/test_freestanding: tests/test_freestanding.c src/string.c src/string.h src/mmu.c src/mmu.h src/dpc.c src/dpc.h src/arena.c src/arena.h src/pmp.c src/pmp.h src/lp_core.c src/lp_core.h src/lp_firmware_image.h src/power.c src/power.h src/gpio.c src/gpio.h src/gdma.c src/gdma.h src/modem.c src/modem.h src/ble.c src/ble.h src/ble_gatt.h src/ble_npl.c src/ble_npl.h src/wifi.c src/wifi.h src/ieee802154.c src/ieee802154.h src/config.h src/net.c src/net.h src/tcp.c src/tcp.h src/dhcp.c src/dhcp.h src/wifi_os_adapter.c src/wifi_os_adapter.h src/wifi_vendor_types.h src/wifi_regulatory.h src/wifi_ftm_cal.h src/wifi_phy_data.h src/wifi_regulatory.c src/wifi_ftm_cal.c src/wifi_phy_data.c src/http_server.c src/http_server.h src/web_assets.h src/speedtest.c src/speedtest.h src/matter.c src/matter.h src/shell.c src/shell.h src/efuse.c src/efuse.h src/soak.c src/soak.h src/ota.c src/ota.h src/nvs.c src/nvs.h src/provisioning.c src/provisioning.h src/wpa2_client.c src/wpa2_client.h src/mdns.c src/mdns.h
-	gcc -O2 -fno-tree-loop-distribute-patterns -Wall -Wextra -Werror -Isrc tests/test_freestanding.c src/string.c src/mmu.c src/dpc.c src/arena.c src/pmp.c src/lp_core.c src/power.c src/gpio.c src/gdma.c src/modem.c src/ble.c src/ble_npl.c src/wifi.c src/ieee802154.c src/net.c src/tcp.c src/dhcp.c src/wifi_os_adapter.c src/wifi_regulatory.c src/wifi_ftm_cal.c src/wifi_phy_data.c src/http_server.c src/speedtest.c src/matter.c src/shell.c src/efuse.c src/soak.c src/ota.c src/nvs.c src/provisioning.c src/wpa2_client.c src/mdns.c -o $@
+# Host tests
+HOST_OBJS = $(patsubst %.c,$(HOST_DIR)/%.o,tests/test_freestanding.c $(HOST_SRCS))
 
+$(HOST_DIR)/%.o: %.c
+	@mkdir -p $(@D)
+	$(HOST_CC) $(HOST_CFLAGS) $(DEPFLAGS) -c $< -o $@
 
-do-test: firmware.elf firmware.bin tests/test_freestanding
-	@./tests/test_freestanding
+$(HOST_TEST_BIN): $(HOST_OBJS)
+	$(HOST_CC) $(HOST_OBJS) -o $@
+
+host-test: $(HOST_TEST_BIN)
+	@./$(HOST_TEST_BIN)
 	@python3 tests/test_companion_app.py
-	@python3 tests/test_runner.py
 
-test: do-test
-
-docs:
-	python3 scripts/generate_architecture_manual.py
+test: host-test $(ELF) $(BIN)
+	@python3 tests/test_runner.py --elf $(ELF) --bin $(BIN) --host-test $(HOST_TEST_BIN)
 
 clean:
-	rm -f *.elf *.bin tests/test_freestanding lp_core/*.elf lp_core/*.bin src/lp_firmware_image.h src/*.o
+	rm -rf $(BUILD)
+
+-include $(OBJS:.o=.d) $(HOST_OBJS:.o=.d)
+
+# Optional local, untracked targets (e.g. docs)
+-include local.mk

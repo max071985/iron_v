@@ -9,6 +9,7 @@
  */
 
 #include "http_server.h"
+#include "config.h"
 #include "web_assets.h"
 #include "arena.h"
 #include "string.h"
@@ -917,10 +918,14 @@ http_status_t http_process_request(const char *raw_request, size_t req_len,
 
         if (http_is_connectivity_probe(path_buf))
         {
-            /* The SoftAP has no internet: never answer "connected", send the OS to the portal */
-            status_line = HTTP_STATUS_LINE_302;
-            content_type = HTTP_MIME_TEXT;
+            /* The SoftAP has no internet: never answer "connected" */
+#if CONFIG_SOFTAP_CAPTIVE_PORTAL
+            status_line = HTTP_STATUS_LINE_302;   /* send the OS to the portal */
             captive_redirect = true;
+#else
+            status_line = HTTP_STATUS_LINE_404;   /* plain "no internet" */
+#endif
+            content_type = HTTP_MIME_TEXT;
             body_buf[0] = '\0';
         }
         else if (strcmp(path_buf, "/") == 0 || strcmp(path_buf, "/index.html") == 0 ||

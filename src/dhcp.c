@@ -364,8 +364,9 @@ dhcp_status_t dhcp_process_packet(const uint8_t *eth_frame, const uint8_t *paylo
         out_opt[opt_offset++] = (uint8_t)(DHCP_DEFAULT_GATEWAY >> 8U);
         out_opt[opt_offset++] = (uint8_t)(DHCP_DEFAULT_GATEWAY & 0xFFU);
 
+
         /* Option 28: Broadcast Address (192.168.1.255) */
-        out_opt[opt_offset++] = 28U;
+        out_opt[opt_offset++] = DHCP_OPT_BROADCAST_ADDR;
         out_opt[opt_offset++] = 4U;
         out_opt[opt_offset++] = (uint8_t)(DHCP_DEFAULT_GATEWAY >> 24U);
         out_opt[opt_offset++] = (uint8_t)(DHCP_DEFAULT_GATEWAY >> 16U);
@@ -484,8 +485,9 @@ dhcp_status_t dhcp_process_packet(const uint8_t *eth_frame, const uint8_t *paylo
         out_opt[opt_offset++] = (uint8_t)(DHCP_DEFAULT_GATEWAY >> 8U);
         out_opt[opt_offset++] = (uint8_t)(DHCP_DEFAULT_GATEWAY & 0xFFU);
 
+
         /* Option 28: Broadcast Address (192.168.1.255) */
-        out_opt[opt_offset++] = 28U;
+        out_opt[opt_offset++] = DHCP_OPT_BROADCAST_ADDR;
         out_opt[opt_offset++] = 4U;
         out_opt[opt_offset++] = (uint8_t)(DHCP_DEFAULT_GATEWAY >> 24U);
         out_opt[opt_offset++] = (uint8_t)(DHCP_DEFAULT_GATEWAY >> 16U);
@@ -525,9 +527,42 @@ dhcp_status_t dhcp_process_packet(const uint8_t *eth_frame, const uint8_t *paylo
 }
 
 /* ========================================================================= */
-/* Minimal DNS Captive Portal Catch-All Resolver (RFC 1035)                  */
-/* Resolves all A-record queries to AP Gateway IP (192.168.1.1)               */
+/* Minimal SoftAP DNS Resolver (RFC 1035)                                    */
+/* Captive mode: every query resolves to the AP gateway (192.168.1.1).       */
+/* Otherwise only A queries for the board's own names resolve; the rest get  */
+/* NXDOMAIN so the phone sees a network without internet.                    */
 /* ========================================================================= */
+#if !CONFIG_SOFTAP_CAPTIVE_PORTAL
+/* True when the question name is CONFIG_DEVICE_HOSTNAME or <hostname>.local (case-insensitive) */
+static DHCP_FLASH_TEXT bool dns_name_is_local(const uint8_t *payload, uint16_t name_start, uint16_t name_end)
+{
+    char name[DNS_MAX_NAME_LEN];
+    uint16_t n = 0U;
+    uint16_t pos = name_start;
+    while (pos < name_end)
+    {
+        uint8_t label_len = payload[pos++];
+        if (label_len == 0U) break;
+        if (n != 0U)
+        {
+            if (n + 1U >= sizeof(name)) return false;
+            name[n++] = '.';
+        }
+        for (uint8_t i = 0U; i < label_len; i++)
+        {
+            if (n + 1U >= sizeof(name)) return false;
+            char c = (char)payload[pos++];
+            name[n++] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+        }
+    }
+    name[n] = '\0';
+
+    size_t host_len = strlen(CONFIG_DEVICE_HOSTNAME);
+    if (strncmp(name, CONFIG_DEVICE_HOSTNAME, host_len) != 0) return false;
+    return name[host_len] == '\0' || strcmp(&name[host_len], DNS_LOCAL_SUFFIX) == 0;
+}
+#endif
+
 DHCP_FLASH_TEXT
 dhcp_status_t dns_process_packet(const uint8_t *eth_frame, const uint8_t *payload, uint16_t len)
 {
@@ -569,13 +604,25 @@ dhcp_status_t dns_process_packet(const uint8_t *eth_frame, const uint8_t *payloa
     uint16_t q_end = (uint16_t)(q_offset + 4U);
     uint16_t q_total_len = (uint16_t)(q_end - sizeof(dns_header_t));
 
-    /* Assemble DNS Response */
-    uint8_t resp_buf[512];
+#if CONFIG_SOFTAP_CAPTIVE_PORTAL
+    bool answer = true;
+#else
+    uint16_t qtype = (uint16_t)(((uint16_t)payload[q_offset] << 8U) | payload[q_offset + 1U]);
+    bool answer = (qtype == DNS_TYPE_A) &&
+                  dns_name_is_local(payload, (uint16_t)sizeof(dns_header_t), q_offset);
+#endif
+
+    /* Assemble DNS Response: header + echoed question + one A record */
+    uint8_t resp_buf[DNS_MAX_RESPONSE_LEN];
+    if ((sizeof(dns_header_t) + q_total_len + DNS_A_RECORD_LEN) > sizeof(resp_buf))
+    {
+        return DHCP_ERR_CORRUPT_FRAME;
+    }
     dns_header_t *resp_hdr = (dns_header_t *)resp_buf;
     resp_hdr->id      = dns_req->id;
-    resp_hdr->flags   = NET_HTONS(DNS_FLAGS_RESPONSE_OK);
+    resp_hdr->flags   = NET_HTONS(answer ? DNS_FLAGS_RESPONSE_OK : DNS_FLAGS_RESPONSE_NXDOMAIN);
     resp_hdr->qdcount = NET_HTONS(1U);
-    resp_hdr->ancount = NET_HTONS(1U);
+    resp_hdr->ancount = NET_HTONS(answer ? 1U : 0U);
     resp_hdr->nscount = 0U;
     resp_hdr->arcount = 0U;
 
@@ -585,33 +632,36 @@ dhcp_status_t dns_process_packet(const uint8_t *eth_frame, const uint8_t *payloa
     memcpy(&resp_buf[out_len], &payload[sizeof(dns_header_t)], q_total_len);
     out_len = (uint16_t)(out_len + q_total_len);
 
-    /* Append Answer: Compression pointer to question domain (0xC00C) */
-    resp_buf[out_len++] = 0xC0U;
-    resp_buf[out_len++] = 0x0CU;
+    if (answer)
+    {
+        /* Append Answer: Compression pointer to question domain (0xC00C) */
+        resp_buf[out_len++] = 0xC0U;
+        resp_buf[out_len++] = 0x0CU;
 
-    /* Type: A (Host Address) */
-    resp_buf[out_len++] = (uint8_t)(DNS_TYPE_A >> 8U);
-    resp_buf[out_len++] = (uint8_t)(DNS_TYPE_A & 0xFFU);
+        /* Type: A (Host Address) */
+        resp_buf[out_len++] = (uint8_t)(DNS_TYPE_A >> 8U);
+        resp_buf[out_len++] = (uint8_t)(DNS_TYPE_A & 0xFFU);
 
-    /* Class: IN (Internet) */
-    resp_buf[out_len++] = (uint8_t)(DNS_CLASS_IN >> 8U);
-    resp_buf[out_len++] = (uint8_t)(DNS_CLASS_IN & 0xFFU);
+        /* Class: IN (Internet) */
+        resp_buf[out_len++] = (uint8_t)(DNS_CLASS_IN >> 8U);
+        resp_buf[out_len++] = (uint8_t)(DNS_CLASS_IN & 0xFFU);
 
-    /* TTL: 60 seconds */
-    resp_buf[out_len++] = (uint8_t)(DNS_DEFAULT_TTL_SEC >> 24U);
-    resp_buf[out_len++] = (uint8_t)(DNS_DEFAULT_TTL_SEC >> 16U);
-    resp_buf[out_len++] = (uint8_t)(DNS_DEFAULT_TTL_SEC >> 8U);
-    resp_buf[out_len++] = (uint8_t)(DNS_DEFAULT_TTL_SEC & 0xFFU);
+        /* TTL: 60 seconds */
+        resp_buf[out_len++] = (uint8_t)(DNS_DEFAULT_TTL_SEC >> 24U);
+        resp_buf[out_len++] = (uint8_t)(DNS_DEFAULT_TTL_SEC >> 16U);
+        resp_buf[out_len++] = (uint8_t)(DNS_DEFAULT_TTL_SEC >> 8U);
+        resp_buf[out_len++] = (uint8_t)(DNS_DEFAULT_TTL_SEC & 0xFFU);
 
-    /* Data Length: 4 bytes (IPv4) */
-    resp_buf[out_len++] = 0x00U;
-    resp_buf[out_len++] = 0x04U;
+        /* Data Length: 4 bytes (IPv4) */
+        resp_buf[out_len++] = 0x00U;
+        resp_buf[out_len++] = 0x04U;
 
-    /* IP Address: 192.168.1.1 */
-    resp_buf[out_len++] = (uint8_t)(DHCP_DEFAULT_GATEWAY >> 24U);
-    resp_buf[out_len++] = (uint8_t)(DHCP_DEFAULT_GATEWAY >> 16U);
-    resp_buf[out_len++] = (uint8_t)(DHCP_DEFAULT_GATEWAY >> 8U);
-    resp_buf[out_len++] = (uint8_t)(DHCP_DEFAULT_GATEWAY & 0xFFU);
+        /* IP Address: 192.168.1.1 */
+        resp_buf[out_len++] = (uint8_t)(DHCP_DEFAULT_GATEWAY >> 24U);
+        resp_buf[out_len++] = (uint8_t)(DHCP_DEFAULT_GATEWAY >> 16U);
+        resp_buf[out_len++] = (uint8_t)(DHCP_DEFAULT_GATEWAY >> 8U);
+        resp_buf[out_len++] = (uint8_t)(DHCP_DEFAULT_GATEWAY & 0xFFU);
+    }
 
     /* Extract client MAC, client IP and client UDP port from inbound frame */
     const ethernet_header_t *in_eth = (const ethernet_header_t *)eth_frame;

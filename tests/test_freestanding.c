@@ -2376,7 +2376,8 @@ static void test_http_server_subsystem(void)
     TEST_ASSERT(strstr(resp, "Access-Control-Allow-Methods: GET, POST, OPTIONS") != NULL, "CORS Allow-Methods present");
     TEST_ASSERT(strstr(resp, "Access-Control-Allow-Headers: Content-Type, Authorization") != NULL, "CORS Allow-Headers present");
 
-    /* 4g. Captive portal: connectivity probes redirect to the setup page */
+    /* 4g. Connectivity probes never report "connected": captive mode redirects to the
+     *     setup page, the default "no internet" mode answers 404 */
     const char *probe_paths[] = {"/generate_204", "/gen_204", "/hotspot-detect.html", "/ncsi.txt", "/connecttest.txt"};
     char probe_req[96];
     char portal_loc[48];
@@ -2390,8 +2391,14 @@ static void test_http_server_subsystem(void)
         snprintf(probe_req, sizeof(probe_req), "GET %s HTTP/1.1\r\nHost: connectivitycheck.gstatic.com\r\n\r\n", probe_paths[pi]);
         resp[0] = '\0';
         TEST_ASSERT(http_process_request(probe_req, strlen(probe_req), resp, sizeof(resp), &resp_len) == HTTP_OK, "Connectivity probe processed");
+#if CONFIG_SOFTAP_CAPTIVE_PORTAL
         TEST_ASSERT(strncmp(resp, "HTTP/1.1 302 Found\r\n", 20) == 0, "Connectivity probe answered with 302, not success");
         TEST_ASSERT(strstr(resp, portal_loc) != NULL, "Connectivity probe redirects to http://<board ip>/setup");
+#else
+        (void)portal_loc;
+        TEST_ASSERT(strncmp(resp, "HTTP/1.1 404 Not Found\r\n", 24) == 0, "Connectivity probe answered with 404 (no internet), not success");
+        TEST_ASSERT(strstr(resp, "Location:") == NULL, "Connectivity probe is not redirected");
+#endif
     }
 
     /* 5. Request Processing: 404 Not Found */
@@ -3431,6 +3438,102 @@ static void test_provisioning_subsystem(void)
 
     /* 8. Reset state */
     provisioning_clear_credentials();
+}
+
+/* Builds a DNS query for <name> (dotted) with qtype into q; returns its length */
+static uint16_t build_dns_query(uint8_t *q, size_t cap, const char *name, uint16_t qtype)
+{
+    memset(q, 0, cap);
+    dns_header_t *h = (dns_header_t *)q;
+    h->id = NET_HTONS(0x1234U);
+    h->qdcount = NET_HTONS(1U);
+    size_t i = sizeof(dns_header_t);
+    const char *p = name;
+    while (*p != '\0')
+    {
+        size_t l = 0U;
+        while (p[l] != '\0' && p[l] != '.') l++;
+        q[i++] = (uint8_t)l;
+        memcpy(&q[i], p, l);
+        i += l;
+        p += l;
+        if (*p == '.') p++;
+    }
+    q[i++] = 0U;
+    q[i++] = (uint8_t)(qtype >> 8);
+    q[i++] = (uint8_t)(qtype & 0xFFU);
+    q[i++] = 0U;
+    q[i++] = 1U; /* QCLASS IN */
+    return (uint16_t)i;
+}
+
+/* Sends one query through dns_process_packet and returns the captured DNS reply header */
+static const dns_header_t *run_dns_query(const uint8_t *query, uint16_t len, dhcp_status_t *out_st)
+{
+    uint8_t frame[ETH_HDR_LEN + sizeof(ipv4_header_t) + sizeof(udp_header_t)];
+    memset(frame, 0, sizeof(frame));
+    ethernet_header_t *eth = (ethernet_header_t *)frame;
+    const uint8_t phone_mac[6] = {0x36, 0xC0, 0x65, 0x73, 0xB7, 0xE3};
+    memcpy(eth->src_mac, phone_mac, 6U);
+    ipv4_header_t *ip = (ipv4_header_t *)(frame + ETH_HDR_LEN);
+    ip->ver_ihl = 0x45U;
+    ip->src_ip = NET_HTONL(0xC0A80102U); /* 192.168.1.2 */
+    udp_header_t *udp = (udp_header_t *)(frame + ETH_HDR_LEN + sizeof(ipv4_header_t));
+    udp->src_port = NET_HTONS(40000U);
+
+    *out_st = dns_process_packet(frame, query, len);
+    uint16_t tx_len = 0U;
+    const uint8_t *tx = wifi_host_last_tx(&tx_len, NULL);
+    return (const dns_header_t *)(tx + ETH_HDR_LEN + sizeof(ipv4_header_t) + sizeof(udp_header_t));
+}
+
+static void test_softap_dns_modes(void)
+{
+    printf("  [TEST] SoftAP DNS: local names only (no-internet mode) / catch-all (captive)...\n");
+    uint8_t q[600];
+    dhcp_status_t st;
+    char local_name[64];
+    snprintf(local_name, sizeof(local_name), "%s.local", CONFIG_DEVICE_HOSTNAME);
+
+    uint16_t len = build_dns_query(q, sizeof(q), local_name, DNS_TYPE_A);
+    const dns_header_t *r = run_dns_query(q, len, &st);
+    TEST_ASSERT(st == DHCP_OK, "DNS query for <hostname>.local processed");
+    TEST_ASSERT(r->id == NET_HTONS(0x1234U), "DNS reply echoes the query id");
+    TEST_ASSERT(NET_NTOHS(r->flags) == DNS_FLAGS_RESPONSE_OK && NET_NTOHS(r->ancount) == 1U,
+                "<hostname>.local resolves to the board");
+
+    len = build_dns_query(q, sizeof(q), CONFIG_DEVICE_HOSTNAME, DNS_TYPE_A);
+    r = run_dns_query(q, len, &st);
+    TEST_ASSERT(st == DHCP_OK && NET_NTOHS(r->ancount) == 1U, "bare <hostname> resolves to the board");
+
+    len = build_dns_query(q, sizeof(q), "connectivitycheck.gstatic.com", DNS_TYPE_A);
+    r = run_dns_query(q, len, &st);
+    TEST_ASSERT(st == DHCP_OK, "DNS query for an internet name processed");
+#if CONFIG_SOFTAP_CAPTIVE_PORTAL
+    TEST_ASSERT(NET_NTOHS(r->ancount) == 1U, "captive mode: every name resolves to the board");
+#else
+    TEST_ASSERT(NET_NTOHS(r->flags) == DNS_FLAGS_RESPONSE_NXDOMAIN && NET_NTOHS(r->ancount) == 0U,
+                "no-internet mode: internet names get NXDOMAIN");
+
+    len = build_dns_query(q, sizeof(q), local_name, 28U /* AAAA */);
+    r = run_dns_query(q, len, &st);
+    TEST_ASSERT(st == DHCP_OK && NET_NTOHS(r->ancount) == 0U, "no-internet mode: AAAA for the board gets no A record");
+#endif
+
+    /* Oversized question (labels totalling > 512 bytes) is rejected, not copied */
+    memset(q, 0, sizeof(q));
+    ((dns_header_t *)q)->qdcount = NET_HTONS(1U);
+    size_t i = sizeof(dns_header_t);
+    for (int k = 0; k < 9; k++)
+    {
+        q[i++] = 60U;
+        memset(&q[i], 'a', 60U);
+        i += 60U;
+    }
+    q[i++] = 0U;
+    q[i++] = 0U; q[i++] = 1U; q[i++] = 0U; q[i++] = 1U;
+    (void)run_dns_query(q, (uint16_t)i, &st);
+    TEST_ASSERT(st == DHCP_ERR_CORRUPT_FRAME, "DNS query larger than the 512-byte reply buffer is rejected");
 }
 
 static void test_wpa2_client_and_mdns_subsystem(void)
@@ -4931,6 +5034,7 @@ int main(void)
     test_tcpip_subsystem();
     test_http_server_subsystem();
     test_dhcp_dns_subsystem();
+    test_softap_dns_modes();
     test_speedtest_subsystem();
     test_matter_subsystem();
     test_shell_subsystem();

@@ -36,6 +36,7 @@
 /* Captive portal: OS connectivity probes are redirected to the setup page so phones
  * report "sign in to network" instead of believing the SoftAP has internet access. */
 #define HTTP_STATUS_LINE_302             "HTTP/1.1 302 Found\r\n"
+#define HTTP_STATUS_LINE_404             "HTTP/1.1 404 Not Found\r\n"
 #define HTTP_CAPTIVE_PORTAL_PATH         "/setup"
 #define HTTP_MIME_JSON                   "application/json"
 #define HTTP_MIME_HTML                   "text/html; charset=utf-8"

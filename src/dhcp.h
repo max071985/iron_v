@@ -41,6 +41,7 @@
 #define DHCP_IP_BROADCAST               0xFFFFFFFFU
 
 #define DHCP_OPT_DNS                    6U
+#define DHCP_OPT_BROADCAST_ADDR         28U
 #define DHCP_OPT_REQUESTED_IP           50U
 #define DHCP_OPT_LEASE_TIME             51U
 #define DHCP_OPT_MSG_TYPE               53U
@@ -73,6 +74,10 @@
 
 /* DNS Flags: Standard Query Response, No Error */
 #define DNS_FLAGS_RESPONSE_OK           0x8180U
+#define DNS_FLAGS_RESPONSE_NXDOMAIN     0x8183U
+#define DNS_LOCAL_SUFFIX                ".local"
+#define DNS_MAX_RESPONSE_LEN            512U   /* RFC 1035 UDP message limit */
+#define DNS_A_RECORD_LEN                16U    /* name ptr 2 + type 2 + class 2 + TTL 4 + len 2 + IPv4 4 */
 #define DNS_TYPE_A                      0x0001U
 #define DNS_CLASS_IN                    0x0001U
 #define DNS_DEFAULT_TTL_SEC             60U

@@ -194,6 +194,18 @@
 #define CONFIG_BLE_DEVICE_NAME              "IRON-V-C6"
 #endif
 
+/* Setup SoftAP captive portal. DHCP always advertises the board as gateway + DNS,
+ * so the phone routes through the SoftAP (a gateway-less lease leaves Android on
+ * mobile data and 192.168.1.1 unreachable).
+ * 1 (default, phone-verified): captive portal - catch-all DNS + probe redirect pop the
+ *    "sign in" page; Android leaves the network once that page has been idle ~20 s.
+ * 0 (not yet phone-verified): "no internet" network - DNS answers only the board's own
+ *    names (NXDOMAIN otherwise) and probes get 404, so the phone should report
+ *    "no internet" and offer to stay connected; the user opens /setup manually. */
+#ifndef CONFIG_SOFTAP_CAPTIVE_PORTAL
+#define CONFIG_SOFTAP_CAPTIVE_PORTAL        1U
+#endif
+
 /* Off: there is no BLE controller on this build; advertising is a software model only */
 #ifndef CONFIG_BLE_AUTO_START_ADV
 #define CONFIG_BLE_AUTO_START_ADV           0U

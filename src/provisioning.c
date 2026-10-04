@@ -646,8 +646,10 @@ void PROV_FLASH_TEXT provisioning_print_status(void)
     console_puts(num);
     console_puts(" (Valid: ");
     prov_u32_to_dec(s_prov_telemetry.configs_valid, num, sizeof(num));
+    console_puts(num);
     console_puts(", Rejected: ");
     prov_u32_to_dec(s_prov_telemetry.configs_rejected, num, sizeof(num));
+    console_puts(num);
     console_puts(")\r\n");
     console_puts(" Scan Cache:   ");
     prov_u32_to_dec(s_prov_scan_count, num, sizeof(num));

@@ -1393,7 +1393,8 @@ static int nvs_stub_get_blob(uint32_t handle, const char *key, void *val, size_t
 static int nvs_stub_erase_key(uint32_t handle, const char *key) { (void)handle; (void)key; return 0; }
 
 /* Coexistence stubs & state tracking */
-static uint32_t s_coex_status = WIFI_COEX_STATUS_DEFAULT;
+static uint32_t s_coex_status = 0U;
+static uint32_t s_coex_schm_status = 0U;
 
 static int coex_init_wrapper(void) { return 0; }
 static void coex_deinit_wrapper(void) {}
@@ -1437,16 +1438,12 @@ static int coex_pti_get_wrapper(uint32_t event, uint8_t *pti)
 static void coex_schm_status_bit_clear_wrapper(uint32_t type, uint32_t status)
 {
     (void)type;
-    s_coex_status &= ~status;
-    if (s_coex_status == 0U)
-    {
-        s_coex_status = WIFI_COEX_STATUS_DEFAULT;
-    }
+    s_coex_schm_status &= ~status;
 }
 static void coex_schm_status_bit_set_wrapper(uint32_t type, uint32_t status)
 {
     (void)type;
-    s_coex_status |= status;
+    s_coex_schm_status |= status;
 }
 static int coex_schm_interval_set_wrapper(uint32_t interval) { (void)interval; return 0; }
 static uint32_t coex_schm_interval_get_wrapper(void) { return 1000U; }
@@ -1816,6 +1813,9 @@ static void s_wpa_sta_disconnected_cb(uint8_t reason)
 }
 static int s_wpa_sta_rx_eapol(uint8_t *src_addr, uint8_t *buf, uint32_t len)
 {
+    console_puts("[WPA] RX EAPOL frame len=");
+    put_dec(len);
+    console_puts("\r\n");
     return (int)wpa2_client_rx_eapol(src_addr, buf, (uint16_t)len);
 }
 static bool s_wpa_sta_in_4way(void)
@@ -1953,5 +1953,11 @@ void wifi_os_adapter_init(void)
     {
         *p++ = 0U;
     }
+
+    /* 4. Enable vendor Wi-Fi stack diagnostic logging */
+    extern uint32_t g_log_level;
+    extern uint32_t g_log_mod;
+    g_log_level = 3U;
+    g_log_mod = 0xFFFFFFFFU;
 #endif
 }

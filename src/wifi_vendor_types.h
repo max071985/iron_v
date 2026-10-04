@@ -848,6 +848,9 @@ esp_err_t esp_wifi_internal_set_log_level(wifi_log_level_t level);
 esp_err_t esp_wifi_internal_set_log_mod(wifi_log_module_t module, uint32_t submodule, bool enable);
 esp_err_t esp_wifi_connect(void);
 esp_err_t esp_wifi_disconnect(void);
+esp_err_t esp_wifi_set_sta_key_internal(int alg, const uint8_t *addr, int key_idx, int set_tx,
+                                        const uint8_t *seq, size_t seq_len,
+                                        const uint8_t *key, size_t key_len, int key_flag);
 
 esp_err_t esp_event_send_internal(esp_event_base_t event_base, int32_t event_id, void *event_data, size_t event_data_size, uint32_t ticks_to_wait);
 

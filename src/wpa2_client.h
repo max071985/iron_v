@@ -185,6 +185,7 @@ void          wpa2_client_on_disconnected(uint8_t reason) WPA2_FLASH_TEXT;
 
 /* Handover & Home LAN Join Orchestrator */
 wpa2_status_t wpa2_client_handover(const char *ssid, const char *passphrase) WPA2_FLASH_TEXT;
+wpa2_status_t wpa2_client_handover_chan(const char *ssid, const char *passphrase, uint8_t channel) WPA2_FLASH_TEXT;
 
 /* Cryptographic Engines & Test Vectors */
 wpa2_status_t wpa2_crypto_pbkdf2_sha1(const char *passphrase, const char *ssid,

@@ -931,6 +931,19 @@ wpa2_status_t wpa2_client_configure(const char *ssid, const char *passphrase)
     strncpy(s_configured_pass, passphrase, WPA2_MAX_PASS_LEN);
     strncpy(s_wpa2_telem.target_ssid, ssid, WPA2_MAX_SSID_LEN);
 
+    /* Reset handshake telemetry & keys for clean connection attempt */
+    memset(s_wpa2_telem.target_bssid, 0, sizeof(s_wpa2_telem.target_bssid));
+    s_wpa2_telem.has_ptk = false;
+    s_wpa2_telem.has_gtk = false;
+    s_wpa2_telem.handshakes_attempted = 0U;
+    s_wpa2_telem.handshakes_completed = 0U;
+    s_wpa2_telem.m1_rx_count = 0U;
+    s_wpa2_telem.m2_tx_count = 0U;
+    s_wpa2_telem.m3_rx_count = 0U;
+    s_wpa2_telem.m4_tx_count = 0U;
+    s_wpa2_telem.mic_failures = 0U;
+    s_wpa2_telem.replay_errors = 0U;
+
     /* Derive PMK immediately */
     wpa2_status_t pst = wpa2_crypto_pbkdf2_sha1(s_configured_pass, s_configured_ssid,
                                                 WPA2_PBKDF2_ITERATIONS, s_pmk);
@@ -942,7 +955,7 @@ wpa2_status_t wpa2_client_configure(const char *ssid, const char *passphrase)
 }
 
 WPA2_FLASH_TEXT
-wpa2_status_t wpa2_client_handover(const char *ssid, const char *passphrase)
+wpa2_status_t wpa2_client_handover_chan(const char *ssid, const char *passphrase, uint8_t channel)
 {
     wpa2_status_t cst = wpa2_client_configure(ssid, passphrase);
     if (cst != WPA2_OK)
@@ -971,9 +984,15 @@ wpa2_status_t wpa2_client_handover(const char *ssid, const char *passphrase)
     s_wpa2_telem.state = WPA2_STATE_CONNECTING;
 
     /* 4. Trigger Station association */
-    wifi_start_sta(ssid, passphrase);
+    wifi_start_sta_chan(ssid, passphrase, channel);
 
     return WPA2_OK;
+}
+
+WPA2_FLASH_TEXT
+wpa2_status_t wpa2_client_handover(const char *ssid, const char *passphrase)
+{
+    return wpa2_client_handover_chan(ssid, passphrase, 0U);
 }
 
 WPA2_FLASH_TEXT
@@ -988,9 +1007,12 @@ void wpa2_client_print_status(void)
     console_puts("\r\n  Target SSID:         ");
     console_puts(s_wpa2_telem.target_ssid);
     console_puts("\r\n  Target BSSID:        ");
+    const char hex_chars[] = "0123456789abcdef";
     for (int i = 0; i < 6; i++)
     {
-        put_hex(s_wpa2_telem.target_bssid[i]);
+        uint8_t b = s_wpa2_telem.target_bssid[i];
+        console_putc(hex_chars[(b >> 4) & 0x0F]);
+        console_putc(hex_chars[b & 0x0F]);
         if (i < 5) console_puts(":");
     }
     console_puts("\r\n  Keys Established:    PMK=");

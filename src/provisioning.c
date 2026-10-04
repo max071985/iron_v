@@ -14,6 +14,7 @@
 #include "web_assets.h"
 #include "nvs.h"
 #include "wifi.h"
+#include "wifi_vendor_types.h"
 #include "string.h"
 
 #if defined(__riscv)
@@ -492,8 +493,35 @@ provisioning_status_t provisioning_start_scan(void)
     s_prov_state = PROV_STATE_SCANNING;
     s_prov_telemetry.state = s_prov_state;
 
-    /* Refresh baseline scan table */
+#if defined(__riscv)
+    wifi_scan(NULL, 0U, false, 200U);
+    uint16_t ap_num = 0U;
+    esp_wifi_scan_get_ap_num(&ap_num);
+    if (ap_num > 0U)
+    {
+        wifi_ap_record_t recs[PROVISIONING_MAX_SCAN_APS];
+        uint16_t fetch = (ap_num > PROVISIONING_MAX_SCAN_APS) ? PROVISIONING_MAX_SCAN_APS : ap_num;
+        esp_wifi_scan_get_ap_records(&fetch, recs);
+        s_prov_scan_count = fetch;
+        for (uint16_t i = 0U; i < fetch; i++)
+        {
+            prov_safe_copy(s_prov_scan_items[i].ssid, sizeof(s_prov_scan_items[i].ssid), (const char *)recs[i].ssid);
+            s_prov_scan_items[i].rssi = recs[i].rssi;
+            s_prov_scan_items[i].channel = recs[i].primary;
+            s_prov_scan_items[i].auth_mode = (recs[i].authmode == WIFI_AUTH_WPA3_PSK) ? PROV_AUTH_WPA3_PSK :
+                                             (recs[i].authmode >= WIFI_AUTH_WPA2_PSK) ? PROV_AUTH_WPA2_PSK :
+                                             (recs[i].authmode == WIFI_AUTH_OPEN) ? PROV_AUTH_OPEN : PROV_AUTH_WPA_PSK;
+            memcpy(s_prov_scan_items[i].bssid, recs[i].bssid, 6U);
+        }
+    }
+    else
+    {
+        prov_populate_baseline_scan();
+    }
+#else
+    /* Refresh baseline scan table for host testing */
     prov_populate_baseline_scan();
+#endif
 
     s_prov_telemetry.scans_completed++;
     s_prov_state = s_prov_creds.provisioned ? PROV_STATE_PROVISIONED : PROV_STATE_UNPROVISIONED;

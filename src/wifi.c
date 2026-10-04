@@ -16,6 +16,7 @@
 #include "dhcp.h"
 #include "regs/wifi_mac.h"
 #include "regs/modem_rf.h"
+#include "wpa2_client.h"
 
 #if defined(__riscv)
 #include "wifi_vendor_types.h"
@@ -294,6 +295,12 @@ void wifi_handle_vendor_event(int32_t event_id, void *event_data)
         console_puts("[Wi-Fi] Event: STA_START\r\n");
         s_wifi_telemetry.state = WIFI_STATE_ACTIVE;
     }
+    else if (event_id == WIFI_EVENT_STA_STOP)
+    {
+        console_puts("[Wi-Fi] Event: STA_STOP\r\n");
+        s_wifi_telemetry.state = WIFI_STATE_IDLE;
+        s_wifi_sta_connected = false;
+    }
     else if (event_id == WIFI_EVENT_SCAN_DONE)
     {
         console_puts("[Wi-Fi] Event: SCAN_DONE\r\n");
@@ -312,6 +319,7 @@ void wifi_handle_vendor_event(int32_t event_id, void *event_data)
             console_puts("[Wi-Fi] Associated to AP on channel ");
             put_dec((uint32_t)conn->channel);
             console_puts("\r\n");
+            wpa2_client_on_connected(conn->bssid);
         }
         esp_wifi_internal_set_sta_ip();
     }
@@ -324,9 +332,26 @@ void wifi_handle_vendor_event(int32_t event_id, void *event_data)
             const wifi_event_sta_disconnected_t *disconn = (const wifi_event_sta_disconnected_t *)event_data;
             console_puts(", reason=");
             put_dec((uint32_t)disconn->reason);
+            if (disconn->reason == 201)
+            {
+                console_puts(" (NO_AP_FOUND)");
+            }
+            else if (disconn->reason == 202 || disconn->reason == 15 || disconn->reason == 2)
+            {
+                console_puts(" (AUTH_FAILED / WRONG_PASSWORD)");
+            }
+            else if (disconn->reason == 204)
+            {
+                console_puts(" (HANDSHAKE_TIMEOUT)");
+            }
+            wpa2_client_on_disconnected(disconn->reason);
+        }
+        else
+        {
+            wpa2_client_on_disconnected(0);
         }
         console_puts("\r\n");
-        s_wifi_telemetry.state = WIFI_STATE_DISCONNECTED;
+        s_wifi_telemetry.state = WIFI_STATE_ACTIVE;
         s_wifi_rssi = 0;
     }
     else if (event_id == WIFI_EVENT_AP_START)
@@ -685,6 +710,7 @@ const net_packet_t *wifi_get_rx_packet(uint32_t index)
 /* Active / Passive Scanning Engine                                          */
 /* ========================================================================= */
 
+WIFI_FLASH_TEXT
 wifi_status_t wifi_scan(const char *ssid, uint8_t channel, bool passive, uint32_t duration_ms)
 {
     if (!s_wifi_initialized)
@@ -713,6 +739,14 @@ wifi_status_t wifi_scan(const char *ssid, uint8_t channel, bool passive, uint32_
         console_puts("[Wi-Fi] Starting station before scan...\r\n");
         wdt_feed();
         lp_wdt_feed();
+        if (s_wifi_ap_running)
+        {
+            esp_wifi_set_mode(WIFI_MODE_APSTA);
+        }
+        else
+        {
+            esp_wifi_set_mode(WIFI_MODE_STA);
+        }
         console_puts("[Wi-Fi] calling esp_wifi_start()...\r\n");
         esp_err_t start_err = esp_wifi_start();
         console_puts("[Wi-Fi] esp_wifi_start returned err=");
@@ -734,6 +768,14 @@ wifi_status_t wifi_scan(const char *ssid, uint8_t channel, bool passive, uint32_
         }
     }
 
+    /* Prevent modem sleep, assert hardware RF enable, initialize analog registers, and enable CCA */
+    esp_wifi_set_ps(WIFI_PS_NONE);
+    *MODEM_RF_ENABLE_REG |= MODEM_RF_ENABLE_MASTER_BIT;
+    modem_rf_analog_init();
+    wifi_set_cca_enabled(true);
+    esp_wifi_set_max_tx_power(WIFI_DEFAULT_MAX_TX_POWER_INDEX);
+    wifi_fence();
+
     wifi_scan_config_t scan_cfg;
     memset(&scan_cfg, 0, sizeof(scan_cfg));
     if (ssid != NULL && ssid[0] != '\0')
@@ -750,7 +792,7 @@ wifi_status_t wifi_scan(const char *ssid, uint8_t channel, bool passive, uint32_
         scan_cfg.channel = 0U;
         scan_cfg.channel_bitmap.ghz_2_channels = WIFI_SCAN_ALL_2G_CHANNELS_MASK;
     }
-    scan_cfg.channel_bitmap.ghz_5_channels = WIFI_SCAN_BYPASS_5G_MASK;
+    scan_cfg.channel_bitmap.ghz_5_channels = 0;
     if (passive)
     {
         scan_cfg.scan_type = WIFI_SCAN_TYPE_PASSIVE;
@@ -759,8 +801,8 @@ wifi_status_t wifi_scan(const char *ssid, uint8_t channel, bool passive, uint32_
     else
     {
         scan_cfg.scan_type = WIFI_SCAN_TYPE_ACTIVE;
-        scan_cfg.scan_time.active.min = (duration_ms > 500U) ? 120U : (duration_ms / 2U);
-        scan_cfg.scan_time.active.max = (duration_ms > 500U) ? 250U : duration_ms;
+        scan_cfg.scan_time.active.min = 120U;
+        scan_cfg.scan_time.active.max = 250U;
     }
     scan_cfg.show_hidden = true;
 
@@ -973,6 +1015,7 @@ static void wifi_promiscuous_rx_callback(void *buf, wifi_promiscuous_pkt_type_t 
 }
 #endif
 
+WIFI_FLASH_TEXT
 wifi_status_t wifi_sniffer(uint8_t channel, uint32_t duration_sec)
 {
     if (!s_wifi_initialized)
@@ -997,6 +1040,14 @@ wifi_status_t wifi_sniffer(uint8_t channel, uint32_t duration_sec)
         console_puts("[Wi-Fi] Starting station before sniffer...\r\n");
         wdt_feed();
         lp_wdt_feed();
+        if (s_wifi_ap_running)
+        {
+            esp_wifi_set_mode(WIFI_MODE_APSTA);
+        }
+        else
+        {
+            esp_wifi_set_mode(WIFI_MODE_STA);
+        }
         esp_wifi_start();
         uint64_t start_wait = systimer_get_us();
         while (s_wifi_telemetry.state != WIFI_STATE_ACTIVE &&
@@ -1013,6 +1064,13 @@ wifi_status_t wifi_sniffer(uint8_t channel, uint32_t duration_sec)
             }
         }
     }
+
+    /* Prevent modem sleep, assert hardware RF enable, initialize analog registers, and enable CCA */
+    esp_wifi_set_ps(WIFI_PS_NONE);
+    *MODEM_RF_ENABLE_REG |= MODEM_RF_ENABLE_MASTER_BIT;
+    modem_rf_analog_init();
+    wifi_set_cca_enabled(true);
+    wifi_fence();
 
     esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
 
@@ -1335,21 +1393,41 @@ bool wifi_is_cca_enabled(void)
 /* ========================================================================= */
 
 WIFI_FLASH_TEXT
-wifi_status_t wifi_start_sta(const char *ssid, const char *password)
+wifi_status_t wifi_start_sta_chan(const char *ssid, const char *password, uint8_t channel)
 {
-    if (ssid == NULL)
+    if (ssid == NULL || ssid[0] == '\0')
     {
         return WIFI_ERR_INVALID_ARG;
+    }
+
+    if (!s_wifi_initialized)
+    {
+        wifi_init();
     }
 
     /* 1. Stop SoftAP if active */
     if (s_wifi_ap_running)
     {
         wifi_stop_ap();
+#if defined(__riscv)
+        uint64_t stop_wait = systimer_get_us();
+        while (s_wifi_ap_running && (systimer_get_us() - stop_wait) < WIFI_STA_START_TIMEOUT_US)
+        {
+            wdt_feed();
+            lp_wdt_feed();
+            wifi_os_adapter_poll();
+            wdt_supervisor_tick();
+            if (task_get_count() > 1U)
+            {
+                task_yield();
+            }
+        }
+#endif
     }
 
 #if !defined(__riscv)
     (void)password;
+    (void)channel;
 #endif
 
 #if defined(__riscv)
@@ -1364,24 +1442,87 @@ wifi_status_t wifi_start_sta(const char *ssid, const char *password)
         {
             strncpy((char *)sta_cfg.sta.password, password, sizeof(sta_cfg.sta.password) - 1);
         }
-        sta_cfg.sta.scan_method = WIFI_FAST_SCAN;
+        if (channel > 0U && channel <= 14U)
+        {
+            sta_cfg.sta.channel = channel;
+            sta_cfg.sta.scan_method = WIFI_FAST_SCAN;
+        }
+        else
+        {
+            sta_cfg.sta.channel = 0U;
+            sta_cfg.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+        }
         sta_cfg.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
         sta_cfg.sta.threshold.rssi = WIFI_DEFAULT_SCAN_RSSI_THRESHOLD;
-        sta_cfg.sta.threshold.authmode = (password != NULL && strlen(password) >= 8) ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+        sta_cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
+        sta_cfg.sta.pmf_cfg.capable = true;
+        sta_cfg.sta.pmf_cfg.required = false;
 
         esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
+        esp_wifi_config_11b_rate(WIFI_IF_STA, false);
+        esp_wifi_internal_reg_rxcb(WIFI_IF_STA, wifi_vendor_rx_callback);
 
         if (s_wifi_telemetry.state != WIFI_STATE_ACTIVE && s_wifi_telemetry.state != WIFI_STATE_CONNECTED)
         {
             esp_wifi_start();
+
+            /* Wait for STA_START event */
+            uint64_t start_wait = systimer_get_us();
+            while (s_wifi_telemetry.state != WIFI_STATE_ACTIVE &&
+                   s_wifi_telemetry.state != WIFI_STATE_CONNECTED &&
+                   (systimer_get_us() - start_wait) < WIFI_STA_START_TIMEOUT_US)
+            {
+                wdt_feed();
+                lp_wdt_feed();
+                wifi_os_adapter_poll();
+                wdt_supervisor_tick();
+                if (task_get_count() > 1U)
+                {
+                    task_yield();
+                }
+            }
         }
-        esp_wifi_connect();
+
+        /* Prevent modem sleep, assert hardware RF enable, initialize analog registers, and enable CCA */
+        esp_wifi_set_ps(WIFI_PS_NONE);
+        *MODEM_RF_ENABLE_REG |= MODEM_RF_ENABLE_MASTER_BIT;
+        modem_rf_analog_init();
+        wifi_set_cca_enabled(true);
+        esp_wifi_set_max_tx_power(WIFI_DEFAULT_MAX_TX_POWER_INDEX);
+        wifi_fence();
+
+        console_puts("[Wi-Fi] Connecting to '");
+        console_puts(ssid);
+        if (channel > 0U)
+        {
+            console_puts("' on channel ");
+            put_dec((uint32_t)channel);
+            console_puts("...\r\n");
+        }
+        else
+        {
+            console_puts("'...\r\n");
+        }
+
+        esp_err_t err_conn = esp_wifi_connect();
+        if (err_conn != 0)
+        {
+            console_puts("[Wi-Fi] ERROR: esp_wifi_connect err=");
+            put_dec((uint32_t)err_conn);
+            console_puts("\r\n");
+            return WIFI_ERR_DMA_FAULT;
+        }
     }
 #endif
 
-    s_wifi_telemetry.state = WIFI_STATE_ACTIVE;
     s_wifi_sta_connected = false;
     return WIFI_OK;
+}
+
+WIFI_FLASH_TEXT
+wifi_status_t wifi_start_sta(const char *ssid, const char *password)
+{
+    return wifi_start_sta_chan(ssid, password, 0U);
 }
 
 WIFI_FLASH_TEXT

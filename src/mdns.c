@@ -343,11 +343,20 @@ void mdns_print_status(void)
     console_puts("\r\n  Hostname:            ");
     console_puts(s_mdns_telem.hostname);
     console_puts(".local\r\n  Advertised IP:       ");
-    uint32_t ip = s_mdns_telem.advertised_ip;
-    put_dec((ip >> 24U) & 0xFFU); console_puts(".");
-    put_dec((ip >> 16U) & 0xFFU); console_puts(".");
-    put_dec((ip >> 8U) & 0xFFU);  console_puts(".");
-    put_dec(ip & 0xFFU);
+    net_config_t ncfg;
+    net_get_config(&ncfg);
+    uint32_t ip = ncfg.ip;
+    if (ip == 0U)
+    {
+        console_puts("0.0.0.0 (unassigned)");
+    }
+    else
+    {
+        put_dec((ip >> 24U) & 0xFFU); console_puts(".");
+        put_dec((ip >> 16U) & 0xFFU); console_puts(".");
+        put_dec((ip >> 8U) & 0xFFU);  console_puts(".");
+        put_dec(ip & 0xFFU);
+    }
     console_puts("\r\n  Queries Received:    ");
     put_dec(s_mdns_telem.queries_received);
     console_puts("\r\n  Queries Matched:     ");

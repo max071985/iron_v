@@ -3296,6 +3296,17 @@ void FLASH_TEXT_ATTR shell_execute(char *input_buffer)
             }
             pass[pidx] = '\0';
 
+            while (*args == ' ') args++;
+            uint8_t chan = 0U;
+            if (*args >= '0' && *args <= '9')
+            {
+                chan = (uint8_t)(*args++ - '0');
+                if (*args >= '0' && *args <= '9')
+                {
+                    chan = (uint8_t)(chan * 10U + (*args++ - '0'));
+                }
+            }
+
             if (ssid[0] != '\0')
             {
                 size_t plen = strlen(pass);
@@ -3307,8 +3318,17 @@ void FLASH_TEXT_ATTR shell_execute(char *input_buffer)
                 {
                     console_puts("Initiating WPA2-PSK connection to '");
                     console_puts(ssid);
-                    console_puts("'...\r\n");
-                    wpa2_status_t wst = wpa2_client_handover(ssid, pass);
+                    if (chan > 0U)
+                    {
+                        console_puts("' (channel ");
+                        put_dec((uint32_t)chan);
+                        console_puts(")...\r\n");
+                    }
+                    else
+                    {
+                        console_puts("'...\r\n");
+                    }
+                    wpa2_status_t wst = wpa2_client_handover_chan(ssid, pass, chan);
                     if (wst != WPA2_OK)
                     {
                         console_puts("Error: connection handover failed (status=");
@@ -3319,7 +3339,7 @@ void FLASH_TEXT_ATTR shell_execute(char *input_buffer)
             }
             else
             {
-                console_puts("Usage: sta connect <ssid> [passphrase]\r\n");
+                console_puts("Usage: sta connect <ssid> <passphrase> [channel]\r\n");
             }
         }
         else if (strncmp(subcmd, "disconnect", 10) == 0)
@@ -3339,7 +3359,7 @@ void FLASH_TEXT_ATTR shell_execute(char *input_buffer)
         }
         else
         {
-            console_puts("Usage: sta [status|connect <ssid> [pass]|disconnect|mdns|eapol]\r\n");
+            console_puts("Usage: sta [status|connect <ssid> <pass> [chan]|disconnect|mdns|eapol]\r\n");
         }
     }
     else

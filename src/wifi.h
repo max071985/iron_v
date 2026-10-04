@@ -60,7 +60,7 @@
 #define WIFI_NVS_OFFSET_AP_LOW_RATE     1341U
 #define WIFI_NVS_STUB_DEFAULT_HANDLE    1U
 #define WIFI_NVS_LOW_RATE_ENABLED       1U
-#define WIFI_COEX_STATUS_DEFAULT        1U
+#define WIFI_COEX_STATUS_DEFAULT        0U
 
 /* Fallback Event Identifiers for Host Simulation */
 #define WIFI_VENDOR_EVENT_AP_START       12
@@ -178,9 +178,15 @@ const net_packet_t *wifi_get_rx_packet(uint32_t index);
 /* Event Handling from Vendor Wi-Fi Stack */
 void wifi_handle_vendor_event(int32_t event_id, void *event_data);
 
+#if defined(__riscv)
+#define WIFI_FLASH_TEXT __attribute__((section(".flash.text")))
+#else
+#define WIFI_FLASH_TEXT
+#endif
+
 /* Active/Passive Scanning & Sniffing */
-wifi_status_t wifi_scan(const char *ssid, uint8_t channel, bool passive, uint32_t duration_ms);
-wifi_status_t wifi_sniffer(uint8_t channel, uint32_t duration_sec);
+wifi_status_t wifi_scan(const char *ssid, uint8_t channel, bool passive, uint32_t duration_ms) WIFI_FLASH_TEXT;
+wifi_status_t wifi_sniffer(uint8_t channel, uint32_t duration_sec) WIFI_FLASH_TEXT;
 
 /* Baseband DMA Linkage & Timings (Task 3) */
 uint32_t wifi_get_rf_dma_linkage_reg(void);
@@ -199,14 +205,9 @@ uint8_t wifi_get_ap_channel(void);
 wifi_status_t wifi_set_cca_enabled(bool enabled);
 bool wifi_is_cca_enabled(void);
 
-#if defined(__riscv)
-#define WIFI_FLASH_TEXT __attribute__((section(".flash.text")))
-#else
-#define WIFI_FLASH_TEXT
-#endif
-
 /* Wi-Fi Station (STA) Subsystem (Task 8.2) */
 wifi_status_t wifi_start_sta(const char *ssid, const char *password) WIFI_FLASH_TEXT;
+wifi_status_t wifi_start_sta_chan(const char *ssid, const char *password, uint8_t channel) WIFI_FLASH_TEXT;
 wifi_status_t wifi_stop_sta(void) WIFI_FLASH_TEXT;
 bool wifi_is_sta_connected(void) WIFI_FLASH_TEXT;
 wifi_status_t wifi_sta_get_bssid(uint8_t *out_bssid) WIFI_FLASH_TEXT;

@@ -1805,7 +1805,6 @@ static void test_wifi_mac_subsystem(void)
     /* 1. Register Address & Offset Calculation Validation (AGENTS.md rule) */
     TEST_ASSERT((uintptr_t)EFUSE_MAC_SYS_0_REG == 0x600B0844U, "EFUSE_MAC_SYS_0_REG address calculation");
     TEST_ASSERT((uintptr_t)EFUSE_MAC_SYS_1_REG == 0x600B0848U, "EFUSE_MAC_SYS_1_REG address calculation");
-    TEST_ASSERT(WIFI_GDMA_CHANNEL == GDMA_CHANNEL_1, "Wi-Fi bound to GDMA Channel 1");
     TEST_ASSERT((uintptr_t)MODEM_DATA_RF_DMA_DESC_ADDR_REG == 0x600AD000U, "MODEM_DATA_RF_DMA_DESC_ADDR_REG address calculation");
     TEST_ASSERT((uintptr_t)MODEM_SYSCON_RF_DMA_ADDR_REG == 0x600AD000U, "MODEM_SYSCON_RF_DMA_ADDR_REG address calculation");
     TEST_ASSERT((uintptr_t)MODEM_DATA_TX_DMA_DESC_ADDR_REG == 0x600AD004U, "MODEM_DATA_TX_DMA_DESC_ADDR_REG address calculation");
@@ -1841,7 +1840,6 @@ static void test_wifi_mac_subsystem(void)
     TEST_ASSERT(wifi_get_state() == WIFI_STATE_IDLE, "Wi-Fi initial state is WIFI_STATE_IDLE");
 
     /* Baseband DMA Linkage & Timings (Task 3 Remediation) */
-    TEST_ASSERT(wifi_get_rf_dma_linkage_reg() == (uint32_t)(uintptr_t)&wifi_get_rx_packet(0U)->dma_desc, "RF DMA linkage points to RX ring dma_descriptor");
     TEST_ASSERT(wifi_get_bb_tx_on_delay() == WIFI_MAC_DEFAULT_BB_TX_ON_DELAY_US, "bb_tx_on_delay matches 50us default");
     TEST_ASSERT(wifi_get_tx_ramp_delay() == WIFI_MAC_DEFAULT_TX_RAMP_DELAY_US, "tx_ramp_delay matches 60us default");
     TEST_ASSERT(wifi_get_tx_cca_start_ts() == WIFI_MAC_DEFAULT_TX_CCA_START_TS_US, "tx_cca_start_ts matches 80us default");
@@ -1857,7 +1855,6 @@ static void test_wifi_mac_subsystem(void)
     TEST_ASSERT(wifi_get_telemetry(NULL) == WIFI_ERR_INVALID_ARG, "wifi_get_telemetry rejects NULL");
     TEST_ASSERT(wifi_get_telemetry(&telem) == WIFI_OK, "wifi_get_telemetry succeeds");
     TEST_ASSERT(telem.rx_ring_capacity == PACKET_RING_COUNT, "RX ring capacity is 32");
-    TEST_ASSERT(telem.tx_ring_capacity == WIFI_TX_RING_COUNT, "TX ring capacity is 8");
 
     /* 4. Circular Packet Ring Integrity & Boundary Traversal (TEST 31) */
     uint32_t visited_count = 0U;
@@ -1888,24 +1885,27 @@ static void test_wifi_mac_subsystem(void)
     TEST_ASSERT(active_pkt->dma_desc.length == 0U, "Descriptor length reset to 0");
     TEST_ASSERT(wifi_rx_poll(&rx_pkt, &rx_len) == WIFI_ERR_RING_EMPTY, "Ring empty after packet released");
 
-    /* 6. Packet Transmission Routine */
+    /* 6. Packet Transmission: one frame per call, handed to the given interface */
     uint8_t tx_frame[128];
     memset(tx_frame, 0x5AU, sizeof(tx_frame));
-    TEST_ASSERT(wifi_tx_packet(NULL, sizeof(tx_frame)) == WIFI_ERR_INVALID_ARG, "wifi_tx_packet rejects NULL payload");
-    TEST_ASSERT(wifi_tx_packet(tx_frame, 0U) == WIFI_ERR_INVALID_ARG, "wifi_tx_packet rejects length 0");
-    TEST_ASSERT(wifi_tx_packet(tx_frame, 2048U) == WIFI_ERR_INVALID_ARG, "wifi_tx_packet rejects length > 1536");
-    TEST_ASSERT(wifi_tx_packet(tx_frame, sizeof(tx_frame)) == WIFI_OK, "wifi_tx_packet succeeds");
-
-    /* Transmit multiple packets exceeding TX ring capacity (8 descriptors) to verify circular reuse without stall */
-    for (uint32_t p = 0; p < 16U; p++)
-    {
-        TEST_ASSERT(wifi_tx_packet(tx_frame, sizeof(tx_frame)) == WIFI_OK, "wifi_tx_packet succeeds beyond TX ring capacity (circular wraparound)");
-    }
+    TEST_ASSERT(wifi_tx_packet(WIFI_TX_IF_AP, NULL, sizeof(tx_frame)) == WIFI_ERR_INVALID_ARG, "wifi_tx_packet rejects NULL payload");
+    TEST_ASSERT(wifi_tx_packet(WIFI_TX_IF_AP, tx_frame, 0U) == WIFI_ERR_INVALID_ARG, "wifi_tx_packet rejects length 0");
+    TEST_ASSERT(wifi_tx_packet(WIFI_TX_IF_AP, tx_frame, 2048U) == WIFI_ERR_INVALID_ARG, "wifi_tx_packet rejects length > 1536");
+    TEST_ASSERT(wifi_tx_packet((wifi_tx_if_t)7, tx_frame, sizeof(tx_frame)) == WIFI_ERR_INVALID_ARG, "wifi_tx_packet rejects unknown interface");
 
     TEST_ASSERT(wifi_get_telemetry(&telem) == WIFI_OK, "wifi_get_telemetry succeeds");
-    TEST_ASSERT(telem.tx_packets >= 17U, "tx_packets telemetry incremented across wraparound");
-    TEST_ASSERT(telem.tx_bytes >= (17U * sizeof(tx_frame)), "tx_bytes telemetry incremented across wraparound");
-    TEST_ASSERT(telem.ring_full_drops == 0U, "Zero TX ring full drops during continuous transmission");
+    uint32_t tx_before = telem.tx_packets;
+    tx_frame[0] = 0x11U;
+    TEST_ASSERT(wifi_tx_packet(WIFI_TX_IF_STA, tx_frame, sizeof(tx_frame)) == WIFI_OK, "wifi_tx_packet STA succeeds (host)");
+    uint16_t last_len = 0U;
+    wifi_tx_if_t last_if = WIFI_TX_IF_AP;
+    const uint8_t *last = wifi_host_last_tx(&last_len, &last_if);
+    TEST_ASSERT(last_len == sizeof(tx_frame) && last_if == WIFI_TX_IF_STA && last[0] == 0x11U, "Frame and STA interface handed through unchanged");
+    TEST_ASSERT(wifi_tx_packet(WIFI_TX_IF_AP, tx_frame, 64U) == WIFI_OK, "wifi_tx_packet AP succeeds (host)");
+    wifi_host_last_tx(&last_len, &last_if);
+    TEST_ASSERT(last_len == 64U && last_if == WIFI_TX_IF_AP, "Frame length and AP interface handed through unchanged");
+    TEST_ASSERT(wifi_get_telemetry(&telem) == WIFI_OK, "wifi_get_telemetry succeeds");
+    TEST_ASSERT(telem.tx_packets == tx_before + 2U, "tx_packets counts only frames handed over");
 
     /* 7. SoftAP Broadcasting Functionality (Task 5.7.2) */
     TEST_ASSERT(!wifi_is_ap_active(), "SoftAP is initially inactive");

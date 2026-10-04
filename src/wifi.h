@@ -19,11 +19,10 @@
 #include "regs/wifi_mac.h"
 
 /* ========================================================================= */
-/* Packet Ring Sizing & Geometry Constants (docs/development-roadmap.md:678) */
+/* Software RX Queue Sizing                                                   */
 /* ========================================================================= */
 #define PACKET_BUFFER_SIZE               1536U
 #define PACKET_RING_COUNT                32U
-#define WIFI_TX_RING_COUNT               8U
 
 #ifndef WIFI_MAC_ADDR_LEN
 #define WIFI_MAC_ADDR_LEN                6U
@@ -66,9 +65,6 @@
 #define WIFI_VENDOR_EVENT_AP_STOP        13
 #define WIFI_VENDOR_EVENT_AP_STACONNECTED 14
 #define WIFI_VENDOR_EVENT_AP_STADISCONNECTED 15
-
-/* Dedicated GDMA Channel for Wi-Fi MAC Data Transfer */
-#define WIFI_GDMA_CHANNEL                GDMA_CHANNEL_1
 
 
 /* Memory Cartography Boundaries for HP SRAM DRAM Descriptor Validation   */
@@ -113,18 +109,27 @@ typedef enum {
     WIFI_ERR_RING_EMPTY = -5,
     WIFI_ERR_NOT_INITIALIZED = -6,
     WIFI_ERR_DMA_FAULT = -7,
-    WIFI_ERR_TIMEOUT = -8
+    WIFI_ERR_TIMEOUT = -8,
+    WIFI_ERR_IF_DOWN = -9,      /* TX interface not started / not connected */
+    WIFI_ERR_TX_FAILED = -10    /* Blob rejected the frame (esp_wifi_internal_tx) */
 } wifi_status_t;
+
+/* TX interface; values match the blob's wifi_interface_t (WIFI_IF_STA = 0, WIFI_IF_AP = 1) */
+typedef enum {
+    WIFI_TX_IF_STA = 0,
+    WIFI_TX_IF_AP = 1
+} wifi_tx_if_t;
 
 /* ========================================================================= */
 /* Concrete Data Structures (docs/development-roadmap.md:681-685)            */
 /* ========================================================================= */
 /**
- * @brief Zero-Copy Network Packet Structure
+ * @brief RX queue entry
  *
- * Embeds a hardware 12-byte GDMA linked list descriptor directly adjacent
- * to a fixed 1536-byte payload buffer in HP SRAM DRAM, ensuring zero-copy
- * transfer from receiver hardware straight to upper-layer protocol parsers.
+ * The blob's RX callback copies each frame into one of these and frees its own
+ * buffer immediately. dma_desc is only used as a software owner/length record
+ * (DMA_OWNER_DMA = free slot, DMA_OWNER_CPU = frame waiting); no GDMA channel
+ * touches these buffers.
  */
 typedef struct {
     dma_descriptor_t dma_desc;
@@ -138,15 +143,14 @@ typedef struct {
     wifi_state_t state;
     uint8_t mac_addr[WIFI_MAC_ADDR_LEN];
     uint32_t rx_ring_capacity;
-    uint32_t tx_ring_capacity;
     uint32_t rx_ring_head;
     uint32_t rx_ring_tail;
     uint32_t rx_packets;
     uint32_t tx_packets;
     uint32_t rx_bytes;
     uint32_t tx_bytes;
-    uint32_t ring_full_drops;
-    uint32_t dma_err_count;
+    uint32_t ring_full_drops;   /* RX frames dropped because the queue was full */
+    uint32_t tx_errors;         /* TX attempts refused (interface down or blob error) */
 } wifi_telemetry_t;
 
 /* ========================================================================= */
@@ -158,13 +162,18 @@ wifi_status_t wifi_init(void);
 
 /* Packet Ring Initialization & Verification */
 wifi_status_t wifi_rx_ring_init(void);
-wifi_status_t wifi_tx_ring_init(void);
 wifi_status_t wifi_verify_rx_ring(uint32_t *out_visited_count);
 
-/* Zero-Copy Packet Transmission & Reception */
+/* Packet Reception (software queue) & Transmission (blob) */
 wifi_status_t wifi_rx_poll(net_packet_t **out_packet, uint16_t *out_len);
 wifi_status_t wifi_rx_release(net_packet_t *packet);
-wifi_status_t wifi_tx_packet(const uint8_t *payload, uint16_t len);
+wifi_status_t wifi_tx_packet(wifi_tx_if_t ifx, const uint8_t *payload, uint16_t len);
+/* Interface that owns the IP configuration: STA once associated, otherwise the SoftAP */
+wifi_tx_if_t wifi_get_ip_tx_if(void);
+#if !defined(__riscv)
+/* Host builds: last frame handed to wifi_tx_packet, for tests */
+const uint8_t *wifi_host_last_tx(uint16_t *out_len, wifi_tx_if_t *out_ifx);
+#endif
 void wifi_poll_rx_traffic(void);
 
 /* Identity & Telemetry Queries */
@@ -188,7 +197,6 @@ wifi_status_t wifi_scan(const char *ssid, uint8_t channel, bool passive, uint32_
 wifi_status_t wifi_sniffer(uint8_t channel, uint32_t duration_sec) WIFI_FLASH_TEXT;
 
 /* Baseband DMA Linkage & Timings (Task 3) */
-uint32_t wifi_get_rf_dma_linkage_reg(void);
 uint32_t wifi_get_bb_tx_on_delay(void);
 uint32_t wifi_get_tx_ramp_delay(void);
 uint32_t wifi_get_tx_cca_start_ts(void);

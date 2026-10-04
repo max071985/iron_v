@@ -32,7 +32,7 @@ static bool s_dhcp_initialized = false;
 /* ========================================================================= */
 /* Outbound Frame Transmission Helper                                        */
 /* ========================================================================= */
-static dhcp_status_t dhcp_send_udp_frame(const uint8_t *dest_mac, uint32_t dest_ip,
+static dhcp_status_t dhcp_send_udp_frame(wifi_tx_if_t ifx, const uint8_t *dest_mac, uint32_t dest_ip,
                                          uint16_t src_port, uint16_t dest_port,
                                          const void *payload, uint16_t payload_len)
 {
@@ -102,7 +102,7 @@ static dhcp_status_t dhcp_send_udp_frame(const uint8_t *dest_mac, uint32_t dest_
     memcpy(data_dst, payload, payload_len);
 
     /* Transmit frame via Wi-Fi subsystem */
-    wifi_status_t wst = wifi_tx_packet(frame_buf, total_len);
+    wifi_status_t wst = wifi_tx_packet(ifx, frame_buf, total_len);
     return (wst == WIFI_OK) ? DHCP_OK : DHCP_ERR_TX_FAILED;
 }
 
@@ -381,7 +381,7 @@ dhcp_status_t dhcp_process_packet(const uint8_t *eth_frame, const uint8_t *paylo
             memset(&resp.options[opt_offset], 0, 300U - resp_len);
             resp_len = 300U;
         }
-        dhcp_status_t st = dhcp_send_udp_frame(req->chaddr, dhcp_reply_dest_ip(req, lease->ip),
+        dhcp_status_t st = dhcp_send_udp_frame(WIFI_TX_IF_AP, req->chaddr, dhcp_reply_dest_ip(req, lease->ip),
                                                DHCP_SERVER_PORT, DHCP_CLIENT_PORT,
                                                &resp, resp_len);
         if (st == DHCP_OK)
@@ -430,7 +430,7 @@ dhcp_status_t dhcp_process_packet(const uint8_t *eth_frame, const uint8_t *paylo
                 memset(&resp.options[opt_offset], 0, 300U - resp_len);
                 resp_len = 300U;
             }
-            dhcp_send_udp_frame(req->chaddr, 0xFFFFFFFFU,
+            dhcp_send_udp_frame(WIFI_TX_IF_AP, req->chaddr, 0xFFFFFFFFU,
                                 DHCP_SERVER_PORT, DHCP_CLIENT_PORT,
                                 &resp, resp_len);
             s_dhcp_telemetry.nak_tx++;
@@ -501,7 +501,7 @@ dhcp_status_t dhcp_process_packet(const uint8_t *eth_frame, const uint8_t *paylo
             memset(&resp.options[opt_offset], 0, 300U - resp_len);
             resp_len = 300U;
         }
-        dhcp_status_t st = dhcp_send_udp_frame(req->chaddr, dhcp_reply_dest_ip(req, lease->ip),
+        dhcp_status_t st = dhcp_send_udp_frame(WIFI_TX_IF_AP, req->chaddr, dhcp_reply_dest_ip(req, lease->ip),
                                                DHCP_SERVER_PORT, DHCP_CLIENT_PORT,
                                                &resp, resp_len);
         if (st == DHCP_OK)
@@ -622,7 +622,7 @@ dhcp_status_t dns_process_packet(const uint8_t *eth_frame, const uint8_t *payloa
     uint32_t client_ip = NET_NTOHL(in_ip->src_ip);
     uint16_t client_port = NET_NTOHS(in_udp->src_port);
 
-    dhcp_status_t st = dhcp_send_udp_frame(in_eth->src_mac, client_ip,
+    dhcp_status_t st = dhcp_send_udp_frame(WIFI_TX_IF_AP, in_eth->src_mac, client_ip,
                                            DNS_SERVER_PORT, client_port,
                                            resp_buf, out_len);
     if (st == DHCP_OK)
@@ -688,7 +688,7 @@ static dhcp_status_t dhcp_client_send_discover(void)
     uint16_t pkt_len = (uint16_t)(sizeof(dhcp_packet_t) - DHCP_MIN_OPTIONS_LEN + opt_idx);
     uint8_t broadcast_mac[ETH_ADDR_LEN] = {0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU};
 
-    dhcp_status_t st = dhcp_send_udp_frame(broadcast_mac, 0xFFFFFFFFU,
+    dhcp_status_t st = dhcp_send_udp_frame(WIFI_TX_IF_STA, broadcast_mac, 0xFFFFFFFFU,
                                            DHCP_CLIENT_PORT, DHCP_SERVER_PORT,
                                            &pkt, pkt_len);
     if (st == DHCP_OK)
@@ -909,7 +909,7 @@ dhcp_status_t dhcp_client_process_packet(const uint8_t *eth_frame, const uint8_t
 
         uint16_t req_len = (uint16_t)(sizeof(dhcp_packet_t) - DHCP_MIN_OPTIONS_LEN + idx);
         uint8_t bcast_mac[ETH_ADDR_LEN] = {0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU};
-        dhcp_send_udp_frame(bcast_mac, 0xFFFFFFFFU, DHCP_CLIENT_PORT, DHCP_SERVER_PORT, &req, req_len);
+        dhcp_send_udp_frame(WIFI_TX_IF_STA, bcast_mac, 0xFFFFFFFFU, DHCP_CLIENT_PORT, DHCP_SERVER_PORT, &req, req_len);
 
         s_dhcp_client_telem.requests_sent++;
         s_dhcp_client_telem.state = DHCP_CLIENT_STATE_REQUESTING;

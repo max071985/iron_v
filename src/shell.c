@@ -491,9 +491,9 @@ void FLASH_TEXT_ATTR shell_print_info(void)
         console_putc(hex_chars[byte & 0x0F]);
         if (i < 5) console_putc(':');
     }
-    console_puts(", Ring: ");
+    console_puts(", RX queue: ");
     put_dec(wtel.rx_ring_capacity);
-    console_puts(" buffers (1536B each)\r\n");
+    console_puts(" x 1536B\r\n");
 
     ieee802154_telemetry_t ztel;
     ieee802154_get_telemetry(&ztel);
@@ -2318,7 +2318,7 @@ void FLASH_TEXT_ATTR shell_execute(char *input_buffer)
         {
             wifi_telemetry_t wt;
             wifi_get_telemetry(&wt);
-            console_puts("802.11ax Wi-Fi 6 MAC Driver & Zero-Copy Packet Ring Status:\r\n");
+            console_puts("Wi-Fi status (Espressif blob, software RX queue):\r\n");
             console_puts("  Driver State:      ");
             if (wt.state == WIFI_STATE_OFF) console_puts("OFF");
             else if (wt.state == WIFI_STATE_INIT) console_puts("INIT");
@@ -2339,12 +2339,9 @@ void FLASH_TEXT_ATTR shell_execute(char *input_buffer)
                 if (i < 5) console_putc(':');
             }
             console_puts("\r\n");
-            console_puts("  RX Ring Capacity:  ");
+            console_puts("  RX Queue:          ");
             put_dec(wt.rx_ring_capacity);
-            console_puts(" buffers (1536B each in DRAM)\r\n");
-            console_puts("  TX Ring Capacity:  ");
-            put_dec(wt.tx_ring_capacity);
-            console_puts(" buffers (1536B each in DRAM)\r\n");
+            console_puts(" x 1536B (software, filled by the blob RX callback)\r\n");
             console_puts("  Packets TX / RX:   ");
             put_dec(wt.tx_packets);
             console_puts(" / ");
@@ -2355,11 +2352,11 @@ void FLASH_TEXT_ATTR shell_execute(char *input_buffer)
             console_puts(" / ");
             put_dec(wt.rx_bytes);
             console_puts("\r\n");
-            console_puts("  Ring Full Drops:   ");
+            console_puts("  RX Queue Drops:    ");
             put_dec(wt.ring_full_drops);
             console_puts("\r\n");
-            console_puts("  GDMA Fault Errors: ");
-            put_dec(wt.dma_err_count);
+            console_puts("  TX Errors:         ");
+            put_dec(wt.tx_errors);
             console_puts("\r\n");
             console_puts("  ISR 1 Count:       ");
             put_dec(interrupt_get_count(1));

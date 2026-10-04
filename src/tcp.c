@@ -110,7 +110,7 @@ static tcp_status_t tcp_send_segment(tcp_pcb_t *pcb, uint8_t flags,
 
     tcp->checksum = NET_HTONS(net_tcp_checksum(net_cfg.ip, pcb->remote_ip, tcp, TCP_MIN_HDR_LEN, payload, payload_len));
 
-    wifi_status_t wst = wifi_tx_packet(frame, total_frame_len);
+    wifi_status_t wst = wifi_tx_packet(wifi_get_ip_tx_if(), frame, total_frame_len);
     if (wst == WIFI_OK)
     {
         s_tcp_telemetry.bytes_tx += payload_len;

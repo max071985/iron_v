@@ -969,7 +969,6 @@ def run_suite(elf_path, bin_path, native_test_bin):
     wifi_syms = [
         "wifi_init",
         "wifi_rx_ring_init",
-        "wifi_tx_ring_init",
         "wifi_verify_rx_ring",
         "wifi_rx_poll",
         "wifi_rx_release",

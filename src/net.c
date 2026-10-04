@@ -602,7 +602,7 @@ net_status_t net_input(const uint8_t *frame, uint16_t len)
             {
                 reply_len = 60U;
             }
-            wifi_tx_packet(reply_buf, reply_len);
+            wifi_tx_packet(wifi_get_ip_tx_if(), reply_buf, reply_len);
             s_net_telemetry.tx_packets++;
             s_net_telemetry.tx_bytes += reply_len;
         }
@@ -656,7 +656,7 @@ net_status_t net_input(const uint8_t *frame, uint16_t len)
             net_status_t st = icmp_process_packet(frame, (uint16_t)(ETH_HDR_LEN + ip_total_len), icmp_reply, sizeof(icmp_reply), &icmp_reply_len);
             if (st == NET_OK && icmp_reply_len > 0U)
             {
-                wifi_tx_packet(icmp_reply, icmp_reply_len);
+                wifi_tx_packet(wifi_get_ip_tx_if(), icmp_reply, icmp_reply_len);
                 s_net_telemetry.tx_packets++;
                 s_net_telemetry.tx_bytes += icmp_reply_len;
             }
@@ -792,7 +792,7 @@ net_status_t net_send_udp(uint32_t dest_ip, uint16_t src_port, uint16_t dest_por
     }
     udp->checksum = NET_HTONS(net_udp_checksum(s_net_config.ip, dest_ip, udp, data, len));
 
-    wifi_status_t wst = wifi_tx_packet(frame_buf, total_frame_len);
+    wifi_status_t wst = wifi_tx_packet(wifi_get_ip_tx_if(), frame_buf, total_frame_len);
     if (wst == WIFI_OK)
     {
         s_net_telemetry.tx_packets++;

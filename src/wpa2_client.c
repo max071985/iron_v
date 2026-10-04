@@ -789,7 +789,7 @@ wpa2_status_t wpa2_client_rx_eapol(const uint8_t *src_mac, const uint8_t *frame,
         wpa2_crypto_compute_mic(s_ptk.kck, tx_frame, total_len, tx_key->key_mic);
 
         /* Transmit via Wi-Fi stack */
-        wifi_tx_packet(tx_frame, total_len);
+        wifi_tx_packet(WIFI_TX_IF_STA, tx_frame, total_len);
         s_wpa2_telem.m2_tx_count++;
         s_wpa2_state = WPA2_STATE_4WAY_M2_SENT;
         return WPA2_OK;
@@ -868,7 +868,7 @@ wpa2_status_t wpa2_client_rx_eapol(const uint8_t *src_mac, const uint8_t *frame,
         wpa2_crypto_compute_mic(s_ptk.kck, tx_frame, total_len, tx_key->key_mic);
 
         /* Transmit Message 4 */
-        wifi_tx_packet(tx_frame, total_len);
+        wifi_tx_packet(WIFI_TX_IF_STA, tx_frame, total_len);
         s_wpa2_telem.m4_tx_count++;
 
         /* Mark Complete & Authenticated */

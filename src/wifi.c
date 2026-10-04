@@ -38,8 +38,7 @@ static int8_t s_wifi_rssi = 0;
 extern uint8_t *g_wifi_nvs;
 #endif
 
-/* Baseband DMA linkage & RF timing telemetry tracking (Task 3) */
-static uint32_t s_rf_dma_linkage_addr = 0U;
+/* RF timing telemetry tracking (Task 3) */
 static uint32_t s_bb_tx_on_delay = 0U;
 static uint32_t s_tx_ramp_delay = 0U;
 static uint32_t s_tx_cca_start_ts = 0U;
@@ -55,17 +54,14 @@ static bool s_wifi_sta_connected = false;
 static uint8_t s_wifi_sta_bssid[WIFI_MAC_ADDR_LEN] = {0};
 
 /* ========================================================================= */
-/* Static Storage: Pre-Allocated Packet Descriptor Rings in HP SRAM DRAM    */
-/* Zero dynamic heap memory calls permitted (AGENTS.md execution standard)   */
+/* Static Storage: software RX queue filled by the blob's RX callback       */
 /* ========================================================================= */
 static net_packet_t s_rx_packet_ring[PACKET_RING_COUNT] __attribute__((aligned(4)));
-static net_packet_t s_tx_packet_ring[WIFI_TX_RING_COUNT] __attribute__((aligned(4)));
 
 static wifi_telemetry_t s_wifi_telemetry = {
     .state             = WIFI_STATE_OFF,
     .mac_addr          = {0x40U, 0x4CU, 0xCAU, 0x45U, 0x1EU, 0x14U}, /* Default fallback */
     .rx_ring_capacity  = PACKET_RING_COUNT,
-    .tx_ring_capacity  = WIFI_TX_RING_COUNT,
     .rx_ring_head      = 0U,
     .rx_ring_tail      = 0U,
     .rx_packets        = 0U,
@@ -73,11 +69,16 @@ static wifi_telemetry_t s_wifi_telemetry = {
     .rx_bytes          = 0U,
     .tx_bytes          = 0U,
     .ring_full_drops   = 0U,
-    .dma_err_count     = 0U
+    .tx_errors         = 0U
 };
 
 static bool s_wifi_initialized = false;
-static uint32_t s_tx_ring_tail = 0U;
+
+#if !defined(__riscv)
+static uint8_t s_host_last_tx[PACKET_BUFFER_SIZE];
+static uint16_t s_host_last_tx_len = 0U;
+static wifi_tx_if_t s_host_last_tx_if = WIFI_TX_IF_AP;
+#endif
 
 /* ========================================================================= */
 /* Memory & Hardware Synchronization Barrier                                 */
@@ -140,27 +141,6 @@ wifi_status_t wifi_rx_ring_init(void)
     s_wifi_telemetry.rx_ring_tail = 0U;
     wifi_fence();
 
-    return WIFI_OK;
-}
-
-wifi_status_t wifi_tx_ring_init(void)
-{
-    for (uint32_t i = 0U; i < WIFI_TX_RING_COUNT; i++)
-    {
-        uint32_t next_idx = (i + 1U) % WIFI_TX_RING_COUNT;
-
-        s_tx_packet_ring[i].dma_desc.dw0             = 0U;
-        s_tx_packet_ring[i].dma_desc.size            = PACKET_BUFFER_SIZE;
-        s_tx_packet_ring[i].dma_desc.length          = 0U;
-        s_tx_packet_ring[i].dma_desc.err_eof         = 0U;
-        s_tx_packet_ring[i].dma_desc.suc_eof         = 0U;
-        s_tx_packet_ring[i].dma_desc.owner           = DMA_OWNER_CPU;
-        s_tx_packet_ring[i].dma_desc.buffer_addr     = (uint32_t)(uintptr_t)s_tx_packet_ring[i].payload;
-        s_tx_packet_ring[i].dma_desc.next_descriptor = &s_tx_packet_ring[next_idx].dma_desc;
-    }
-
-    s_tx_ring_tail = 0U;
-    wifi_fence();
     return WIFI_OK;
 }
 
@@ -430,27 +410,15 @@ wifi_status_t wifi_init(void)
     /* 2. Read authentic silicon MAC address from eFuse */
     wifi_read_hardware_mac(s_wifi_telemetry.mac_addr);
 
-    /* 3. Initialize circular packet descriptor rings */
+    /* 3. Initialize the software RX queue (the MAC does not use GDMA; frames
+     *    arrive through the blob's RX callback) */
     wifi_rx_ring_init();
-    wifi_tx_ring_init();
 
-    /* 4. Initialize and reset GDMA Channel 1 */
-    gdma_channel_init(WIFI_GDMA_CHANNEL);
-    gdma_channel_reset(WIFI_GDMA_CHANNEL);
-
-    /* 5. Bind GDMA Channel 1 Inlink to circular RX descriptor ring */
-    gdma_inlink_set(WIFI_GDMA_CHANNEL, &s_rx_packet_ring[0].dma_desc);
-    gdma_inlink_start(WIFI_GDMA_CHANNEL);
-
-    /* 6. Bind GDMA Channel 1 Outlink to TX descriptor ring */
-    gdma_outlink_set(WIFI_GDMA_CHANNEL, &s_tx_packet_ring[0].dma_desc);
-
-    /* 7. Store telemetry references for descriptor rings and timing parameters.
+    /* 4. Store timing parameters.
      * NOTE: Physical silicon tracing proved that 0x600AD000/0x600AD004 are the MAC's
      * hardware 64-bit microsecond TSF timer, and 0x600A4010-0x600A401C are hardware
      * BSSID filter registers. They must NEVER be overwritten with DRAM pointers or
      * delay constants, as doing so destroys 802.11 TBTT timing and filters. */
-    s_rf_dma_linkage_addr = (uint32_t)(uintptr_t)&s_rx_packet_ring[0].dma_desc;
     s_bb_tx_on_delay  = WIFI_MAC_DEFAULT_BB_TX_ON_DELAY_US;
     s_tx_ramp_delay   = WIFI_MAC_DEFAULT_TX_RAMP_DELAY_US;
     s_tx_cca_start_ts = WIFI_MAC_DEFAULT_TX_CCA_START_TS_US;
@@ -569,65 +537,62 @@ wifi_status_t wifi_rx_release(net_packet_t *packet)
     return WIFI_OK;
 }
 
-wifi_status_t wifi_tx_packet(const uint8_t *payload, uint16_t len)
+wifi_tx_if_t wifi_get_ip_tx_if(void)
 {
-    if (payload == NULL || len == 0U || len > PACKET_BUFFER_SIZE)
+    return s_wifi_sta_connected ? WIFI_TX_IF_STA : WIFI_TX_IF_AP;
+}
+
+/* Hands one Ethernet II frame to the blob on the given interface (no copy, no GDMA) */
+wifi_status_t wifi_tx_packet(wifi_tx_if_t ifx, const uint8_t *payload, uint16_t len)
+{
+    if (payload == NULL || len == 0U || len > PACKET_BUFFER_SIZE ||
+        (ifx != WIFI_TX_IF_STA && ifx != WIFI_TX_IF_AP))
     {
         return WIFI_ERR_INVALID_ARG;
     }
 
-    if (!s_wifi_initialized)
+#if defined(__riscv)
+    bool if_up = (ifx == WIFI_TX_IF_AP) ? s_wifi_ap_running
+                                        : (s_wifi_telemetry.state == WIFI_STATE_CONNECTED ||
+                                           s_wifi_telemetry.state == WIFI_STATE_ACTIVE);
+    if (!s_vendor_wifi_inited || !if_up)
     {
-        wifi_init();
+        s_wifi_telemetry.tx_errors++;
+        return WIFI_ERR_IF_DOWN;
     }
 
-    uint32_t tail = s_tx_ring_tail;
-    net_packet_t *tx_pkt = &s_tx_packet_ring[tail % WIFI_TX_RING_COUNT];
-
-    /* Guard against buffer collision */
-    if (tx_pkt->dma_desc.owner == DMA_OWNER_DMA)
+    esp_err_t tx_err = esp_wifi_internal_tx((wifi_interface_t)ifx, (void *)payload, len);
+    if (tx_err != 0)
     {
-        s_wifi_telemetry.ring_full_drops++;
-        return WIFI_ERR_RING_FULL;
+        s_wifi_telemetry.tx_errors++;
+        console_puts("[Wi-Fi] TX err=");
+        put_dec((uint32_t)tx_err);
+        console_puts(" if=");
+        put_dec((uint32_t)ifx);
+        console_puts(" len=");
+        put_dec((uint32_t)len);
+        console_puts("\r\n");
+        return WIFI_ERR_TX_FAILED;
     }
-
-    memcpy(tx_pkt->payload, payload, len);
-    tx_pkt->dma_desc.length = (uint32_t)len;
-    tx_pkt->dma_desc.suc_eof = 1U;
-    wifi_fence();
-    tx_pkt->dma_desc.owner = DMA_OWNER_DMA;
-    wifi_fence();
-
-    /* Trigger GDMA Channel 1 Outlink */
-    gdma_outlink_restart(WIFI_GDMA_CHANNEL);
-
-    /* In freestanding synchronous transmission, release buffer back to CPU ownership */
-    wifi_fence();
-    tx_pkt->dma_desc.owner = DMA_OWNER_CPU;
-    wifi_fence();
+#else
+    memcpy(s_host_last_tx, payload, len);
+    s_host_last_tx_len = len;
+    s_host_last_tx_if = ifx;
+#endif
 
     s_wifi_telemetry.tx_packets++;
     s_wifi_telemetry.tx_bytes += (uint32_t)len;
-    s_tx_ring_tail = (tail + 1U) % WIFI_TX_RING_COUNT;
-
-#if defined(__riscv)
-    if (s_vendor_wifi_inited && (s_wifi_ap_running || s_wifi_telemetry.state == WIFI_STATE_CONNECTED || s_wifi_telemetry.state == WIFI_STATE_ACTIVE))
-    {
-        wifi_interface_t ifx = s_wifi_ap_running ? WIFI_IF_AP : WIFI_IF_STA;
-        esp_err_t tx_err = esp_wifi_internal_tx(ifx, (void *)payload, len);
-        if (tx_err != 0)
-        {
-            console_puts("[Wi-Fi] TX err=");
-            put_dec((uint32_t)tx_err);
-            console_puts(" len=");
-            put_dec((uint32_t)len);
-            console_puts("\r\n");
-        }
-    }
-#endif
-
     return WIFI_OK;
 }
+
+#if !defined(__riscv)
+const uint8_t *wifi_host_last_tx(uint16_t *out_len, wifi_tx_if_t *out_ifx)
+{
+    if (out_len != NULL) *out_len = s_host_last_tx_len;
+    if (out_ifx != NULL) *out_ifx = s_host_last_tx_if;
+    return s_host_last_tx;
+}
+#endif
 
 void wifi_poll_rx_traffic(void)
 {
@@ -1146,11 +1111,6 @@ wifi_status_t wifi_sniffer(uint8_t channel, uint32_t duration_sec)
 /* ========================================================================= */
 /* Baseband DMA Linkage & RF Timing Telemetry Getters (Task 3)               */
 /* ========================================================================= */
-uint32_t wifi_get_rf_dma_linkage_reg(void)
-{
-    return s_rf_dma_linkage_addr;
-}
-
 uint32_t wifi_get_bb_tx_on_delay(void)
 {
     return s_bb_tx_on_delay;

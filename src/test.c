@@ -2141,15 +2141,15 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
 #endif
 
     /* ------------------------------------------------------------- */
-    /* TEST 31: 802.11ax Wi-Fi 6 MAC Driver & Zero-Copy Packet Ring  */
+    /* TEST 31: Wi-Fi driver, RX queue and TX interface checks         */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(31, "802.11ax Wi-Fi 6 MAC Driver & Zero-Copy Packet Ring",
-                      "Verify static DRAM descriptor ring, circular linkage, DMA ownership, and zero-copy packet buffering");
+    print_test_header(31, "Wi-Fi Driver, RX Queue & TX Interface",
+                      "Verify init, eFuse MAC, software RX queue integrity, TX refused on a down interface, SoftAP start/stop");
 
     wdt_feed();
 
-    /* 1. Subsystem Lifecycle & GDMA Channel 1 Binding */
+    /* 1. Subsystem Lifecycle */
     if (wifi_is_ap_active())
     {
         wifi_stop_ap();
@@ -2173,22 +2173,18 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     uint16_t rx_poll_len = 0U;
     int ring_empty_ok = (wifi_rx_poll(&rx_poll_pkt, &rx_poll_len) == WIFI_ERR_RING_EMPTY);
 
-    /* 5. Packet Transmission via GDMA Channel 1 */
+    /* 5. Transmission is refused while no interface is up (AP stopped, STA not
+     *    connected): the frame is handed only to the blob, never dropped silently */
     uint8_t test_tx_frame[64];
     for (uint32_t i = 0; i < sizeof(test_tx_frame); i++)
     {
         test_tx_frame[i] = (uint8_t)(i ^ 0xA5U);
     }
-    int tx_ok = (wifi_tx_packet(test_tx_frame, sizeof(test_tx_frame)) == WIFI_OK);
+    wifi_telemetry_t w_telem_before;
+    wifi_get_telemetry(&w_telem_before);
+    int tx_ok = (wifi_tx_packet(WIFI_TX_IF_AP, test_tx_frame, sizeof(test_tx_frame)) == WIFI_ERR_IF_DOWN);
 
-    /* 6. Verify Hardware Register Binding: GDMA Channel 1 Inlink */
-    volatile uint32_t *gdma_inlink_reg = GDMA_IN_LINK_REG(WIFI_GDMA_CHANNEL);
-    uint32_t inlink_val = *gdma_inlink_reg;
-    int gdma_bound_ok = (inlink_val != 0U);
-
-    /* 7. Verify Baseband DMA Linkage & Timings (Task 3 Remediation) */
-    uint32_t rf_dma_link = wifi_get_rf_dma_linkage_reg();
-    int rf_dma_ok = (rf_dma_link != 0U);
+    /* 7. Verify timing parameters */
     int timings_ok = (wifi_get_bb_tx_on_delay() == WIFI_MAC_DEFAULT_BB_TX_ON_DELAY_US) &&
                      (wifi_get_tx_ramp_delay() == WIFI_MAC_DEFAULT_TX_RAMP_DELAY_US) &&
                      (wifi_get_tx_cca_start_ts() == WIFI_MAC_DEFAULT_TX_CCA_START_TS_US);
@@ -2197,9 +2193,8 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     wifi_telemetry_t w_telem;
     int telem_ok = (wifi_get_telemetry(&w_telem) == WIFI_OK) &&
                    (w_telem.rx_ring_capacity == PACKET_RING_COUNT) &&
-                   (w_telem.tx_ring_capacity == WIFI_TX_RING_COUNT) &&
-                   (w_telem.tx_packets >= 1U) &&
-                   (w_telem.tx_bytes >= sizeof(test_tx_frame));
+                   (w_telem.tx_errors == w_telem_before.tx_errors + 1U) &&
+                   (w_telem.tx_packets == w_telem_before.tx_packets);
 
     /* 9. SoftAP Broadcasting Functionality (Task 5.7.2 & 5.7.3) */
     if (wifi_is_ap_active())
@@ -2217,10 +2212,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     wdt_feed();
 
     int t31_pass = wifi_init_ok && wifi_state_idle_ok && wifi_mac_ok &&
-                   ring_verify_ok && ring_empty_ok && tx_ok && gdma_bound_ok &&
-                   rf_dma_ok && timings_ok && telem_ok && softap_ok;
+                   ring_verify_ok && ring_empty_ok && tx_ok &&
+                   timings_ok && telem_ok && softap_ok;
 
-    uart_puts("  Expected:    Init=1, StateIdle=1, MAC=1, RingVerify=1, EmptyPoll=1, Tx=1, RFDma=1, Timing=1, Telem=1, SoftAP=1\r\n");
+    uart_puts("  Expected:    Init=1, StateIdle=1, MAC=1, RingVerify=1, EmptyPoll=1, TxRefusedIfDown=1, Timing=1, Telem=1, SoftAP=1\r\n");
     uart_puts("  Actual:      Init=");
     put_dec(wifi_init_ok);
     uart_puts(", StateIdle=");
@@ -2231,10 +2226,8 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     put_dec(ring_verify_ok);
     uart_puts(", EmptyPoll=");
     put_dec(ring_empty_ok);
-    uart_puts(", Tx=");
+    uart_puts(", TxRefusedIfDown=");
     put_dec(tx_ok);
-    uart_puts(", RFDma=");
-    put_dec(rf_dma_ok);
     uart_puts(", Timing=");
     put_dec(timings_ok);
     uart_puts(", Telem=");
@@ -2255,10 +2248,8 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     put_dec(w_telem.tx_packets);
     uart_puts(", TxBytes=");
     put_dec(w_telem.tx_bytes);
-    uart_puts(", GDMA_Inlink=");
-    put_hex(inlink_val);
-    uart_puts(", RF_DMA=");
-    put_hex(rf_dma_link);
+    uart_puts(", TxErrors=");
+    put_dec(w_telem.tx_errors);
     uart_puts(", Delays=");
     put_dec(wifi_get_bb_tx_on_delay());
     uart_puts("/");

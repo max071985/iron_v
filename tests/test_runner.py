@@ -912,58 +912,6 @@ def run_suite(elf_path, bin_path, native_test_bin):
         t28_pass
     )
 
-    # TEST 29: Bluetooth 5 (LE) Controller Driver & Minimal GATT Server Linkage (Task 5.2)
-    total += 1
-    ble_syms = [
-        "ble_init",
-        "ble_hw_init",
-        "ble_hw_start_advertising",
-        "ble_hw_stop_advertising",
-        "ble_hw_is_advertising",
-        "ble_hci_send_cmd",
-        "ble_hci_recv_event",
-        "ble_hci_has_event",
-        "ble_hci_execute_cmd",
-        "ble_gap_start_advertising",
-        "ble_gap_stop_advertising",
-        "ble_gap_get_state",
-        "ble_get_bd_addr",
-        "ble_get_telemetry",
-        "gatt_db_init",
-        "gatt_db_get_count",
-        "gatt_db_find_by_handle",
-        "gatt_db_find_by_uuid",
-        "gatt_db_read",
-        "gatt_db_write",
-        "ble_npl_event_init",
-        "ble_npl_eventq_init",
-        "ble_npl_eventq_put",
-        "ble_npl_eventq_get",
-        "ble_npl_callout_init",
-        "ble_npl_callout_reset",
-        "ble_npl_callout_stop",
-        "ble_npl_time_get",
-        "ble_npl_hw_enter_critical",
-        "ble_npl_hw_exit_critical",
-        "ble_npl_service_background"
-    ]
-    found_ble_syms = [s for s in ble_syms if s in symbols]
-    all_ble_found = len(found_ble_syms) == len(ble_syms)
-    all_ble_in_text = all(
-        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
-        for s in found_ble_syms
-    )
-    t29_pass = all_ble_found and all_ble_in_text
-    t29_actual = f"Found {len(found_ble_syms)}/{len(ble_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
-    passed += print_result_line(
-        total,
-        "Bluetooth 5 (LE) Controller Driver & Minimal GATT Server Linkage",
-        "Verify ble_init, HCI transport, GAP advertising, and GATT database symbols exist in IRAM",
-        f"All {len(ble_syms)} BLE and GATT driver symbols present in IRAM text section [0x40800000, 0x40829000)",
-        t29_actual,
-        t29_pass
-    )
-
     # TEST 30: 802.11ax Wi-Fi 6 MAC Driver & Zero-Copy Packet Ring Linkage (Task 5.3)
     total += 1
     wifi_syms = [
@@ -1144,51 +1092,6 @@ def run_suite(elf_path, bin_path, native_test_bin):
         f"All {len(speedtest_syms)} Speed-Test benchmark symbols present in IRAM text section [0x40800000, 0x40829000)",
         t34_actual,
         t34_pass
-    )
-
-    # TEST 35: Google Home Matter Readiness & Commissioning Bridge Linkage (Task 6.3)
-    total += 1
-    matter_syms = [
-        "matter_init",
-        "matter_reset",
-        "matter_get_commissioning_info",
-        "matter_set_commissioning_info",
-        "matter_get_telemetry",
-        "matter_get_state",
-        "matter_arm_failsafe",
-        "matter_complete_commissioning",
-        "matter_set_transport",
-        "matter_get_transport",
-        "matter_set_onoff",
-        "matter_get_onoff",
-        "matter_toggle_onoff",
-        "matter_generate_manual_pairing_code",
-        "matter_parse_manual_pairing_code",
-        "matter_generate_qr_code_payload",
-        "matter_parse_qr_code_payload",
-        "matter_process_cluster_command",
-        "matter_verhoeff_compute",
-        "matter_verhoeff_validate",
-        "matter_crypto_hw_init",
-        "matter_crypto_sha256",
-        "matter_get_sha_date",
-        "matter_get_ecc_date"
-    ]
-    found_matter_syms = [s for s in matter_syms if s in symbols]
-    all_matter_found = len(found_matter_syms) == len(matter_syms)
-    all_matter_in_text = all(
-        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
-        for s in found_matter_syms
-    )
-    t35_pass = all_matter_found and all_matter_in_text
-    t35_actual = f"Found {len(found_matter_syms)}/{len(matter_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
-    passed += print_result_line(
-        total,
-        "Google Home Matter Readiness & Commissioning Bridge Linkage",
-        "Verify matter_init, manual code, QR payload, cluster processing, and crypto accelerator symbols exist in IRAM",
-        f"All {len(matter_syms)} Matter subsystem symbols present in IRAM text section [0x40800000, 0x40829000)",
-        t35_actual,
-        t35_pass
     )
 
     # TEST 36: Extended Interactive Console Shell & 24/7 Health Monitoring Linkage (Task 6.4)
@@ -1516,7 +1419,6 @@ def run_suite(elf_path, bin_path, native_test_bin):
     companion_flash_syms = [
         "http_handler_health",
         "http_handler_speedtest",
-        "http_handler_matter_payload",
         "http_handler_gpio",
         "http_register_default_routes"
     ]

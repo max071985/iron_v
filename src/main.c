@@ -23,9 +23,6 @@
 #include "gpio.h"
 #include "gdma.h"
 #include "modem.h"
-#include "ble.h"
-#include "ble_gatt.h"
-#include "ble_npl.h"
 #include "wifi.h"
 #include "wifi_os_adapter.h"
 #include "ieee802154.h"
@@ -35,7 +32,6 @@
 #include "dhcp.h"
 #include "wifi_vendor_types.h"
 #include "speedtest.h"
-#include "matter.h"
 #include "shell.h"
 #include "efuse.h"
 #include "soak.h"
@@ -111,9 +107,6 @@ void main(void)
     /* Initialize Modem Clock & Power Control (MODEM_SYSCON / MODEM_LPCON) */
     modem_init();
 
-    /* Initialize Bluetooth 5 (LE) Controller Driver & Minimal GATT Server */
-    ble_init();
-
     /* Initialize 802.11ax Wi-Fi 6 MAC Driver & Zero-Copy Packet Ring */
     wifi_init();
 
@@ -143,15 +136,8 @@ void main(void)
     /* Initialize LAN Network Diagnostics & Wi-Fi Speed-Test Benchmark Engine */
     speedtest_init();
 
-    /* Initialize Google Home Matter Commissioning Bridge & Hardware Crypto */
-    matter_init(NULL);
-
     /* Initialize Interactive Console Shell & 24/7 Health Telemetry */
     shell_init();
-
-#if CONFIG_BLE_AUTO_START_ADV
-    ble_gap_start_advertising();
-#endif
 
 #if CONFIG_WIFI_AUTO_START_AP
     wifi_start_ap(CONFIG_WIFI_SSID, NULL, CONFIG_WIFI_CHANNEL);
@@ -172,7 +158,6 @@ void main(void)
         dhcp_client_tick();
         wifi_os_adapter_poll();
         wifi_poll_rx_traffic();
-        ble_npl_service_background();
         shell_tick();
         task_yield();
     }

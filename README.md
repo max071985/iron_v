@@ -22,7 +22,7 @@ The runtime targets the official ESP32-C6-DevKitC-1 development board:
   - Hardware UART0 (GPIO 16 TX, GPIO 17 RX)
 - **Wireless Capabilities:**
   - 2.4 GHz Wi-Fi 6 (802.11ax)
-  - Bluetooth 5 (LE)
+  - Bluetooth 5 (LE) (radio present on the SoC; not used by Iron V)
   - IEEE 802.15.4 (Zigbee and Thread support)
 
 ---
@@ -57,7 +57,7 @@ iron-v/
 │   ├── task.c / task_switch.S                   # Cooperative coroutine task engine
 │   ├── pmp.c / power.c / lp_core.c              # RISC-V PMP isolation, sleep control, and LP mailbox
 │   ├── gpio.c / gdma.c                          # GPIO Matrix routing and multi-channel GDMA engine
-│   ├── modem.c / ble.c / wifi.c / ieee802154.c  # Wireless baseband, BLE GAP/GATT, Wi-Fi 6, 802.15.4
+│   ├── modem.c / wifi.c / ieee802154.c          # Modem clocks, Wi-Fi (Espressif blob glue), 802.15.4
 │   ├── net.c / tcp.c                            # Lightweight TCP/IP stack (IPv4, ARP, ICMP, UDP, TCP)
 │   ├── wifi_os_adapter.c                        # Freestanding OSAL for vendor Wi-Fi binary blobs
 │   ├── wifi_regulatory.c / wifi_regulatory.h    # Native 2.4 GHz regulatory rules and country mapping

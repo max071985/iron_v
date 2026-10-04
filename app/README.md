@@ -32,12 +32,6 @@ The **Iron V Companion Application** is a lightweight, zero-external-dependency 
    - Displays real-time bandwidth gauge (Mbps and kbps), microsecond latency, and packet loss counters.
    - Logs previous test runs in a local history table.
 
-6. **"Works with Google Home" Matter Commissioning Bridge:**
-   - Formatted 11-digit manual pairing code (`3497-011-2332`) with one-click copy.
-   - Base38 setup payload (`MT:Y.K9042C00KA0648G00`) with one-click copy.
-   - Embedded zero-dependency SVG vector QR code generator for direct scanning in the Google Home / Matter commissioning app.
-   - Matter On/Off Cluster (0x0006) toggle synchronized with GPIO 15.
-
 ---
 
 ## Running the Companion App
@@ -75,4 +69,3 @@ When connected to the board via Wi-Fi (`iron-v.local` or `192.168.4.1`), all RES
 | `/api/wifi/scan` | `GET` | Scan available Wi-Fi access points | `{"count":4,"aps":[{"ssid":"HomeNetwork","rssi":-45,"channel":1,"auth":"WPA2-PSK"}]}` |
 | `/api/wifi/configure` | `POST` | Provision credentials for home LAN | `{"status":"ok","provisioned":true,"message":"Connecting"}` |
 | `/api/speedtest` | `GET` / `POST` | Query or trigger throughput burst | `{"status":"ok","throughput_kbps":83600,"throughput_mbps":83,"latency_min_us":120}` |
-| `/api/matter/payload` | `GET` | Matter commissioning setup codes | `{"manual_code":"3497-011-2332","qr_payload":"MT:Y.K9042C00KA0648G00"}` |

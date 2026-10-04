@@ -59,9 +59,6 @@
       <button class="tab-btn" data-tab="tab-speed">
         <span>🚀</span> LAN Diagnostics &amp; Speed
       </button>
-      <button class="tab-btn" data-tab="tab-matter">
-        <span>🏠</span> Matter Commissioning
-      </button>
     </nav>
   </div>
 
@@ -288,36 +285,6 @@
               </tbody>
             </table>
           </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Tab 5: Matter Commissioning Bridge -->
-    <section id="tab-matter" class="tab-view">
-      <div class="card">
-        <div class="card-header">
-          <span class="card-title"><span>🏠</span> "Works with Google Home" Matter Commissioning</span>
-          <span id="matterOnoffBadge" class="pin-status-pill low">OFF</span>
-        </div>
-
-        <div class="matter-payload-box">
-          <span class="metric-label">Matter 11-Digit Manual Pairing Code</span>
-          <div id="matterManualCode" class="pairing-code-display">3497-011-2332</div>
-          <button class="btn btn-secondary btn-sm" onclick="copyToClipboard(document.getElementById('matterManualCode').innerText, 'Pairing Code')">Copy Code</button>
-
-          <div id="matterQrContainer" class="qr-container">
-            <!-- Rendered SVG QR code -->
-          </div>
-
-          <div style="font-family:var(--font-mono); font-size:12px; color:var(--text-muted); margin: 6px 0;">
-            Base38 Payload: <span id="matterPayloadStr" style="color:var(--color-primary-light);">MT:Y.K9042C00KA0648G00</span>
-          </div>
-          <button class="btn btn-secondary btn-sm" onclick="copyToClipboard(document.getElementById('matterPayloadStr').innerText, 'QR Payload')">Copy Payload</button>
-        </div>
-
-        <div style="display:flex; justify-content:center; gap:12px; margin-top:16px;">
-          <button id="btnMatterToggle" class="btn btn-primary" onclick="toggleMatterOnOff()">Toggle On/Off (Cluster 0x0006)</button>
-          <button class="btn btn-secondary" onclick="fetchMatterPayload()">Refresh Payload</button>
         </div>
       </div>
     </section>

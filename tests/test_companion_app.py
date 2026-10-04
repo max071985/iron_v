@@ -97,17 +97,6 @@ class MockIronVServer(BaseHTTPRequestHandler):
                 "last_latency_avg_us": 120,
                 "last_packet_loss": 0
             }).encode("utf-8")
-        elif path == "/api/matter/payload":
-            body = json.dumps({
-                "manual_code": "3497-011-2332",
-                "qr_payload": "MT:Y.K9042C00KA0648G00",
-                "vendor_id": 65521,
-                "product_id": 32769,
-                "discriminator": 3840,
-                "passcode": 20202021,
-                "onoff": False,
-                "state": 1
-            }).encode("utf-8")
         else:
             self._set_cors_headers(status=404)
             err_body = b'{"error":"not_found"}\r\n'
@@ -226,9 +215,6 @@ class TestCompanionApp(unittest.TestCase):
             "provPassInput",
             "speedGaugeValue",
             "btnRunSpeedtest",
-            "matterManualCode",
-            "matterPayloadStr",
-            "matterQrContainer",
             "toastContainer"
         ]
         for rid in required_ids:
@@ -253,7 +239,6 @@ class TestCompanionApp(unittest.TestCase):
             "/api/wifi/scan",
             "/api/wifi/configure",
             "/api/speedtest",
-            "/api/matter/payload",
             "/api/wdt/feed"
         ]
         for ep in endpoints:
@@ -262,10 +247,6 @@ class TestCompanionApp(unittest.TestCase):
         # Subnet discovery candidates
         self.assertIn("iron-v.local", js)
         self.assertIn("192.168.4.1", js)
-
-        # Vector SVG QR generator presence
-        self.assertIn("generateQrSvg", js)
-        self.assertIn("drawFinder", js)
 
     def test_05_mock_api_end_to_end(self):
         """Verify REST API communication, JSON serialization, and CORS headers via mock server."""
@@ -308,13 +289,6 @@ class TestCompanionApp(unittest.TestCase):
             data = json.loads(resp.read().decode("utf-8"))
             self.assertEqual(data["pin"], 15)
             self.assertEqual(data["level"], 1)
-
-        # 5. Test GET /api/matter/payload
-        with urllib.request.urlopen(f"{base_url}/api/matter/payload") as resp:
-            self.assertEqual(resp.status, 200)
-            data = json.loads(resp.read().decode("utf-8"))
-            self.assertEqual(data["manual_code"], "3497-011-2332")
-            self.assertTrue(data["qr_payload"].startswith("MT:"))
 
 
 if __name__ == "__main__":

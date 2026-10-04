@@ -24,9 +24,6 @@
 #include "gpio.h"
 #include "gdma.h"
 #include "modem.h"
-#include "ble.h"
-#include "ble_gatt.h"
-#include "ble_npl.h"
 #include "wifi.h"
 #include "wifi_os_adapter.h"
 #include "ieee802154.h"
@@ -36,7 +33,6 @@
 #include "dhcp.h"
 #include "wifi_vendor_types.h"
 #include "speedtest.h"
-#include "matter.h"
 #include "efuse.h"
 #include "soak.h"
 #include "ota.h"
@@ -244,7 +240,6 @@ void FLASH_TEXT_ATTR shell_print_help(void)
     console_puts("  dma [status]        - Show GDMA multi-channel engine status\r\n");
     console_puts("  modem [status|all|wifi|ble|15.4|coex] - Show or control wireless modem clocks and power\r\n");
     console_puts("  coex [status|diag|on|off] - Show or control 3-wire RF coexistence arbiter & LP clock\r\n");
-    console_puts("  ble [status|adv|stop|read|info] - Show or control BLE controller, advertising & GATT\r\n");
     console_puts("  wifi [status|mac|ring|init|scan|sniffer|ap] - Show or control 802.11ax Wi-Fi 6 MAC driver & SoftAP\r\n");
     console_puts("  mmu [status|map]    - Show MSPI MMU Flash XIP mapping & cache status\r\n");
     console_puts("  15.4 [status|chan|pan|short|rx|tx|stop] - Show or control IEEE 802.15.4 radio transceiver\r\n");
@@ -252,7 +247,6 @@ void FLASH_TEXT_ATTR shell_print_help(void)
     console_puts("  dhcp [status]       - Show DHCP server leases and captive portal telemetry\r\n");
     console_puts("  http [status|routes|start|stop] - Show or control zero-allocation local REST/HTTP server\r\n");
     console_puts("  speedtest [run|burst|udp|status|reset] - Run or inspect LAN network & Wi-Fi throughput benchmark\r\n");
-    console_puts("  matter [info|code|qr|onoff|state|commission|reset] - Google Home Matter commissioning & bridge\r\n");
     console_puts("  efuse [status|summary|security|mac] - Silicon eFuse controller & security seal state\r\n");
     console_puts("  soak [status|audit|cycles] - 24/7 stability soak, memory leak audit & anti-starvation telemetry\r\n");
     console_puts("  ota [status|partitions|switch|rollback|mark-valid|verify] - Dual-slot Flash OTA upgrade & rollback\r\n");
@@ -451,26 +445,6 @@ void FLASH_TEXT_ATTR shell_print_info(void)
     put_hex(modem_get_syscon_date());
     console_puts(")\r\n");
 
-    ble_telemetry_t btel;
-    ble_get_telemetry(&btel);
-    console_puts(" BLE:     Software model, no RF. State: ");
-    if (btel.state == BLE_STATE_STANDBY) console_puts("STANDBY");
-    else if (btel.state == BLE_STATE_ADVERTISING) console_puts("ADVERTISING");
-    else if (btel.state == BLE_STATE_CONNECTED) console_puts("CONNECTED");
-    else console_puts("DISCONNECTING");
-    console_puts(", MAC: ");
-    for (int i = 0; i < 6; i++)
-    {
-        uint8_t byte = btel.bd_addr[i];
-        const char hex_chars[] = "0123456789abcdef";
-        console_putc(hex_chars[(byte >> 4) & 0x0F]);
-        console_putc(hex_chars[byte & 0x0F]);
-        if (i < 5) console_putc(':');
-    }
-    console_puts(", GATT: ");
-    put_dec(gatt_db_get_count());
-    console_puts(" attrs\r\n");
-
     wifi_telemetry_t wtel;
     wifi_get_telemetry(&wtel);
     console_puts(" WiFi:    State: ");
@@ -549,22 +523,6 @@ void FLASH_TEXT_ATTR shell_print_info(void)
     console_puts(", Last: ");
     put_dec(sptel.last_throughput_mbps);
     console_puts(" Mbps\r\n");
-
-    matter_telemetry_t mtel;
-    matter_get_telemetry(&mtel);
-    char m_code[MATTER_MANUAL_CODE_MAX_BUF];
-    matter_commissioning_info_t minfo;
-    matter_get_commissioning_info(&minfo);
-    matter_generate_manual_pairing_code(&minfo, m_code, sizeof(m_code), true);
-    console_puts(" Matter:  State: ");
-    console_puts(matter_state_to_str(mtel.state));
-    console_puts(", Code: ");
-    console_puts(m_code);
-    console_puts(", OnOff: ");
-    console_puts(mtel.onoff_state ? "ON" : "OFF");
-    console_puts(", Trans: ");
-    console_puts((mtel.transport == MATTER_TRANSPORT_THREAD) ? "Thread" : "Wi-Fi");
-    console_puts("\r\n");
 
     uint8_t efuse_mac[EFUSE_MAC_LEN];
     efuse_get_mac(efuse_mac);
@@ -1900,133 +1858,6 @@ void FLASH_TEXT_ATTR shell_execute(char *input_buffer)
             console_puts(is_valid ? "READY (All clocks synchronized)\r\n" : "UNSYNCHRONIZED\r\n");
         }
     }
-    else if (strncmp(input_buffer, "ble", 3) == 0 && (input_buffer[3] == ' ' || input_buffer[3] == '\0'))
-    {
-        char *subcmd = input_buffer + 3;
-        while (*subcmd == ' ') subcmd++;
-
-        if (strncmp(subcmd, "adv stop", 8) == 0 || strncmp(subcmd, "stop", 4) == 0)
-        {
-            ble_status_t st = ble_gap_stop_advertising();
-            if (st == BLE_OK)
-            {
-                console_puts("BLE GAP Advertising stopped (State: STANDBY).\r\n");
-            }
-            else
-            {
-                console_puts("Failed to stop BLE GAP Advertising. Status: ");
-                put_dec((uint32_t)-st);
-                console_puts("\r\n");
-            }
-        }
-        else if (strncmp(subcmd, "adv start", 9) == 0 || strcmp(subcmd, "adv") == 0 || strncmp(subcmd, "adv ", 4) == 0)
-        {
-            ble_status_t st = ble_gap_start_advertising();
-            if (st == BLE_OK)
-            {
-                console_puts("BLE advertising state set (software model only; nothing is transmitted).\r\n");
-            }
-            else
-            {
-                console_puts("Failed to start BLE GAP Advertising. Status: ");
-                put_dec((uint32_t)-st);
-                console_puts("\r\n");
-            }
-        }
-        else if (strncmp(subcmd, "read", 4) == 0)
-        {
-            char *arg = subcmd + 4;
-            while (*arg == ' ') arg++;
-            uint32_t handle = 0;
-            if (parse_uint(&arg, &handle))
-            {
-                uint8_t r_buf[64] = {0};
-                uint16_t r_len = 0;
-                gatt_status_t gst = gatt_db_read((uint16_t)handle, r_buf, sizeof(r_buf) - 1, &r_len);
-                if (gst == GATT_OK)
-                {
-                    console_puts("GATT Handle 0x");
-                    put_hex(handle);
-                    console_puts(" [Len=");
-                    put_dec(r_len);
-                    console_puts("]: \"");
-                    for (uint16_t i = 0; i < r_len; i++)
-                    {
-                        char c = (char)r_buf[i];
-                        if (c >= 32 && c <= 126) console_putc(c);
-                        else console_putc('.');
-                    }
-                    console_puts("\" (Hex: ");
-                    for (uint16_t i = 0; i < r_len; i++)
-                    {
-                        uint8_t b = r_buf[i];
-                        const char h[] = "0123456789abcdef";
-                        console_putc(h[(b >> 4) & 0x0F]);
-                        console_putc(h[b & 0x0F]);
-                        if (i + 1 < r_len) console_putc(' ');
-                    }
-                    console_puts(")\r\n");
-                }
-                else
-                {
-                    console_puts("GATT read error on handle 0x");
-                    put_hex(handle);
-                    console_puts(". Status: ");
-                    put_dec((uint32_t)-gst);
-                    console_puts("\r\n");
-                }
-            }
-            else
-            {
-                console_puts("Usage: ble read <handle_hex>\r\n");
-            }
-        }
-        else
-        {
-            ble_telemetry_t bt;
-            ble_get_telemetry(&bt);
-            console_puts("BLE software model status (no controller, nothing is transmitted):\r\n");
-            console_puts("  GAP State:         ");
-            if (bt.state == BLE_STATE_STANDBY) console_puts("STANDBY");
-            else if (bt.state == BLE_STATE_ADVERTISING) console_puts("ADVERTISING");
-            else if (bt.state == BLE_STATE_CONNECTED) console_puts("CONNECTED");
-            else console_puts("DISCONNECTING");
-            console_puts("\r\n");
-            console_puts("  BD_ADDR (eFuse):   ");
-            for (int i = 0; i < 6; i++)
-            {
-                uint8_t byte = bt.bd_addr[i];
-                const char hex_chars[] = "0123456789abcdef";
-                console_putc(hex_chars[(byte >> 4) & 0x0F]);
-                console_putc(hex_chars[byte & 0x0F]);
-                if (i < 5) console_putc(':');
-            }
-            console_puts("\r\n");
-            console_puts("  HCI Packets TX:    ");
-            put_dec(bt.tx_packets);
-            console_puts("\r\n");
-            console_puts("  HCI Packets RX:    ");
-            put_dec(bt.rx_packets);
-            console_puts("\r\n");
-            console_puts("  Cmd Complete Evts: ");
-            put_dec(bt.cmd_complete_count);
-            console_puts("\r\n");
-            console_puts("  Adv Starts / Stops: ");
-            put_dec(bt.adv_start_count);
-            console_puts(" / ");
-            put_dec(bt.adv_stop_count);
-            console_puts("\r\n");
-            console_puts("  GATT Database:     ");
-            put_dec(gatt_db_get_count());
-            console_puts(" attributes (0x1800 GAP, 0x180A DevInfo, 0xFFE0 Custom)\r\n");
-            console_puts("  NPL Event Queue:   ");
-            put_dec(ble_npl_get_processed_count());
-            console_puts(" events processed\r\n");
-            console_puts("  NPL Active Timers: ");
-            put_dec(ble_npl_get_active_callout_count());
-            console_puts("\r\n");
-        }
-    }
     else if (strncmp(input_buffer, "wifi", 4) == 0 && (input_buffer[4] == ' ' || input_buffer[4] == '\0'))
     {
         char *subcmd = input_buffer + 4;
@@ -3006,103 +2837,6 @@ void FLASH_TEXT_ATTR shell_execute(char *input_buffer)
                 put_dec((uint32_t)st);
                 console_puts(")\r\n");
             }
-        }
-    }
-    else if (strncmp(input_buffer, "matter", 6) == 0 && (input_buffer[6] == ' ' || input_buffer[6] == '\0'))
-    {
-        char *sub = input_buffer + 6;
-        skip_space(&sub);
-
-        if (strncmp(sub, "code", 4) == 0)
-        {
-            matter_commissioning_info_t minfo;
-            matter_get_commissioning_info(&minfo);
-            char c_fmt[MATTER_MANUAL_CODE_MAX_BUF];
-            char c_raw[MATTER_MANUAL_CODE_MAX_BUF];
-            matter_generate_manual_pairing_code(&minfo, c_fmt, sizeof(c_fmt), true);
-            matter_generate_manual_pairing_code(&minfo, c_raw, sizeof(c_raw), false);
-            console_puts("Matter Manual Pairing Code:\r\n");
-            console_puts("  Formatted:   "); console_puts(c_fmt); console_puts("\r\n");
-            console_puts("  Raw Numeric: "); console_puts(c_raw); console_puts("\r\n");
-        }
-        else if (strncmp(sub, "qr", 2) == 0)
-        {
-            matter_commissioning_info_t minfo;
-            matter_get_commissioning_info(&minfo);
-            char qr_buf[MATTER_QR_CODE_MAX_BUF];
-            matter_generate_qr_code_payload(&minfo, qr_buf, sizeof(qr_buf));
-            console_puts("Matter QR Code Onboarding Payload:\r\n");
-            console_puts("  Payload:     "); console_puts(qr_buf); console_puts("\r\n");
-        }
-        else if (strncmp(sub, "onoff", 5) == 0)
-        {
-            char *p = sub + 5;
-            skip_space(&p);
-            if (strncmp(p, "on", 2) == 0)
-            {
-                matter_set_onoff(true);
-                console_puts("Matter Endpoint 1 OnOff -> ON\r\n");
-            }
-            else if (strncmp(p, "off", 3) == 0)
-            {
-                matter_set_onoff(false);
-                console_puts("Matter Endpoint 1 OnOff -> OFF\r\n");
-            }
-            else if (strncmp(p, "toggle", 6) == 0)
-            {
-                matter_toggle_onoff();
-                console_puts("Matter Endpoint 1 OnOff -> ");
-                console_puts(matter_get_onoff() ? "ON\r\n" : "OFF\r\n");
-            }
-            else
-            {
-                console_puts("Matter Endpoint 1 OnOff: ");
-                console_puts(matter_get_onoff() ? "ON\r\n" : "OFF\r\n");
-            }
-        }
-        else if (strncmp(sub, "reset", 5) == 0)
-        {
-            matter_reset();
-            console_puts("Matter subsystem reset to initial state.\r\n");
-        }
-        else if (strncmp(sub, "state", 5) == 0)
-        {
-            console_puts("Matter Commissioning State: ");
-            console_puts(matter_state_to_str(matter_get_state()));
-            console_puts("\r\n");
-        }
-        else if (strncmp(sub, "commission", 10) == 0)
-        {
-            matter_complete_commissioning(0x10001ULL, 1U);
-            console_puts("Matter Commissioning Complete: Fabric 1, Node 0x10001, BLE Reclaimed.\r\n");
-        }
-        else
-        {
-            /* Default: info */
-            matter_commissioning_info_t minfo;
-            matter_get_commissioning_info(&minfo);
-            matter_telemetry_t mtel;
-            matter_get_telemetry(&mtel);
-            char c_fmt[MATTER_MANUAL_CODE_MAX_BUF];
-            char qr_buf[MATTER_QR_CODE_MAX_BUF];
-            matter_generate_manual_pairing_code(&minfo, c_fmt, sizeof(c_fmt), true);
-            matter_generate_qr_code_payload(&minfo, qr_buf, sizeof(qr_buf));
-
-            console_puts("Matter-over-Thread/Wi-Fi Subsystem Status:\r\n");
-            console_puts("  Vendor ID:           0x"); put_hex(minfo.vendor_id); console_puts("\r\n");
-            console_puts("  Product ID:          0x"); put_hex(minfo.product_id); console_puts("\r\n");
-            console_puts("  Discriminator:       "); put_dec(minfo.discriminator); console_puts(" (0x"); put_hex(minfo.discriminator); console_puts(")\r\n");
-            console_puts("  Setup Passcode:      "); put_dec(minfo.setup_passcode); console_puts("\r\n");
-            console_puts("  Manual Code:         "); console_puts(c_fmt); console_puts("\r\n");
-            console_puts("  QR Payload:          "); console_puts(qr_buf); console_puts("\r\n");
-            console_puts("  Commissioning State: "); console_puts(matter_state_to_str(mtel.state)); console_puts("\r\n");
-            console_puts("  Transport Mode:      "); console_puts(matter_transport_to_str(mtel.transport)); console_puts("\r\n");
-            console_puts("  Endpoint 1 OnOff:    "); console_puts(mtel.onoff_state ? "ON" : "OFF"); console_puts("\r\n");
-            console_puts("  Fabric Count:        "); put_dec(mtel.fabric_count); console_puts("\r\n");
-            console_puts("  BLE Reclaimed:       "); console_puts(mtel.ble_reclaimed ? "YES" : "NO"); console_puts("\r\n");
-            console_puts("  Crypto HW Accel:     "); console_puts(mtel.crypto_hw_accelerated ? "ACTIVE (ESP32-C6 SHA/ECC)" : "SOFTWARE"); console_puts("\r\n");
-            console_puts("  SHA Silicon Date:    0x"); put_hex(matter_get_sha_date()); console_puts("\r\n");
-            console_puts("  ECC Silicon Date:    0x"); put_hex(matter_get_ecc_date()); console_puts("\r\n");
         }
     }
     else if (strncmp(input_buffer, "efuse", 5) == 0 && (input_buffer[5] == ' ' || input_buffer[5] == '\0'))

@@ -17,7 +17,6 @@ SECTIONS
         *libpp.a:(.text .text.*)
         *libphy.a:(.text .text.*)
         *libcore.a:(.text .text.*)
-        *libbtbb.a:(.text .text.*)
         *(.flash_text .flash_text.*)
         *(.flash.text .flash.text.*)
         _flash_rodata_start = .;

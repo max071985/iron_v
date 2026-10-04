@@ -699,49 +699,6 @@ input:checked + .slider:before {
 }
 
 /* ========================================================================= */
-/* Tab 5: Matter Commissioning Styles                                        */
-/* ========================================================================= */
-
-.matter-payload-box {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 24px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  margin-bottom: 20px;
-}
-
-.pairing-code-display {
-  font-family: var(--font-mono);
-  font-size: 32px;
-  font-weight: 800;
-  letter-spacing: 0.15em;
-  color: var(--color-primary-light);
-  margin: 14px 0;
-  background: var(--bg-input);
-  padding: 10px 20px;
-  border-radius: var(--radius-md);
-  border: 1px dashed var(--border-subtle);
-}
-
-.qr-container {
-  background: #ffffff;
-  padding: 16px;
-  border-radius: var(--radius-md);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
-  margin: 16px 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.qr-container svg {
-  display: block;
-}
-
-/* ========================================================================= */
 /* Toast Notifications                                                       */
 /* ========================================================================= */
 
@@ -801,9 +758,5 @@ input:checked + .slider:before {
   .grid-2, .grid-3, .grid-4 {
     grid-template-columns: 1fr;
   }
-  
-  .pairing-code-display {
-    font-size: 24px;
-    letter-spacing: 0.1em;
-  }
+
 }

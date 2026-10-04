@@ -740,7 +740,7 @@ void golden_master_print_report(void)
     console_puts(rep.efuse_security_ok ? "[PASS] (Unique MAC & 128-bit UID verified)\r\n" : "[FAIL]\r\n");
 
     console_puts("  4. RF Baseband Coexistence:  ");
-    console_puts(rep.rf_coexistence_ok ? "[PASS] (Wi-Fi 6, BLE 5, 802.15.4 zero-loss)\r\n" : "[FAIL]\r\n");
+    console_puts(rep.rf_coexistence_ok ? "[PASS] (Wi-Fi 6, 802.15.4 zero-loss)\r\n" : "[FAIL]\r\n");
 
     console_puts("  5. Dual-Slot OTA & Boot:     ");
     console_puts(rep.ota_partitions_ok ? "[PASS] (ESP32-C6 header 0xE9, entry 0x40800000)\r\n" : "[FAIL]\r\n");

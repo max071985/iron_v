@@ -6,7 +6,8 @@ libnet80211.a, libpp.a, libcore.a
            "feat(coex): support phy grant protect (5c2a13a4)"
   Build ID printed at boot: "wifi firmware version: 5c2a13a"
 
-libphy.a, libbtbb.a
+libphy.a, libbtbb.a  (libbtbb.a is kept for provenance but not linked: no
+                      BLE in this build and libphy needs none of its objects)
   Source:  https://github.com/espressif/esp-phy-lib
   Commit:  5695f4f38108658bc4a33e4712c1ebcb34911434 (2026-07-22)
            "C6 phy_version: 345, 552b044, Jul 14 2026"

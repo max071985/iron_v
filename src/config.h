@@ -186,14 +186,6 @@
 #define CONFIG_WIFI_AUTO_START_AP           1U
 #endif
 
-/* ========================================================================= */
-/* 5. Bluetooth 5 (LE) Controller & GATT Server Defaults                     */
-/* ========================================================================= */
-
-#ifndef CONFIG_BLE_DEVICE_NAME
-#define CONFIG_BLE_DEVICE_NAME              "IRON-V-C6"
-#endif
-
 /* Setup SoftAP captive portal. DHCP always advertises the board as gateway + DNS,
  * so the phone routes through the SoftAP (a gateway-less lease leaves Android on
  * mobile data and 192.168.1.1 unreachable).
@@ -206,27 +198,8 @@
 #define CONFIG_SOFTAP_CAPTIVE_PORTAL        1U
 #endif
 
-/* Off: there is no BLE controller on this build; advertising is a software model only */
-#ifndef CONFIG_BLE_AUTO_START_ADV
-#define CONFIG_BLE_AUTO_START_ADV           0U
-#endif
-
-/* Advertising Interval in 0.625 ms units (160 * 0.625 = 100 ms) */
-#ifndef CONFIG_BLE_ADV_INTERVAL_MIN
-#define CONFIG_BLE_ADV_INTERVAL_MIN         0x00A0U
-#endif
-
-#ifndef CONFIG_BLE_ADV_INTERVAL_MAX
-#define CONFIG_BLE_ADV_INTERVAL_MAX         0x0140U
-#endif
-
-/* Advertising Channel Map: bit 0 = Ch 37, bit 1 = Ch 38, bit 2 = Ch 39 (0x07 = all) */
-#ifndef CONFIG_BLE_ADV_CHANNEL_MAP
-#define CONFIG_BLE_ADV_CHANNEL_MAP          0x07U
-#endif
-
 /* ========================================================================= */
-/* 6. IEEE 802.15.4 (Zigbee / Thread) Transceiver Defaults                   */
+/* 5. IEEE 802.15.4 (Zigbee / Thread) Transceiver Defaults                   */
 /* ========================================================================= */
 
 #ifndef CONFIG_IEEE802154_DEFAULT_CHANNEL
@@ -254,7 +227,7 @@
 #endif
 
 /* ========================================================================= */
-/* 7. System Heartbeat & Interactive Shell Defaults                          */
+/* 6. System Heartbeat & Interactive Shell Defaults                          */
 /* ========================================================================= */
 
 #ifndef CONFIG_SYSTEM_HEARTBEAT_INTERVAL_SEC

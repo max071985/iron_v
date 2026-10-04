@@ -54,17 +54,6 @@ const STATE = {
     lastLatencyUs: 0,
     lastPacketLoss: 0,
     history: []
-  },
-  
-  matter: {
-    manualCode: '3497-011-2332',
-    qrPayload: 'MT:Y.K9042C00KA0648G00',
-    vendorId: 65521,
-    productId: 32769,
-    discriminator: 3840,
-    passcode: 20202021,
-    onoff: false,
-    state: 1
   }
 };
 
@@ -238,7 +227,6 @@ async function fetchAllData() {
     pollTelemetry(),
     fetchGpioState(),
     fetchWifiState(),
-    fetchMatterPayload(),
     fetchSpeedtestTelemetry()
   ]);
 }
@@ -331,12 +319,7 @@ async function setGpioPin(pin, level) {
       if (p) p.level = res.level;
       renderGpioTab();
       showToast(`Pin ${pin} set to ${res.level ? 'HIGH' : 'LOW'}`, 'success');
-      
-      // If pin 15 was toggled, update matter state representation
-      if (pin === 15) {
-        STATE.matter.onoff = (res.level !== 0);
-        renderMatterTab();
-      }
+
     }
   } catch (e) {
     showToast(`Error setting Pin ${pin}: ` + e.message, 'error');
@@ -352,11 +335,7 @@ async function toggleGpioPin(pin) {
       if (p) p.level = res.level;
       renderGpioTab();
       showToast(`Pin ${pin} toggled to ${res.level ? 'HIGH' : 'LOW'}`, 'success');
-      
-      if (pin === 15) {
-        STATE.matter.onoff = (res.level !== 0);
-        renderMatterTab();
-      }
+
     }
   } catch (e) {
     showToast(`Error toggling Pin ${pin}: ` + e.message, 'error');
@@ -611,135 +590,6 @@ function renderSpeedtestTab() {
 }
 
 // ============================================================================
-// Google Home Matter Commissioning Bridge & SVG QR Generator
-// ============================================================================
-
-async function fetchMatterPayload() {
-  try {
-    const data = await apiCall('/api/matter/payload', 'GET');
-    if (data) {
-      STATE.matter.manualCode = data.manual_code || STATE.matter.manualCode;
-      STATE.matter.qrPayload = data.qr_payload || STATE.matter.qrPayload;
-      STATE.matter.vendorId = data.vendor_id || STATE.matter.vendorId;
-      STATE.matter.productId = data.product_id || STATE.matter.productId;
-      STATE.matter.discriminator = data.discriminator || STATE.matter.discriminator;
-      STATE.matter.passcode = data.passcode || STATE.matter.passcode;
-      STATE.matter.onoff = !!data.onoff;
-      STATE.matter.state = data.state || 1;
-      renderMatterTab();
-    }
-  } catch (e) {
-    // Matter payload fetch
-  }
-}
-
-async function toggleMatterOnOff() {
-  const nextVal = !STATE.matter.onoff;
-  await setGpioPin(15, nextVal ? 1 : 0);
-  STATE.matter.onoff = nextVal;
-  renderMatterTab();
-}
-
-function copyToClipboard(text, label) {
-  navigator.clipboard.writeText(text).then(() => {
-    showToast(`Copied ${label} to clipboard!`, 'success');
-  }).catch(() => {
-    showToast('Failed to copy to clipboard', 'error');
-  });
-}
-
-/**
- * Lightweight Zero-Dependency SVG QR Code Pattern Generator
- * Generates an authentic, high-contrast 25x25 QR matrix for Matter setup payloads.
- */
-function generateQrSvg(payloadString, size = 180) {
-  const dim = 25;
-  // Initialize grid: 1 = dark, 0 = light
-  const matrix = Array.from({ length: dim }, () => Array(dim).fill(0));
-
-  // Finder pattern helper (7x7 with 3x3 inner square)
-  function drawFinder(r0, c0) {
-    for (let r = 0; r < 7; r++) {
-      for (let c = 0; c < 7; c++) {
-        if (r === 0 || r === 6 || c === 0 || c === 6 || (r >= 2 && r <= 4 && c >= 2 && c <= 4)) {
-          matrix[r0 + r][c0 + c] = 1;
-        } else {
-          matrix[r0 + r][c0 + c] = 0;
-        }
-      }
-    }
-  }
-
-  // Draw 3 standard finder patterns
-  drawFinder(0, 0);
-  drawFinder(0, dim - 7);
-  drawFinder(dim - 7, 0);
-
-  // Timing patterns
-  for (let i = 8; i < dim - 8; i++) {
-    matrix[6][i] = (i % 2 === 0) ? 1 : 0;
-    matrix[i][6] = (i % 2 === 0) ? 1 : 0;
-  }
-
-  // Deterministic data encoding hash
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < payloadString.length; i++) {
-    hash ^= payloadString.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-
-  for (let r = 0; r < dim; r++) {
-    for (let c = 0; c < dim; c++) {
-      // Skip finder zones
-      if ((r < 8 && c < 8) || (r < 8 && c >= dim - 8) || (r >= dim - 8 && c < 8)) continue;
-      if (r === 6 || c === 6) continue;
-
-      // Pseudo-random pseudo-bit from hash and coordinates
-      const bit = ((hash ^ (r * 31 + c * 17)) >>> ((r + c) % 24)) & 1;
-      matrix[r][c] = bit;
-    }
-  }
-
-  // Build SVG rects
-  let rects = '';
-  for (let r = 0; r < dim; r++) {
-    for (let c = 0; c < dim; c++) {
-      if (matrix[r][c] === 1) {
-        rects += `<rect x="${c}" y="${r}" width="1" height="1" fill="#090d16"/>`;
-      }
-    }
-  }
-
-  return `
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${dim} ${dim}" width="${size}" height="${size}" shape-rendering="crispEdges">
-      <rect width="${dim}" height="${dim}" fill="#ffffff"/>
-      ${rects}
-    </svg>
-  `;
-}
-
-function renderMatterTab() {
-  const m = STATE.matter;
-  const codeEl = document.getElementById('matterManualCode');
-  const payloadEl = document.getElementById('matterPayloadStr');
-  const qrContainer = document.getElementById('matterQrContainer');
-  const onoffBtn = document.getElementById('btnMatterToggle');
-  const onoffBadge = document.getElementById('matterOnoffBadge');
-
-  if (codeEl) codeEl.innerText = m.manualCode;
-  if (payloadEl) payloadEl.innerText = m.qrPayload;
-  if (qrContainer) qrContainer.innerHTML = generateQrSvg(m.qrPayload);
-
-  if (onoffBadge) {
-    onoffBadge.innerText = m.onoff ? 'ON' : 'OFF';
-    onoffBadge.className = `pin-status-pill ${m.onoff ? 'high' : 'low'}`;
-  }
-  if (onoffBtn) {
-    onoffBtn.innerText = m.onoff ? 'Turn Off (Cluster 0x0006)' : 'Turn On (Cluster 0x0006)';
-  }
-}
-
-// ============================================================================
 // UI Toast Notification System
 // ============================================================================
 
@@ -833,7 +683,6 @@ window.addEventListener('DOMContentLoaded', () => {
   renderGpioTab();
   renderWifiTab();
   renderSpeedtestTab();
-  renderMatterTab();
 
   discoverSubnet();
 });

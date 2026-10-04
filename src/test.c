@@ -21,16 +21,12 @@
 #include "gpio.h"
 #include "gdma.h"
 #include "modem.h"
-#include "ble.h"
-#include "ble_gatt.h"
-#include "ble_npl.h"
 #include "wifi.h"
 #include "ieee802154.h"
 #include "net.h"
 #include "tcp.h"
 #include "http_server.h"
 #include "speedtest.h"
-#include "matter.h"
 #include "shell.h"
 #include "efuse.h"
 #include "soak.h"
@@ -51,17 +47,7 @@
 #define TEST_FLASH_TEXT
 #endif
 
-static void test_onchip_npl_cb(struct ble_npl_event *ev)
-{
-    if (ev != NULL && ev->arg != NULL)
-    {
-        uint32_t *flag = (uint32_t *)ev->arg;
-        (*flag) = 1U;
-    }
-}
-
-
-/* TEST 28 Static Allocation in HP SRAM DRAM */
+/* GDMA self-test: descriptors and buffers in HP SRAM (DMA cannot reach flash) */
 static dma_descriptor_t s_test_desc0 __attribute__((aligned(4)));
 static dma_descriptor_t s_test_desc1 __attribute__((aligned(4)));
 static uint8_t s_test_dma_buf0[64] __attribute__((aligned(4)));
@@ -196,8 +182,12 @@ static void print_banner_line(void)
     uart_puts("======================================================================\r\n");
 }
 
-static void print_test_header(int num, const char *title, const char *desc)
+/* Tests are numbered in run order; run_validation_suite_ex() resets the counter */
+static int s_test_number = 0;
+
+static void print_test_header(const char *title, const char *desc)
 {
+    int num = ++s_test_number;
     wdt_feed();
     uart_puts("\r\n[TEST ");
     if (num < 10) uart_putc('0');
@@ -225,16 +215,17 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
 {
     int total_tests = 0;
     int passed_tests = 0;
+    s_test_number = 0;
 
     print_banner_line();
     uart_puts("                   IRON V BASELINE VALIDATION SUITE                   \r\n");
     print_banner_line();
 
     /* ------------------------------------------------------------- */
-    /* TEST 1: Memory Section Topology & Monotonicity                */
+    /* Memory Section Topology & Monotonicity                        */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(1, "Memory Section Topology & Monotonicity",
+    print_test_header("Memory Section Topology & Monotonicity",
                       "Verify SRAM section layout conforms to Harvard architecture (164KB IRAM / 348KB DRAM)");
     
     uint32_t stext = (uint32_t)_stext;
@@ -277,10 +268,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t1_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 2: 16-Byte Section Alignment Verification               */
+    /* 16-Byte Section Alignment Verification                       */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(2, "16-Byte Section Alignment Verification",
+    print_test_header("16-Byte Section Alignment Verification",
                       "Verify all output section start VMAs are 16-byte aligned for ROM loader");
 
     uart_puts("  Expected:    _stext%16==0, _srodata%16==0, _sdata%16==0, _sbss%16==0\r\n");
@@ -303,10 +294,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t2_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 3: SRAM RW Data Read/Write Mutation (Peek & Poke)        */
+    /* SRAM RW Data Read/Write Mutation (Peek & Poke)                */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(3, "RW Data Section Read/Write Mutation",
+    print_test_header("RW Data Section Read/Write Mutation",
                       "Verify writing and reading 32-bit words in .data section via poke/peek logic");
 
     uint32_t test_addr = (uint32_t)&g_test_data_var;
@@ -338,10 +329,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t3_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 4: SRAM RW BSS Zero-Initialization & Mutation            */
+    /* SRAM RW BSS Zero-Initialization & Mutation                    */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(4, "RW BSS Zero-Init & Write Mutation",
+    print_test_header("RW BSS Zero-Init & Write Mutation",
                       "Verify crt0.S zero-initialized .bss and verify mutation capability");
 
     uint32_t bss_addr = (uint32_t)&g_test_bss_var;
@@ -367,10 +358,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t4_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 5: Read-Only Memory (RODATA) Protection Logic           */
+    /* Read-Only Memory (RODATA) Protection Logic                   */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(5, "Read-Only (RODATA) Access & Write Protection",
+    print_test_header("Read-Only (RODATA) Access & Write Protection",
                       "Verify .rodata is readable and protected from poke mutation");
 
     uint32_t rodata_addr = (uint32_t)g_test_rodata_str;
@@ -393,10 +384,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t5_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 6: Out-of-Bounds Address Guarding                       */
+    /* Out-of-Bounds Address Guarding                               */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(6, "Out-of-Bounds Address Guarding",
+    print_test_header("Out-of-Bounds Address Guarding",
                       "Verify access checker rejects unmapped/reserved addresses safely without crash");
 
     mem_access_t null_access = check_mem_access(0x00000000U);
@@ -423,10 +414,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t6_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 7: Misaligned Address Guarding                          */
+    /* Misaligned Address Guarding                                  */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(7, "Misaligned Address Guarding",
+    print_test_header("Misaligned Address Guarding",
                       "Verify word access checker rejects unaligned addresses to prevent trap exceptions");
 
     mem_access_t misalign1 = check_mem_access(0x40820001U);
@@ -449,10 +440,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t7_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 8: Freestanding String & Hex Parsing                    */
+    /* Freestanding String & Hex Parsing                            */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(8, "Freestanding String & Hex Conversion Parser",
+    print_test_header("Freestanding String & Hex Conversion Parser",
                       "Verify s_htoi, strcmp, and memory utilities handle values and edge cases");
 
     uint32_t parsed_val = 0;
@@ -494,10 +485,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t8_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 9: Peripheral MMIO Space Accessibility                  */
+    /* Peripheral MMIO Space Accessibility                          */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(9, "Peripheral MMIO Space Accessibility",
+    print_test_header("Peripheral MMIO Space Accessibility",
                       "Verify safe non-faulting volatile register access to UART and TIMG");
 
     mem_access_t uart_perm = check_mem_access((uint32_t)UART0_STATUS_REG);
@@ -529,10 +520,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t9_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 10: Stack Pointer Alignment, Margin & Machine CSR State  */
+    /* Stack Pointer Alignment, Margin & Machine CSR State           */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(10, "Stack Bounds, Alignment & Machine CSR State",
+    print_test_header("Stack Bounds, Alignment & Machine CSR State",
                       "Verify SP is 16-byte aligned in DRAM and CSRs are correctly initialized");
 
     uint32_t current_sp = 0;
@@ -580,10 +571,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t10_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 11: PCR Clock Tree Configuration & Frequency Validation  */
+    /* PCR Clock Tree Configuration & Frequency Validation           */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(11, "PCR Clock Distribution & Frequency Status",
+    print_test_header("PCR Clock Distribution & Frequency Status",
                       "Verify SYSCLK operates on PLL (160MHz) with 40MHz APB bus clock in PCR registers");
 
     uint32_t sysclk_reg = *PCR_SYSCLK_CONF_REG;
@@ -626,10 +617,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t11_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 12: Active Multi-Tier Watchdog Supervisor & Reload Status*/
+    /* Active Multi-Tier Watchdog Supervisor & Reload Status         */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(12, "Active Watchdog Supervisor & Reload Status",
+    print_test_header("Active Watchdog Supervisor & Reload Status",
                       "Verify TIMG0 MWDT is armed, prescaled, and reload feed operates safely");
 
     uint32_t timg0_cfg0 = *TIMG0_WDTCONFIG0;
@@ -670,10 +661,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t12_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 13: Low-Power (LP) SRAM Retention & Accessibility        */
+    /* Low-Power (LP) SRAM Retention & Accessibility                 */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(13, "Low-Power (LP) SRAM Accessibility & Retention",
+    print_test_header("Low-Power (LP) SRAM Accessibility & Retention",
                       "Verify LP SRAM at 0x50000000 is read/write accessible with pattern preservation");
 
     volatile uint32_t *lp_sram_ptr = (volatile uint32_t *)0x50000000U;
@@ -699,10 +690,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t13_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 14: Vectored Trap Vector (mtvec) Alignment & Table Base  */
+    /* Vectored Trap Vector (mtvec) Alignment & Table Base           */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(14, "Vectored Trap Vector (mtvec) Alignment & Base",
+    print_test_header("Vectored Trap Vector (mtvec) Alignment & Base",
                       "Verify mtvec operates in Vectored Mode (0x1) with 256-byte aligned vector table");
 
     uint32_t t14_mtvec = 0;
@@ -730,10 +721,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t14_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 15: Controlled M-Mode Software Trap (ECALL) & MRET Resume*/
+    /* Controlled M-Mode Software Trap (ECALL) & MRET Resume         */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(15, "Controlled ECALL Trap Execution & MRET Resume",
+    print_test_header("Controlled ECALL Trap Execution & MRET Resume",
                       "Execute ECALL, verify trap entry via Vector 0, advance mepc, and resume via mret");
 
     uint32_t prev_ecalls = trap_get_ecall_count();
@@ -753,10 +744,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t15_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 16: INTMTX Routing & INTPRI Priority / Threshold Preempt */
+    /* INTMTX Routing & INTPRI Priority / Threshold Preempt          */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(16, "INTMTX Routing & PLIC Priority / Threshold Preempt",
+    print_test_header("INTMTX Routing & PLIC Priority / Threshold Preempt",
                       "Verify UART0 routing to CPU channel 5, priority 10, and live SW interrupt preemption");
 
     /* 1. Test UART0 routing and priority configuration on external interrupt channel 5 */
@@ -821,10 +812,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     uart_init();
 
     /* ------------------------------------------------------------- */
-    /* TEST 17: Lock-Free SPSC DPC Queue Engine                      */
+    /* Lock-Free SPSC DPC Queue Engine                               */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(17, "Lock-Free SPSC DPC Queue Engine",
+    print_test_header("Lock-Free SPSC DPC Queue Engine",
                       "Enqueue 64 events, verify FIFO order, assert 65th drop, and assert head == tail");
 
     dpc_init();
@@ -896,10 +887,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t17_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 18: USB-Serial-JTAG CDC-ACM Hardware Driver              */
+    /* USB-Serial-JTAG CDC-ACM Hardware Driver                       */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(18, "USB-Serial-JTAG CDC-ACM Hardware Driver",
+    print_test_header("USB-Serial-JTAG CDC-ACM Hardware Driver",
                       "Verify non-faulting MMIO access to 0x6000F000, readable EP1 status, and timeout guard");
 
     /* 1. Ensure USB-Serial-JTAG hardware clock and controller initialized */
@@ -959,10 +950,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t18_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 19: Unified Dual-Console Layer & Multiplexer (Task 2.5)  */
+    /* Unified Dual-Console Layer & Multiplexer (Task 2.5)           */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(19, "Unified Dual-Console Multiplexer Subsystem",
+    print_test_header("Unified Dual-Console Multiplexer Subsystem",
                       "Verify console backend dispatch, active masks, non-blocking polling, and echo control");
 
     console_init();
@@ -1019,10 +1010,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t19_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 20: Hardware Periodic Timer (TIMG0 T0) Configuration     */
+    /* Hardware Periodic Timer (TIMG0 T0) Configuration              */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(20, "Hardware Periodic Timer (TIMG0 T0) Configuration",
+    print_test_header("Hardware Periodic Timer (TIMG0 T0) Configuration",
                       "Verify TIMG0 Timer 0 is enabled, prescaled, auto-reloading, and routed via INTMTX");
 
     uint32_t t0_cfg = *TIMG0_T0CONFIG_REG;
@@ -1071,10 +1062,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t20_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 21: Deterministic Static Arena Allocator (Task 3.1)      */
+    /* Deterministic Static Arena Allocator (Task 3.1)               */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(21, "Deterministic Static Arena Allocator",
+    print_test_header("Deterministic Static Arena Allocator",
                       "Verify 32 small block allocations, 33rd exhaustion guard, block reuse on free, and scratch mark/reset");
 
     arena_init();
@@ -1166,10 +1157,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t21_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 22: High-Resolution SYSTIMER & Event Engine (Task 3.2)   */
+    /* High-Resolution SYSTIMER & Event Engine (Task 3.2)            */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(22, "High-Resolution SYSTIMER & Event Engine",
+    print_test_header("High-Resolution SYSTIMER & Event Engine",
                       "Verify 16 MHz Unit 0 counter monotonic increase (T2 > T1), microsecond conversion, and alarm routing");
 
     /* 1. Latch Unit 0 counter T1 */
@@ -1246,10 +1237,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t22_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 23: Cooperative Coroutine Task Engine & Scheduler (3.3)  */
+    /* Cooperative Coroutine Task Engine & Scheduler (3.3)           */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(23, "Cooperative Coroutine Task Engine & Scheduler",
+    print_test_header("Cooperative Coroutine Task Engine & Scheduler",
                       "Verify Task A & Task B creation, callee-saved context switching, cooperative yields, and state termination");
 
     s_test_task_a_counter = 0;
@@ -1317,10 +1308,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t23_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 24: RISC-V PMP & APM Hardware Fault Isolation (3.4)      */
+    /* RISC-V PMP & APM Hardware Fault Isolation (3.4)               */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(24, "RISC-V PMP & APM Fault Isolation",
+    print_test_header("RISC-V PMP & APM Fault Isolation",
                       "Configure PMP Region 0 over kernel data read-only in User Mode; assert pmpcfg0 and APM bitfields match");
 
     /* 1. Initialize PMP and APM subsystems */
@@ -1432,10 +1423,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t24_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 25: LP Core Coprocessor Firmware Build, Lifecycle & PMU  */
+    /* LP Core Coprocessor Firmware Build, Lifecycle & PMU           */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(25, "LP Core Coprocessor Firmware Build, Lifecycle & PMU Handshake",
+    print_test_header("LP Core Coprocessor Firmware Build, Lifecycle & PMU Handshake",
                       "Load LP firmware to 0x50000000, start LP core, verify 0xCAFEBABE and PMU handshake");
 
     /* 1. Initialize LP core driver subsystem */
@@ -1513,10 +1504,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t25_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 26: LP SRAM Shared Mailbox, Retention & Power Management */
+    /* LP SRAM Shared Mailbox, Retention & Power Management          */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(26, "LP SRAM Shared Mailbox, Retention & Deep/Light Sleep State Machine",
+    print_test_header("LP SRAM Shared Mailbox, Retention & Deep/Light Sleep State Machine",
                       "Assert mailbox magic 0x49524F4E, send telemetry cmd, verify ACK, and check AON retention");
 
     /* 1. Initialize power subsystem and shared mailbox */
@@ -1582,10 +1573,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t26_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 27: GPIO Matrix & IO_MUX Multi-Function Pin Routing      */
+    /* GPIO Matrix & IO_MUX Multi-Function Pin Routing               */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(27, "GPIO Matrix & IO_MUX Multi-Function Pin Routing",
+    print_test_header("GPIO Matrix & IO_MUX Multi-Function Pin Routing",
                       "Configure GPIO 15 (Out) & GPIO 16 (In), toggle level, assert W1TS/W1TC & pull-up/down");
 
     /* 1. Save original register states for non-destructive restoration */
@@ -1668,10 +1659,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t27_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 28: GDMA Multi-Channel Engine & Circular Descriptor Ring */
+    /* GDMA Multi-Channel Engine & Circular Descriptor Ring          */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(28, "GDMA Engine & Circular Buffer Descriptor Rings",
+    print_test_header("GDMA Engine & Circular Buffer Descriptor Rings",
                       "Statically link 2 descriptors in circular ring in DRAM, verify 4-byte alignment, INLINK load & start");
 
     /* 1. Initialize GDMA peripheral clocks and channels */
@@ -1841,10 +1832,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t28_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 29: Modem Clock & Power Control (MODEM_SYSCON / LPCON)   */
+    /* Modem Clock & Power Control (MODEM_SYSCON / LPCON)            */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(29, "Modem Clock & Power Control (MODEM_SYSCON / MODEM_LPCON)",
+    print_test_header("Modem Clock & Power Control (MODEM_SYSCON / MODEM_LPCON)",
                       "Enable wireless clocks, release subsystem resets, verify readback & baseband access");
 
     /* Feed supervisor watchdog prior to multi-step RF clock orchestration */
@@ -1978,173 +1969,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t29_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 30: Bluetooth 5 (LE) Controller & Minimal GATT Server    */
+    /* Wi-Fi driver, RX queue and TX interface checks                  */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(30, "Bluetooth 5 (LE) Controller Driver & Minimal GATT Server",
-                      "Execute HCI Reset loopback, verify command complete, and validate static GATT database");
-
-    wdt_feed();
-
-    /* 1. Initialize BLE subsystem */
-    int ble_init_ok = (ble_init() == BLE_OK);
-
-    /* 2. Retrieve authentic silicon BD_ADDR */
-    uint8_t dev_mac[BLE_BD_ADDR_LEN] = {0};
-    int mac_ok = (ble_get_bd_addr(dev_mac) == BLE_OK);
-
-    /* 3. Assemble and dispatch HCI_Reset command [0x01, 0x03, 0x0C, 0x00] */
-    uint8_t hci_reset_pkt[] = {
-        HCI_PKT_TYPE_CMD,
-        (uint8_t)(HCI_OPCODE_RESET & 0xFFU),
-        (uint8_t)(HCI_OPCODE_RESET >> 8U),
-        0x00U
-    };
-
-    uint8_t evt_buf[32] = {0};
-    uint64_t t_start_us = systimer_get_us();
-    ble_status_t hci_stat = ble_hci_execute_cmd(hci_reset_pkt, sizeof(hci_reset_pkt),
-                                                evt_buf, sizeof(evt_buf),
-                                                BLE_DEFAULT_TIMEOUT_MS);
-    uint64_t t_elapsed_us = systimer_get_us() - t_start_us;
-
-    int hci_exec_ok = (hci_stat == BLE_OK);
-    int latency_bounded = (t_elapsed_us <= 100000ULL); /* <= 100 ms */
-
-    /* Verify response: [0x04, 0x0E, 0x04, 0x01, 0x03, 0x0C, 0x00] */
-    int evt_type_ok = (evt_buf[0] == HCI_PKT_TYPE_EVT);
-    int evt_code_ok = (evt_buf[1] == HCI_EVT_COMMAND_COMPLETE);
-    int evt_len_ok  = (evt_buf[2] == 0x04U);
-    int evt_num_ok  = (evt_buf[3] == 0x01U);
-    int evt_op_ok   = (evt_buf[4] == 0x03U && evt_buf[5] == 0x0CU);
-    int evt_stat_ok = (evt_buf[6] == HCI_STATUS_SUCCESS);
-    int hci_reset_pass = hci_exec_ok && latency_bounded &&
-                         evt_type_ok && evt_code_ok && evt_len_ok &&
-                         evt_num_ok && evt_op_ok && evt_stat_ok;
-
-    /* 4. Validate Static GATT Database layout and attributes */
-    int gatt_init_ok = (gatt_db_init() == GATT_OK);
-    uint16_t attr_count = gatt_db_get_count();
-    int attr_count_ok = (attr_count == 16U);
-
-    /* Verify Device Information Service (UUID 0x180A) and Custom Automation (UUID 0xFFE0) */
-    const gatt_attribute_t *attr_devinfo = gatt_db_find_by_uuid(GATT_UUID_SERVICE_DEVICE_INFO);
-    const gatt_attribute_t *attr_custom  = gatt_db_find_by_uuid(GATT_UUID_SERVICE_CUSTOM_AUTO);
-    const gatt_attribute_t *attr_name    = gatt_db_find_by_handle(0x0003U);
-    const gatt_attribute_t *attr_data    = gatt_db_find_by_handle(0x000FU);
-    int gatt_lookup_ok = (attr_devinfo != NULL) && (attr_custom != NULL) &&
-                         (attr_name != NULL) && (attr_data != NULL);
-
-    /* Verify attribute reading */
-    uint8_t val_buf[32] = {0};
-    uint16_t val_len = 0U;
-    size_t expected_name_len = strlen(CONFIG_BLE_DEVICE_NAME);
-    int read_ok = (gatt_db_read(0x0003U, val_buf, sizeof(val_buf), &val_len) == GATT_OK) &&
-                  (val_len == (uint16_t)expected_name_len) && (strncmp((char *)val_buf, CONFIG_BLE_DEVICE_NAME, expected_name_len) == 0);
-
-    /* Verify attribute write and readback */
-    uint8_t test_wr[] = { 0xDEU, 0xADU, 0xBEU, 0xEFU };
-    int write_ok = (gatt_db_write(0x000FU, test_wr, sizeof(test_wr)) == GATT_OK);
-    uint8_t rb_data[8] = {0};
-    uint16_t rb_len = 0U;
-    int readback_ok = (gatt_db_read(0x000FU, rb_data, sizeof(rb_data), &rb_len) == GATT_OK) &&
-                      (rb_len == sizeof(test_wr)) &&
-                      (rb_data[0] == 0xDEU && rb_data[1] == 0xADU && rb_data[2] == 0xBEU && rb_data[3] == 0xEFU);
-
-    int gatt_pass = gatt_init_ok && attr_count_ok && gatt_lookup_ok && read_ok && write_ok && readback_ok;
-
-    /* 5. GAP Advertising State Verification & Bare-Metal Link Layer HW Status */
-    int gap_adv_start_ok = (ble_gap_start_advertising() == BLE_OK);
-    int gap_state_adv_ok = (ble_gap_get_state() == BLE_STATE_ADVERTISING);
-    int hw_adv_active_ok = (ble_hw_is_advertising() == true);
-    int gap_adv_stop_ok  = (ble_gap_stop_advertising() == BLE_OK);
-    int gap_state_std_ok = (ble_gap_get_state() == BLE_STATE_STANDBY);
-    int hw_adv_stopped_ok = (ble_hw_is_advertising() == false);
-    int gap_pass = gap_adv_start_ok && gap_state_adv_ok && hw_adv_active_ok &&
-                   gap_adv_stop_ok && gap_state_std_ok && hw_adv_stopped_ok;
-
-    /* 6. Validate NimBLE Porting Layer (NPL) Bare-Metal Event Queue & Critical Sections */
-    struct ble_npl_eventq onchip_evq;
-    ble_npl_eventq_init(&onchip_evq);
-    int evq_empty_init = ble_npl_eventq_is_empty(&onchip_evq);
-
-    uint32_t onchip_ev_flag = 0U;
-    struct ble_npl_event onchip_ev;
-    ble_npl_event_init(&onchip_ev, test_onchip_npl_cb, &onchip_ev_flag);
-    int ev_init_ok = (!ble_npl_event_is_queued(&onchip_ev)) && (ble_npl_event_get_arg(&onchip_ev) == &onchip_ev_flag);
-
-    ble_npl_eventq_put(&onchip_evq, &onchip_ev);
-    int ev_queued_ok = ble_npl_event_is_queued(&onchip_ev) && (!ble_npl_eventq_is_empty(&onchip_evq));
-
-    struct ble_npl_event *popped_ev = ble_npl_eventq_get(&onchip_evq, 0U);
-    int ev_pop_ok = (popped_ev == &onchip_ev) && (!ble_npl_event_is_queued(&onchip_ev)) && ble_npl_eventq_is_empty(&onchip_evq);
-    if (popped_ev != NULL)
-    {
-        ble_npl_event_run(popped_ev);
-    }
-    int ev_exec_ok = (onchip_ev_flag == 1U);
-
-    /* Critical Section nesting check */
-    uint32_t c_depth0 = ble_npl_hw_get_critical_depth();
-    uint32_t c_ctx1 = ble_npl_hw_enter_critical();
-    uint32_t c_depth1 = ble_npl_hw_get_critical_depth();
-    uint32_t c_ctx2 = ble_npl_hw_enter_critical();
-    uint32_t c_depth2 = ble_npl_hw_get_critical_depth();
-    ble_npl_hw_exit_critical(c_ctx2);
-    uint32_t c_depth3 = ble_npl_hw_get_critical_depth();
-    ble_npl_hw_exit_critical(c_ctx1);
-    uint32_t c_depth4 = ble_npl_hw_get_critical_depth();
-    int crit_nest_ok = (c_depth0 == 0U) && (c_depth1 == 1U) && (c_depth2 == 2U) && (c_depth3 == 1U) && (c_depth4 == 0U);
-
-    int npl_pass = evq_empty_init && ev_init_ok && ev_queued_ok && ev_pop_ok && ev_exec_ok && crit_nest_ok;
-
-    wdt_feed();
-
-    uart_puts("  Expected:    Init=1, MAC=1, HCIReset=1, BoundedTime=1, GATT=1, GAPAdv=1, HWAdv=1, NPL=1\r\n");
-    uart_puts("  Actual:      Init=");
-    put_dec(ble_init_ok);
-    uart_puts(", MAC=");
-    put_dec(mac_ok);
-    uart_puts(", HCIReset=");
-    put_dec(hci_reset_pass);
-    uart_puts(", BoundedTime=");
-    put_dec(latency_bounded);
-    uart_puts(", GATT=");
-    put_dec(gatt_pass);
-    uart_puts(", GAPAdv=");
-    put_dec(gap_pass);
-    uart_puts(", HWAdv=");
-    put_dec(hw_adv_active_ok && hw_adv_stopped_ok);
-    uart_puts(", NPL=");
-    put_dec(npl_pass);
-    uart_puts("\r\n");
-
-    uart_puts("  Diag: BD_ADDR=");
-    for (int i = 0; i < 6; i++)
-    {
-        put_hex(dev_mac[i]);
-        if (i < 5) uart_puts(":");
-    }
-    uart_puts(", ElapsedUs=");
-    put_dec((uint32_t)t_elapsed_us);
-    uart_puts(", AttrCount=");
-    put_dec(attr_count);
-    uart_puts(", EvtStat=");
-    put_hex(evt_buf[6]);
-    uart_puts("\r\n");
-
-    int t30_pass = ble_init_ok && mac_ok && hci_reset_pass && latency_bounded && gatt_pass && gap_pass && npl_pass;
-    if (t30_pass) passed_tests++;
-    print_result(t30_pass);
-#if CONFIG_BLE_AUTO_START_ADV
-    ble_gap_start_advertising();
-#endif
-
-    /* ------------------------------------------------------------- */
-    /* TEST 31: Wi-Fi driver, RX queue and TX interface checks         */
-    /* ------------------------------------------------------------- */
-    total_tests++;
-    print_test_header(31, "Wi-Fi Driver, RX Queue & TX Interface",
+    print_test_header("Wi-Fi Driver, RX Queue & TX Interface",
                       "Verify init, eFuse MAC, software RX queue integrity, TX refused on a down interface, SoftAP start/stop");
 
     wdt_feed();
@@ -2265,10 +2093,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
 #endif
 
     /* ------------------------------------------------------------- */
-    /* TEST 32: IEEE 802.15.4 Radio Transceiver Driver (Task 5.4)    */
+    /* IEEE 802.15.4 Radio Transceiver Driver (Task 5.4)             */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(32, "IEEE 802.15.4 Radio Transceiver Driver",
+    print_test_header("IEEE 802.15.4 Radio Transceiver Driver",
                       "Verify transceiver state machine, 2.4 GHz channel configuration, auto-ACK flags, and addressing");
 
     wdt_feed();
@@ -2357,10 +2185,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t32_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 33: Bare-Metal Zero-Copy IPv4, ARP & TCP Stack (Task 5.5)*/
+    /* Bare-Metal Zero-Copy IPv4, ARP & TCP Stack (Task 5.5)         */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(33, "Bare-Metal Zero-Copy IPv4, ARP, ICMP & TCP Stack",
+    print_test_header("Bare-Metal Zero-Copy IPv4, ARP, ICMP & TCP Stack",
                       "Verify synthetic ARP resolution, RFC 1071 IP checksum, TCP pseudo-header checksum & PCB state");
 
     wdt_feed();
@@ -2519,10 +2347,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t33_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 34: Zero-Allocation Local REST/HTTP Engine (Task 6.1)    */
+    /* Zero-Allocation Local REST/HTTP Engine (Task 6.1)             */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(34, "Zero-Allocation Local REST/HTTP Engine & Embedded Web UI",
+    print_test_header("Zero-Allocation Local REST/HTTP Engine & Embedded Web UI",
                       "Verify HTTP/1.1 request routing, JSON REST endpoints, 404/405 error handling, and web dashboard");
 
     wdt_feed();
@@ -2644,10 +2472,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t34_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 35: LAN Network Diagnostics & Speed-Test Engine (Task 6.2)*/
+    /* LAN Network Diagnostics & Speed-Test Engine (Task 6.2)         */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(35, "LAN Network Diagnostics & Wi-Fi Speed-Test Benchmark Engine",
+    print_test_header("LAN Network Diagnostics & Wi-Fi Speed-Test Benchmark Engine",
                       "Verify throughput calculation, 100-packet synthetic burst, SYSTIMER timestamps, and telemetry");
 
     wdt_feed();
@@ -2775,120 +2603,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t35_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 36: Google Home Matter Readiness & Commissioning Bridge  */
+    /* 24/7 Extended Console Shell & System Health Monitor           */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(36, "Google Home Matter Readiness, Commissioning Bridge & Hardware Crypto Accelerators",
-                      "Verify Matter setup payload, manual pairing code formatting (3497-011-2332), discriminator match, QR payload, and SHA/ECC accelerators");
-
-    wdt_feed();
-    lp_wdt_feed();
-
-    /* 1. Subsystem Initialization */
-    int m_init_ok = (matter_init(NULL) == MATTER_OK);
-
-    /* 2. Hardware Crypto Accelerators (TRM Ch. 20 ECC, Ch. 23 SHA) */
-    int m_crypto_ok = (matter_crypto_hw_init() == MATTER_OK);
-    uint32_t sha_date = matter_get_sha_date();
-    uint32_t ecc_date = matter_get_ecc_date();
-    int m_date_ok = (sha_date != 0U) && (ecc_date != 0U);
-
-    /* Compute SHA-256 over NIST test vector "abc" */
-    uint8_t m_digest[MATTER_SHA256_DIGEST_SIZE];
-    int m_sha_ok = (matter_crypto_sha256((const uint8_t *)"abc", 3U, m_digest) == MATTER_OK);
-    int m_sha_match = (m_digest[0] == 0xbaU && m_digest[1] == 0x78U &&
-                       m_digest[2] == 0x16U && m_digest[3] == 0xbfU);
-
-    /* 3. Matter Setup Payload & Manual Pairing Code (Roadmap T36) */
-    matter_commissioning_info_t m_info;
-    matter_get_commissioning_info(&m_info);
-
-    char m_code_fmt[MATTER_MANUAL_CODE_MAX_BUF];
-    int m_gen_code_ok = (matter_generate_manual_pairing_code(&m_info, m_code_fmt, sizeof(m_code_fmt), true) == MATTER_OK);
-    int m_code_match = (strcmp(m_code_fmt, "3497-011-2332") == 0);
-
-    matter_commissioning_info_t m_parsed;
-    int m_parse_code_ok = (matter_parse_manual_pairing_code(m_code_fmt, &m_parsed) == MATTER_OK);
-    int m_disc_match = (m_parsed.discriminator == 3840U);
-    int m_pass_match = (m_parsed.setup_passcode == 20202021U);
-
-    /* 4. Base38 QR Code Onboarding Payload Serialization */
-    char m_qr_buf[MATTER_QR_CODE_MAX_BUF];
-    int m_gen_qr_ok = (matter_generate_qr_code_payload(&m_info, m_qr_buf, sizeof(m_qr_buf)) == MATTER_OK);
-    int m_qr_prefix_ok = (strncmp(m_qr_buf, "MT:", 3) == 0);
-
-    matter_commissioning_info_t m_qr_parsed;
-    int m_parse_qr_ok = (matter_parse_qr_code_payload(m_qr_buf, &m_qr_parsed) == MATTER_OK);
-    int m_qr_match = (m_qr_parsed.vendor_id == m_info.vendor_id &&
-                      m_qr_parsed.discriminator == m_info.discriminator &&
-                      m_qr_parsed.setup_passcode == m_info.setup_passcode);
-
-    /* 5. Data Model Clusters & Commissioning FSM */
-    int m_toggle_ok = (matter_toggle_onoff() == MATTER_OK) && matter_get_onoff();
-    uint8_t m_resp[4];
-    size_t m_resp_len = sizeof(m_resp);
-    int m_cmd_arm_ok = (matter_process_cluster_command(MATTER_ENDPOINT_ROOT, MATTER_CLUSTER_GENERAL_COMMISSIONING,
-                                                       MATTER_CMD_GENCOMM_ARM_FAILSAFE, NULL, 0U, m_resp, &m_resp_len) == MATTER_OK);
-    int m_cmd_done_ok = (matter_process_cluster_command(MATTER_ENDPOINT_ROOT, MATTER_CLUSTER_GENERAL_COMMISSIONING,
-                                                        MATTER_CMD_GENCOMM_COMMISSIONING_COMPLETE, NULL, 0U, m_resp, &m_resp_len) == MATTER_OK);
-
-    matter_telemetry_t m_telem;
-    matter_get_telemetry(&m_telem);
-    int m_comm_done_ok = (m_telem.state == MATTER_COMMISSIONING_STATE_COMMISSIONED) &&
-                         (m_telem.fabric_count == 1U) &&
-                         m_telem.ble_reclaimed;
-
-    wdt_feed();
-    lp_wdt_feed();
-
-    int t36_pass = m_init_ok && m_crypto_ok && m_date_ok && m_sha_ok && m_sha_match &&
-                   m_gen_code_ok && m_code_match && m_parse_code_ok && m_disc_match && m_pass_match &&
-                   m_gen_qr_ok && m_qr_prefix_ok && m_parse_qr_ok && m_qr_match &&
-                   m_toggle_ok && m_cmd_arm_ok && m_cmd_done_ok && m_comm_done_ok;
-
-    uart_puts("  Expected:    Init=1, Crypto=1, Date=1, SHA=1, GenCode=1, CodeMatch=1, Parse=1, DiscMatch=1, QR=1, Cluster=1, CommDone=1\r\n");
-    uart_puts("  Actual:      Init=");
-    put_dec(m_init_ok);
-    uart_puts(", Crypto=");
-    put_dec(m_crypto_ok);
-    uart_puts(", Date=");
-    put_dec(m_date_ok);
-    uart_puts(", SHA=");
-    put_dec(m_sha_ok && m_sha_match);
-    uart_puts(", GenCode=");
-    put_dec(m_gen_code_ok);
-    uart_puts(", CodeMatch=");
-    put_dec(m_code_match);
-    uart_puts(", Parse=");
-    put_dec(m_parse_code_ok);
-    uart_puts(", DiscMatch=");
-    put_dec(m_disc_match && m_pass_match);
-    uart_puts(", QR=");
-    put_dec(m_gen_qr_ok && m_qr_prefix_ok && m_parse_qr_ok && m_qr_match);
-    uart_puts(", Cluster=");
-    put_dec(m_toggle_ok && m_cmd_arm_ok);
-    uart_puts(", CommDone=");
-    put_dec(m_comm_done_ok);
-    uart_puts("\r\n");
-
-    uart_puts("  Diag: Code=");
-    uart_puts(m_code_fmt);
-    uart_puts(", QR=");
-    uart_puts(m_qr_buf);
-    uart_puts(", SHADate=0x");
-    put_hex(sha_date);
-    uart_puts(", ECCDate=0x");
-    put_hex(ecc_date);
-    uart_puts("\r\n");
-
-    if (t36_pass) passed_tests++;
-    print_result(t36_pass);
-
-    /* ------------------------------------------------------------- */
-    /* TEST 37: 24/7 Extended Console Shell & System Health Monitor  */
-    /* ------------------------------------------------------------- */
-    total_tests++;
-    print_test_header(37, "24/7 Extended Console Shell & System Health Monitoring",
+    print_test_header("24/7 Extended Console Shell & System Health Monitoring",
                       "Verify system health telemetry aggregation, uptime, memory invariant, and shell telemetry");
 
     /* 1. System Health Telemetry Verification */
@@ -2958,10 +2676,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t37_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 38: eFuse Memory Controller & Silicon Security State     */
+    /* eFuse Memory Controller & Silicon Security State              */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(38, "eFuse Memory Controller & Silicon Security State",
+    print_test_header("eFuse Memory Controller & Silicon Security State",
                       "Verify eFuse shadow refresh, factory MAC, 128-bit unique ID, wafer rev, and security seals");
 
     /* 1. Controller Shadow Refresh & Lifecycle */
@@ -3050,10 +2768,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t38_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 39: 24/7 Soak Stability, Memory Leak & Anti-Starvation   */
+    /* 24/7 Soak Stability, Memory Leak & Anti-Starvation            */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(39, "24/7 Soak Stability, Memory Leak & Anti-Starvation",
+    print_test_header("24/7 Soak Stability, Memory Leak & Anti-Starvation",
                       "Verify quiescent zero-leak invariant, DPC drop-free bottom-half, and bounded coroutine yield latency");
 
     wdt_feed();
@@ -3192,10 +2910,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t39_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 40: Dual-Slot Flash OTA Firmware Upgrade & Rollback      */
+    /* Dual-Slot Flash OTA Firmware Upgrade & Rollback               */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(40, "Dual-Slot Flash OTA Firmware Upgrade & Rollback",
+    print_test_header("Dual-Slot Flash OTA Firmware Upgrade & Rollback",
                       "Verify A/B partition geometry, boot header validation, slot switching, and safe rollback state machine");
 
     wdt_feed();
@@ -3303,10 +3021,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t40_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 41: Production Hardening, NVS Storage Engine & Golden Seal */
+    /* Production Hardening, NVS Storage Engine & Golden Seal          */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(41, "Production Hardening, NVS Storage Engine & Golden Master Seal",
+    print_test_header("Production Hardening, NVS Storage Engine & Golden Master Seal",
                       "Verify wear-leveled NVS key-value storage in 448 KB partition and audit 100% system health");
 
     wdt_feed();
@@ -3400,10 +3118,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t41_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 42: SoftAP Captive Portal Wi-Fi Provisioning Engine      */
+    /* SoftAP Captive Portal Wi-Fi Provisioning Engine               */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(42, "SoftAP Captive Portal Wi-Fi Provisioning Engine",
+    print_test_header("SoftAP Captive Portal Wi-Fi Provisioning Engine",
                       "Verify interactive Wi-Fi scan table, /setup portal, configure endpoint & NVS persistence");
 
     wdt_feed();
@@ -3535,10 +3253,10 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     print_result(t42_pass);
 
     /* ------------------------------------------------------------- */
-    /* TEST 43: Bare-Metal Wi-Fi Station (STA) WPA2-PSK Client & Home LAN Join */
+    /* Bare-Metal Wi-Fi Station (STA) WPA2-PSK Client & Home LAN Join          */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header(43, "Bare-Metal Wi-Fi Station (STA) WPA2-PSK Client & Home LAN Join",
+    print_test_header("Bare-Metal Wi-Fi Station (STA) WPA2-PSK Client & Home LAN Join",
                       "Verify IEEE 802.11i 4-way handshake, PBKDF2/PRF512/AES unwrap, DHCP client & mDNS responder");
 
     wdt_feed();
@@ -3812,7 +3530,7 @@ TEST_FLASH_TEXT bool test_soak_run(uint32_t cycles, uint32_t delay_ms)
     uart_puts("  Inter-Cycle Dwell:  ");
     put_dec(delay_ms);
     uart_puts(" ms\r\n");
-    uart_puts("  Protocols Monitored: Wi-Fi 6, Bluetooth 5 (LE), 802.15.4, Coexistence\r\n");
+    uart_puts("  Protocols Monitored: Wi-Fi 6, 802.15.4, Coexistence\r\n");
     uart_puts("  Supervision:        MWDT0 (1000 ms epoch) + LP WDT (SWD)\r\n");
     print_banner_line();
     uart_puts("\r\n");

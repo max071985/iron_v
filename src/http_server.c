@@ -17,7 +17,6 @@
 #include "clock.h"
 #include "shell.h"
 #include "speedtest.h"
-#include "matter.h"
 #include "gpio.h"
 
 #if defined(__riscv)
@@ -366,14 +365,6 @@ static const char s_str_sp_run_lat_min[] HTTP_FLASH_RODATA = ",\"latency_min_us\
 static const char s_str_sp_run_lat_max[] HTTP_FLASH_RODATA = ",\"latency_max_us\":";
 static const char s_str_sp_run_pkt_loss[] HTTP_FLASH_RODATA = ",\"packet_loss_count\":";
 
-static const char s_str_mt_code_pre[] HTTP_FLASH_RODATA = "{\"manual_code\":\"";
-static const char s_str_mt_qr_pre[] HTTP_FLASH_RODATA = "\",\"qr_payload\":\"";
-static const char s_str_mt_vid[] HTTP_FLASH_RODATA = "\",\"vendor_id\":";
-static const char s_str_mt_pid[] HTTP_FLASH_RODATA = ",\"product_id\":";
-static const char s_str_mt_disc[] HTTP_FLASH_RODATA = ",\"discriminator\":";
-static const char s_str_mt_pass[] HTTP_FLASH_RODATA = ",\"passcode\":";
-static const char s_str_mt_onoff[] HTTP_FLASH_RODATA = ",\"onoff\":";
-static const char s_str_mt_state[] HTTP_FLASH_RODATA = ",\"state\":";
 
 static const char s_str_gpio_ok_pin[] HTTP_FLASH_RODATA = "{\"status\":\"ok\",\"pin\":";
 static const char s_str_gpio_level[] HTTP_FLASH_RODATA = ",\"level\":";
@@ -493,50 +484,6 @@ static HTTP_FLASH_TEXT void http_handler_speedtest(const char *query_params, cha
     }
 }
 
-/* GET /api/matter/payload -> Matter setup payload & QR Base38 string */
-static HTTP_FLASH_TEXT void http_handler_matter_payload(const char *query_params, char *response_body, size_t max_len)
-{
-    (void)query_params;
-    if (response_body == NULL || max_len == 0U) return;
-
-    matter_commissioning_info_t info;
-    char code_buf[32];
-    char qr_buf[64];
-    memset(code_buf, 0, sizeof(code_buf));
-    memset(qr_buf, 0, sizeof(qr_buf));
-
-    matter_get_commissioning_info(&info);
-    matter_generate_manual_pairing_code(&info, code_buf, sizeof(code_buf), true);
-    matter_generate_qr_code_payload(&info, qr_buf, sizeof(qr_buf));
-    bool onoff = matter_get_onoff();
-    matter_commissioning_state_t state = matter_get_state();
-
-    char num_buf[24];
-    response_body[0] = '\0';
-    http_str_append(response_body, max_len, s_str_mt_code_pre);
-    http_str_append(response_body, max_len, code_buf);
-    http_str_append(response_body, max_len, s_str_mt_qr_pre);
-    http_str_append(response_body, max_len, qr_buf);
-    http_str_append(response_body, max_len, s_str_mt_vid);
-    http_u32_to_dec(info.vendor_id, num_buf, sizeof(num_buf));
-    http_str_append(response_body, max_len, num_buf);
-    http_str_append(response_body, max_len, s_str_mt_pid);
-    http_u32_to_dec(info.product_id, num_buf, sizeof(num_buf));
-    http_str_append(response_body, max_len, num_buf);
-    http_str_append(response_body, max_len, s_str_mt_disc);
-    http_u32_to_dec(info.discriminator, num_buf, sizeof(num_buf));
-    http_str_append(response_body, max_len, num_buf);
-    http_str_append(response_body, max_len, s_str_mt_pass);
-    http_u32_to_dec(info.setup_passcode, num_buf, sizeof(num_buf));
-    http_str_append(response_body, max_len, num_buf);
-    http_str_append(response_body, max_len, s_str_mt_onoff);
-    http_str_append(response_body, max_len, onoff ? "true" : "false");
-    http_str_append(response_body, max_len, s_str_mt_state);
-    http_u32_to_dec((uint32_t)state, num_buf, sizeof(num_buf));
-    http_str_append(response_body, max_len, num_buf);
-    http_str_append(response_body, max_len, s_str_close_brace);
-}
-
 /* GET & POST /api/gpio -> Interactive GPIO pin & relay control */
 static HTTP_FLASH_TEXT void http_handler_gpio(const char *query_params, char *response_body, size_t max_len)
 {
@@ -564,11 +511,6 @@ static HTTP_FLASH_TEXT void http_handler_gpio(const char *query_params, char *re
 
         int curr_lvl = gpio_get_output_level(u_pin);
         if (curr_lvl < 0) curr_lvl = 0;
-
-        if (u_pin == 15U)
-        {
-            matter_set_onoff(curr_lvl != 0);
-        }
 
         http_str_append(response_body, max_len, s_str_gpio_ok_pin);
         http_u32_to_dec(u_pin, num_buf, sizeof(num_buf));
@@ -627,7 +569,6 @@ static HTTP_FLASH_TEXT __attribute__((noinline)) void http_register_default_rout
     http_route_register("/api/health", HTTP_METHOD_GET, http_handler_health);
     http_route_register("/api/speedtest", HTTP_METHOD_GET, http_handler_speedtest);
     http_route_register("/api/speedtest", HTTP_METHOD_POST, http_handler_speedtest);
-    http_route_register("/api/matter/payload", HTTP_METHOD_GET, http_handler_matter_payload);
     http_route_register("/api/gpio", HTTP_METHOD_GET, http_handler_gpio);
     http_route_register("/api/gpio", HTTP_METHOD_POST, http_handler_gpio);
 }

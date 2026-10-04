@@ -23,9 +23,6 @@
 #include "gpio.h"
 #include "gdma.h"
 #include "modem.h"
-#include "ble.h"
-#include "ble_gatt.h"
-#include "ble_npl.h"
 #include "wifi.h"
 #include "ieee802154.h"
 #include "net.h"
@@ -40,7 +37,6 @@
 #include "http_server.h"
 #include "web_assets.h"
 #include "speedtest.h"
-#include "matter.h"
 #include "clock.h"
 #include "wdt.h"
 #include "timer.h"
@@ -1529,275 +1525,6 @@ static void test_lp_wdt_subsystem(void)
     TEST_ASSERT(LP_WDT_WDTCONFIG0_WDT_EN_M == 0x80000000U, "LP_WDT_WDTCONFIG0_WDT_EN_M is bit 31");
 }
 
-static void npl_test_event_handler(struct ble_npl_event *ev)
-{
-    if (ev != NULL && ev->arg != NULL)
-    {
-        uint32_t *counter = (uint32_t *)ev->arg;
-        (*counter)++;
-    }
-}
-
-static void test_ble_gatt_subsystem(void)
-{
-    printf("  [TEST] Bluetooth 5 (LE) Controller Driver & Minimal GATT Server (Task 5.2)...\n");
-
-    /* 1. Register Address & Offset Calculation Validation (AGENTS.md rule) */
-    TEST_ASSERT((uintptr_t)EFUSE_MAC_SYS_0_REG == 0x600B0844U, "EFUSE_MAC_SYS_0_REG address calculation");
-    TEST_ASSERT((uintptr_t)EFUSE_MAC_SYS_1_REG == 0x600B0848U, "EFUSE_MAC_SYS_1_REG address calculation");
-
-    /* 2. Concrete Data Structure Geometry & Packet Sizing */
-    TEST_ASSERT(sizeof(ble_adv_packet_t) == 21U, "sizeof(ble_adv_packet_t) must be 21 bytes packed");
-    TEST_ASSERT(sizeof(ble_telemetry_t) >= 28U, "sizeof(ble_telemetry_t) geometry check");
-    TEST_ASSERT(sizeof(gatt_attribute_t) >= 12U, "sizeof(gatt_attribute_t) geometry check");
-
-    /* 3. Subsystem Lifecycle & BD_ADDR Retrieval */
-    TEST_ASSERT(ble_init() == BLE_OK, "ble_init succeeds");
-    uint8_t mac[BLE_BD_ADDR_LEN] = {0};
-    TEST_ASSERT(ble_get_bd_addr(NULL) == BLE_ERR_INVALID_ARG, "ble_get_bd_addr rejects NULL");
-    TEST_ASSERT(ble_get_bd_addr(mac) == BLE_OK, "ble_get_bd_addr succeeds");
-    TEST_ASSERT(mac[0] == 0x40U && mac[1] == 0x4CU && mac[2] == 0xCAU &&
-                mac[3] == 0x45U && mac[4] == 0x1EU && mac[5] == 0x14U,
-                "Authentic BD_ADDR matches hardware 40:4C:CA:45:1E:14");
-
-    ble_telemetry_t telem;
-    TEST_ASSERT(ble_get_telemetry(NULL) == BLE_ERR_INVALID_ARG, "ble_get_telemetry rejects NULL");
-    TEST_ASSERT(ble_get_telemetry(&telem) == BLE_OK, "ble_get_telemetry succeeds");
-    TEST_ASSERT(telem.state == BLE_STATE_STANDBY, "Initial state is BLE_STATE_STANDBY");
-    TEST_ASSERT(ble_gap_get_state() == BLE_STATE_STANDBY, "ble_gap_get_state matches BLE_STATE_STANDBY");
-
-    /* 4. HCI Reset Command Loopback (TEST 30 Sequence) */
-    /* Command: [0x01, 0x03, 0x0C, 0x00] */
-    uint8_t hci_reset_cmd[] = { HCI_PKT_TYPE_CMD, 0x03U, 0x0CU, 0x00U };
-    uint8_t evt_resp[32];
-
-    TEST_ASSERT(ble_hci_send_cmd(NULL, sizeof(hci_reset_cmd)) == BLE_ERR_INVALID_ARG, "ble_hci_send_cmd rejects NULL");
-    TEST_ASSERT(ble_hci_send_cmd(hci_reset_cmd, 3U) == BLE_ERR_INVALID_ARG, "ble_hci_send_cmd rejects len < 4");
-    uint8_t bad_type_cmd[] = { 0x02U, 0x03U, 0x0CU, 0x00U };
-    TEST_ASSERT(ble_hci_send_cmd(bad_type_cmd, 4U) == BLE_ERR_INVALID_ARG, "ble_hci_send_cmd rejects non-command type");
-
-    TEST_ASSERT(ble_hci_send_cmd(hci_reset_cmd, sizeof(hci_reset_cmd)) == BLE_OK, "HCI_Reset dispatch succeeds");
-    TEST_ASSERT(ble_hci_has_event() == true, "ble_hci_has_event indicates event queued");
-
-    TEST_ASSERT(ble_hci_recv_event(NULL, sizeof(evt_resp), BLE_DEFAULT_TIMEOUT_MS) == BLE_ERR_INVALID_ARG, "ble_hci_recv_event rejects NULL");
-    TEST_ASSERT(ble_hci_recv_event(evt_resp, 0U, BLE_DEFAULT_TIMEOUT_MS) == BLE_ERR_INVALID_ARG, "ble_hci_recv_event rejects max_len 0");
-    TEST_ASSERT(ble_hci_recv_event(evt_resp, sizeof(evt_resp), BLE_DEFAULT_TIMEOUT_MS) == BLE_OK, "HCI_Reset response received");
-
-    /* Expected: [0x04, 0x0E, 0x04, 0x01, 0x03, 0x0C, 0x00] */
-    TEST_ASSERT(evt_resp[0] == HCI_PKT_TYPE_EVT, "Response packet type is EVT (0x04)");
-    TEST_ASSERT(evt_resp[1] == HCI_EVT_COMMAND_COMPLETE, "Event code is COMMAND_COMPLETE (0x0E)");
-    TEST_ASSERT(evt_resp[2] == 0x04U, "Param length is 4");
-    TEST_ASSERT(evt_resp[3] == 0x01U, "Num_HCI_Command_Packets is 1");
-    TEST_ASSERT(evt_resp[4] == 0x03U && evt_resp[5] == 0x0CU, "Opcode is HCI_Reset (0x0C03)");
-    TEST_ASSERT(evt_resp[6] == HCI_STATUS_SUCCESS, "Status is HCI_STATUS_SUCCESS (0x00)");
-
-    /* 5. HCI Read BD_ADDR & Read Local Version Commands */
-    uint8_t read_bd_cmd[] = { HCI_PKT_TYPE_CMD, 0x02U, 0x10U, 0x00U };
-    TEST_ASSERT(ble_hci_execute_cmd(read_bd_cmd, sizeof(read_bd_cmd), evt_resp, sizeof(evt_resp), BLE_DEFAULT_TIMEOUT_MS) == BLE_OK,
-                "ble_hci_execute_cmd HCI_Read_BD_Addr succeeds");
-    TEST_ASSERT(evt_resp[0] == HCI_PKT_TYPE_EVT && evt_resp[1] == HCI_EVT_COMMAND_COMPLETE, "Read_BD_Addr returns Command Complete");
-    TEST_ASSERT(evt_resp[4] == 0x02U && evt_resp[5] == 0x10U, "Opcode matches HCI_Read_BD_Addr (0x1002)");
-    TEST_ASSERT(evt_resp[6] == HCI_STATUS_SUCCESS, "Read_BD_Addr status is success");
-    TEST_ASSERT(evt_resp[7] == 0x14U && evt_resp[8] == 0x1EU && evt_resp[9] == 0x45U &&
-                evt_resp[10] == 0xCAU && evt_resp[11] == 0x4CU && evt_resp[12] == 0x40U,
-                "Read_BD_Addr little-endian address matches hardware BD_ADDR");
-
-    uint8_t read_ver_cmd[] = { HCI_PKT_TYPE_CMD, 0x01U, 0x10U, 0x00U };
-    TEST_ASSERT(ble_hci_execute_cmd(read_ver_cmd, sizeof(read_ver_cmd), evt_resp, sizeof(evt_resp), BLE_DEFAULT_TIMEOUT_MS) == BLE_OK,
-                "ble_hci_execute_cmd HCI_Read_Local_Version succeeds");
-    TEST_ASSERT(evt_resp[6] == HCI_STATUS_SUCCESS, "Read_Local_Version status is success");
-    TEST_ASSERT(evt_resp[7] == 0x0CU, "HCI version is 5.3 (0x0C)");
-    TEST_ASSERT(evt_resp[11] == 0x02U && evt_resp[12] == 0x00U, "Manufacturer is Espressif (0x0002)");
-
-    /* Unknown opcode handling */
-    uint8_t unknown_cmd[] = { HCI_PKT_TYPE_CMD, 0xFEU, 0xFEU, 0x00U };
-    TEST_ASSERT(ble_hci_execute_cmd(unknown_cmd, sizeof(unknown_cmd), evt_resp, sizeof(evt_resp), BLE_DEFAULT_TIMEOUT_MS) == BLE_OK,
-                "Unknown HCI command dispatches cleanly");
-    TEST_ASSERT(evt_resp[6] == HCI_STATUS_UNKNOWN_HCI_CMD, "Unknown command returns HCI_STATUS_UNKNOWN_HCI_CMD");
-
-    /* 6. Bare-Metal Link Layer Hardware Advertising & State Control */
-    TEST_ASSERT(ble_hw_init() == BLE_OK, "ble_hw_init succeeds");
-    TEST_ASSERT(ble_hw_is_advertising() == false, "ble_hw_is_advertising initially false");
-    TEST_ASSERT(ble_hw_start_advertising() == BLE_OK, "ble_hw_start_advertising succeeds");
-    TEST_ASSERT(ble_hw_is_advertising() == true, "ble_hw_is_advertising returns true after start");
-    TEST_ASSERT(ble_hw_stop_advertising() == BLE_OK, "ble_hw_stop_advertising succeeds");
-    TEST_ASSERT(ble_hw_is_advertising() == false, "ble_hw_is_advertising returns false after stop");
-
-    /* 7. GAP Advertising State Machine */
-    TEST_ASSERT(ble_gap_start_advertising() == BLE_OK, "ble_gap_start_advertising succeeds");
-    TEST_ASSERT(ble_gap_get_state() == BLE_STATE_ADVERTISING, "State transitions to BLE_STATE_ADVERTISING");
-    TEST_ASSERT(ble_hw_is_advertising() == true, "ble_hw_is_advertising reports true during GAP advertising");
-    TEST_ASSERT(ble_get_telemetry(&telem) == BLE_OK, "ble_get_telemetry succeeds");
-    TEST_ASSERT(telem.adv_start_count >= 1U, "adv_start_count incremented");
-
-    TEST_ASSERT(ble_gap_stop_advertising() == BLE_OK, "ble_gap_stop_advertising succeeds");
-    TEST_ASSERT(ble_gap_get_state() == BLE_STATE_STANDBY, "State returns to BLE_STATE_STANDBY");
-    TEST_ASSERT(ble_hw_is_advertising() == false, "ble_hw_is_advertising reports false after GAP advertising stopped");
-    TEST_ASSERT(ble_get_telemetry(&telem) == BLE_OK, "ble_get_telemetry succeeds");
-    TEST_ASSERT(telem.adv_stop_count >= 1U, "adv_stop_count incremented");
-
-    /* 7. Static Zero-Allocation GATT Database */
-    TEST_ASSERT(gatt_db_init() == GATT_OK, "gatt_db_init succeeds");
-    TEST_ASSERT(gatt_db_get_count() == 16U, "GATT database contains exactly 16 static attributes");
-
-    /* Lookup attributes by handle */
-    const gatt_attribute_t *attr1 = gatt_db_find_by_handle(0x0001U);
-    TEST_ASSERT(attr1 != NULL && attr1->uuid == GATT_UUID_PRIMARY_SERVICE, "Handle 0x0001 is Primary Service");
-    const gatt_attribute_t *attr3 = gatt_db_find_by_handle(0x0003U);
-    TEST_ASSERT(attr3 != NULL && attr3->uuid == GATT_UUID_CHAR_DEVICE_NAME, "Handle 0x0003 is Device Name");
-    const gatt_attribute_t *attr6 = gatt_db_find_by_handle(0x0006U);
-    TEST_ASSERT(attr6 != NULL && attr6->uuid == GATT_UUID_PRIMARY_SERVICE, "Handle 0x0006 is Primary Service (DevInfo)");
-    const gatt_attribute_t *attr13 = gatt_db_find_by_handle(0x000DU);
-    TEST_ASSERT(attr13 != NULL && attr13->uuid == GATT_UUID_PRIMARY_SERVICE, "Handle 0x000D is Primary Service (Custom 0xFFE0)");
-    const gatt_attribute_t *attr15 = gatt_db_find_by_handle(0x000FU);
-    TEST_ASSERT(attr15 != NULL && attr15->uuid == GATT_UUID_CHAR_CUSTOM_DATA, "Handle 0x000F is Custom Data");
-
-    /* Lookup attributes by UUID */
-    TEST_ASSERT(gatt_db_find_by_uuid(GATT_UUID_CHAR_DEVICE_NAME) == attr3, "Find by UUID 0x2A00 matches attr3");
-    TEST_ASSERT(gatt_db_find_by_uuid(0xDEADU) == NULL, "Find by non-existent UUID returns NULL");
-
-    /* Read attribute values */
-    uint8_t read_buf[64];
-    uint16_t read_len = 0U;
-    TEST_ASSERT(gatt_db_read(0x0003U, read_buf, sizeof(read_buf), &read_len) == GATT_OK, "Read Device Name succeeds");
-    TEST_ASSERT(read_len == (uint16_t)s_strlen(CONFIG_BLE_DEVICE_NAME) && s_strncmp((char *)read_buf, CONFIG_BLE_DEVICE_NAME, s_strlen(CONFIG_BLE_DEVICE_NAME)) == 0, "Device Name matches CONFIG_BLE_DEVICE_NAME");
-
-    TEST_ASSERT(gatt_db_read(0x000CU, read_buf, sizeof(read_buf), &read_len) == GATT_OK, "Read Firmware Revision succeeds");
-    TEST_ASSERT(read_len == (uint16_t)s_strlen(CONFIG_FIRMWARE_REVISION) && s_strncmp((char *)read_buf, CONFIG_FIRMWARE_REVISION, s_strlen(CONFIG_FIRMWARE_REVISION)) == 0, "Firmware Revision matches CONFIG_FIRMWARE_REVISION");
-
-    /* Write attribute values and verify readback */
-    uint8_t write_data[] = "IRON-V-BLE-GATT-TEST-PAYLOAD";
-    TEST_ASSERT(gatt_db_write(0x000FU, write_data, (uint16_t)sizeof(write_data)) == GATT_OK, "Write Custom Data (Handle 0x000F) succeeds");
-    TEST_ASSERT(gatt_db_read(0x000FU, read_buf, sizeof(read_buf), &read_len) == GATT_OK, "Readback Custom Data succeeds");
-    TEST_ASSERT(read_len == sizeof(write_data) && s_strcmp((char *)read_buf, (char *)write_data) == 0, "Readback matches written payload");
-
-    /* Permission enforcement & error checking */
-    TEST_ASSERT(gatt_db_write(0x0003U, write_data, 10U) == GATT_ERR_WRITE_NOT_PERMITTED, "Write to read-only Device Name rejected");
-    TEST_ASSERT(gatt_db_read(0x9999U, read_buf, sizeof(read_buf), &read_len) == GATT_ERR_INVALID_HANDLE, "Read invalid handle rejected");
-    TEST_ASSERT(gatt_db_write(0x9999U, write_data, 10U) == GATT_ERR_INVALID_HANDLE, "Write invalid handle rejected");
-    TEST_ASSERT(gatt_db_read(0x0001U, NULL, sizeof(read_buf), &read_len) == GATT_ERR_INVALID_ARG, "Read with NULL buffer rejected");
-    TEST_ASSERT(gatt_db_write(0x000FU, NULL, 10U) == GATT_ERR_INVALID_ARG, "Write with NULL data rejected");
-
-    /* 8. NimBLE Porting Layer (NPL) Bare-Metal Event Queue & FIFO Ordering */
-    struct ble_npl_eventq test_q;
-    ble_npl_eventq_init(&test_q);
-    TEST_ASSERT(ble_npl_eventq_is_empty(&test_q) == true, "New event queue is initially empty");
-
-    uint32_t c1 = 0U, c2 = 0U, c3 = 0U;
-    struct ble_npl_event ev1, ev2, ev3;
-    ble_npl_event_init(&ev1, npl_test_event_handler, &c1);
-    ble_npl_event_init(&ev2, npl_test_event_handler, &c2);
-    ble_npl_event_init(&ev3, npl_test_event_handler, &c3);
-
-    TEST_ASSERT(ble_npl_event_is_queued(&ev1) == false, "ev1 not queued before put");
-    TEST_ASSERT(ble_npl_event_get_arg(&ev1) == &c1, "ev1 arg points to c1");
-
-    ble_npl_eventq_put(&test_q, &ev1);
-    ble_npl_eventq_put(&test_q, &ev2);
-    ble_npl_eventq_put(&test_q, &ev3);
-
-    TEST_ASSERT(ble_npl_event_is_queued(&ev1) == true, "ev1 is marked queued");
-    TEST_ASSERT(ble_npl_event_is_queued(&ev2) == true, "ev2 is marked queued");
-    TEST_ASSERT(ble_npl_event_is_queued(&ev3) == true, "ev3 is marked queued");
-    TEST_ASSERT(ble_npl_eventq_is_empty(&test_q) == false, "test_q is not empty");
-    TEST_ASSERT(test_q.count == 3U, "Queue count is 3");
-
-    /* Verify strict FIFO dequeue order */
-    struct ble_npl_event *popped = ble_npl_eventq_get(&test_q, 0U);
-    TEST_ASSERT(popped == &ev1, "First dequeued event is ev1 (FIFO)");
-    TEST_ASSERT(ble_npl_event_is_queued(&ev1) == false, "ev1 unqueued after pop");
-    ble_npl_event_run(popped);
-    TEST_ASSERT(c1 == 1U, "ev1 callback executed, c1 incremented to 1");
-
-    popped = ble_npl_eventq_get(&test_q, 0U);
-    TEST_ASSERT(popped == &ev2, "Second dequeued event is ev2 (FIFO)");
-    ble_npl_event_run(popped);
-    TEST_ASSERT(c2 == 1U, "ev2 callback executed, c2 incremented to 1");
-
-    popped = ble_npl_eventq_get(&test_q, 0U);
-    TEST_ASSERT(popped == &ev3, "Third dequeued event is ev3 (FIFO)");
-    ble_npl_event_run(popped);
-    TEST_ASSERT(c3 == 1U, "ev3 callback executed, c3 incremented to 1");
-
-    TEST_ASSERT(ble_npl_eventq_get(&test_q, 0U) == NULL, "Empty queue returns NULL on get");
-    TEST_ASSERT(ble_npl_eventq_is_empty(&test_q) == true, "Queue is empty after all events popped");
-
-    /* Test event queue removal */
-    ble_npl_eventq_put(&test_q, &ev1);
-    ble_npl_eventq_put(&test_q, &ev2);
-    ble_npl_eventq_put(&test_q, &ev3);
-    ble_npl_eventq_remove(&test_q, &ev2);
-    TEST_ASSERT(ble_npl_event_is_queued(&ev2) == false, "ev2 removed and marked not queued");
-    TEST_ASSERT(test_q.count == 2U, "Queue count decremented to 2");
-
-    popped = ble_npl_eventq_get(&test_q, 0U);
-    TEST_ASSERT(popped == &ev1, "Dequeued event after middle removal is ev1");
-    popped = ble_npl_eventq_get(&test_q, 0U);
-    TEST_ASSERT(popped == &ev3, "Dequeued event after middle removal is ev3");
-    TEST_ASSERT(ble_npl_eventq_get(&test_q, 0U) == NULL, "Queue empty after removing ev2 and getting ev1, ev3");
-
-    /* 9. NPL Critical Section Nesting Depth */
-    TEST_ASSERT(ble_npl_hw_get_critical_depth() == 0U, "Initial critical depth is 0");
-    TEST_ASSERT(ble_npl_hw_is_in_critical() == false, "Initially not in critical section");
-
-    uint32_t ctx_outer = ble_npl_hw_enter_critical();
-    TEST_ASSERT(ble_npl_hw_get_critical_depth() == 1U, "Critical depth 1 after outer enter");
-    TEST_ASSERT(ble_npl_hw_is_in_critical() == true, "In critical section at depth 1");
-
-    uint32_t ctx_inner = ble_npl_hw_enter_critical();
-    TEST_ASSERT(ble_npl_hw_get_critical_depth() == 2U, "Critical depth 2 after nested enter");
-
-    ble_npl_hw_exit_critical(ctx_inner);
-    TEST_ASSERT(ble_npl_hw_get_critical_depth() == 1U, "Critical depth 1 after inner exit");
-    TEST_ASSERT(ble_npl_hw_is_in_critical() == true, "Still in critical section at depth 1");
-
-    ble_npl_hw_exit_critical(ctx_outer);
-    TEST_ASSERT(ble_npl_hw_get_critical_depth() == 0U, "Critical depth 0 after outer exit");
-    TEST_ASSERT(ble_npl_hw_is_in_critical() == false, "No longer in critical section");
-
-    /* 10. Software Callout Timers & Background Service */
-    struct ble_npl_callout test_co;
-    uint32_t co_fire_count = 0U;
-    TEST_ASSERT(ble_npl_callout_init(&test_co, ble_npl_eventq_dflt_get(), npl_test_event_handler, &co_fire_count) == BLE_NPL_OK, "callout_init succeeds");
-    TEST_ASSERT(ble_npl_callout_is_active(&test_co) == false, "Callout initially inactive");
-
-    TEST_ASSERT(ble_npl_callout_reset(&test_co, 50U) == BLE_NPL_OK, "callout_reset for 50 ticks succeeds");
-    TEST_ASSERT(ble_npl_callout_is_active(&test_co) == true, "Callout is active after reset");
-    TEST_ASSERT(ble_npl_callout_get_ticks(&test_co) >= 50U, "Callout expiration timestamp recorded");
-
-    /* Advance time and service background */
-    ble_npl_time_delay(50U);
-    ble_npl_service_background();
-    TEST_ASSERT(co_fire_count == 1U, "Callout callback fired via ble_npl_service_background");
-    TEST_ASSERT(ble_npl_callout_is_active(&test_co) == false, "Callout inactive after expiration");
-
-    /* Test callout stop */
-    ble_npl_callout_reset(&test_co, 100U);
-    TEST_ASSERT(ble_npl_callout_is_active(&test_co) == true, "Callout active after second reset");
-    ble_npl_callout_stop(&test_co);
-    TEST_ASSERT(ble_npl_callout_is_active(&test_co) == false, "Callout inactive after stop");
-
-    /* 11. Mutex & Semaphore Synchronization */
-    struct ble_npl_mutex test_mu;
-    TEST_ASSERT(ble_npl_mutex_init(&test_mu) == BLE_NPL_OK, "mutex_init succeeds");
-    TEST_ASSERT(ble_npl_mutex_pend(&test_mu, 0U) == BLE_NPL_OK, "mutex_pend succeeds when unlocked");
-    TEST_ASSERT(ble_npl_mutex_pend(&test_mu, 0U) == BLE_NPL_ETIMEOUT, "mutex_pend fails with timeout when locked");
-    TEST_ASSERT(ble_npl_mutex_release(&test_mu) == BLE_NPL_OK, "mutex_release succeeds");
-    TEST_ASSERT(ble_npl_mutex_pend(&test_mu, 0U) == BLE_NPL_OK, "mutex_pend succeeds after release");
-    ble_npl_mutex_release(&test_mu);
-
-    struct ble_npl_sem test_sem;
-    TEST_ASSERT(ble_npl_sem_init(&test_sem, 2U) == BLE_NPL_OK, "sem_init with 2 tokens succeeds");
-    TEST_ASSERT(ble_npl_sem_get_count(&test_sem) == 2U, "Initial token count is 2");
-    TEST_ASSERT(ble_npl_sem_pend(&test_sem, 0U) == BLE_NPL_OK, "First pend consumes token");
-    TEST_ASSERT(ble_npl_sem_get_count(&test_sem) == 1U, "Token count is 1");
-    TEST_ASSERT(ble_npl_sem_pend(&test_sem, 0U) == BLE_NPL_OK, "Second pend consumes token");
-    TEST_ASSERT(ble_npl_sem_get_count(&test_sem) == 0U, "Token count is 0");
-    TEST_ASSERT(ble_npl_sem_pend(&test_sem, 0U) == BLE_NPL_ETIMEOUT, "Third pend times out");
-    TEST_ASSERT(ble_npl_sem_release(&test_sem) == BLE_NPL_OK, "sem_release increments token");
-    TEST_ASSERT(ble_npl_sem_get_count(&test_sem) == 1U, "Token count restored to 1");
-}
-
 static void test_wifi_mac_subsystem(void)
 {
     printf("  [TEST] 802.11ax Wi-Fi 6 MAC Driver & Zero-Copy Packet Ring (Task 5.3)...\n");
@@ -2340,14 +2067,10 @@ static void test_http_server_subsystem(void)
     TEST_ASSERT(strstr(resp, "HTTP/1.1 200 OK") != NULL, "Speedtest POST response is 200 OK");
     TEST_ASSERT(strstr(resp, "throughput_kbps") != NULL, "Speedtest burst contains throughput_kbps");
 
-    /* 4d. Request Processing: Valid GET /api/matter/payload */
+    /* 4d. Matter was descoped (REV-08): its endpoint is gone */
     const char req_matter[] = "GET /api/matter/payload HTTP/1.1\r\n\r\n";
     resp[0] = '\0';
-    TEST_ASSERT(http_process_request(req_matter, strlen(req_matter), resp, sizeof(resp), &resp_len) == HTTP_OK, "Process GET /api/matter/payload succeeds");
-    TEST_ASSERT(strstr(resp, "HTTP/1.1 200 OK") != NULL, "Matter response is 200 OK");
-    TEST_ASSERT(strstr(resp, "manual_code") != NULL, "Matter contains manual_code");
-    TEST_ASSERT(strstr(resp, "qr_payload") != NULL, "Matter contains qr_payload");
-    TEST_ASSERT(strstr(resp, "MT:") != NULL, "Matter QR starts with MT:");
+    TEST_ASSERT(http_process_request(req_matter, strlen(req_matter), resp, sizeof(resp), &resp_len) == HTTP_ERR_NOT_FOUND, "GET /api/matter/payload returns 404 (Matter descoped)");
 
     /* 4e. Request Processing: Valid GET & POST /api/gpio */
     const char req_gpio_get[] = "GET /api/gpio HTTP/1.1\r\n\r\n";
@@ -2704,199 +2427,6 @@ static void test_speedtest_subsystem(void)
     speedtest_reset();
     speedtest_get_telemetry(&telem);
     TEST_ASSERT(telem.bursts_run == 0U, "speedtest_reset clears burst counter");
-}
-
-static void test_matter_subsystem(void)
-{
-    printf("  [TEST] Google Home Matter Readiness & Commissioning Bridge (Task 6.3)...\n");
-
-    /* 1. Protocol Constants & Sizing */
-    TEST_ASSERT(MATTER_DEFAULT_VENDOR_ID == 0xFFF1U, "Matter default vendor ID is 0xFFF1");
-    TEST_ASSERT(MATTER_DEFAULT_PRODUCT_ID == 0x8001U, "Matter default product ID is 0x8001");
-    TEST_ASSERT(MATTER_DEFAULT_DISCRIMINATOR == 3840U, "Matter default discriminator is 3840 (0x0F00)");
-    TEST_ASSERT(MATTER_DEFAULT_PASSCODE == 20202021U, "Matter default passcode is 20202021");
-    TEST_ASSERT(MATTER_MANUAL_CODE_LEN_STANDARD == 11U, "Standard manual code length is 11 digits");
-    TEST_ASSERT(MATTER_MANUAL_CODE_LEN_EXTENDED == 21U, "Extended manual code length is 21 digits");
-
-    /* 2. Verhoeff Checksum Algorithm Test Vectors */
-    /* Vector 1: Standard 10-digit payload -> check digit must be 2 */
-    uint8_t c1 = matter_verhoeff_compute("3497011233");
-    TEST_ASSERT(c1 == 2U, "Verhoeff check digit for '3497011233' is 2");
-    TEST_ASSERT(matter_verhoeff_validate("34970112332"), "Verhoeff validates '34970112332'");
-
-    /* Vector 2: Single-digit mutation detection */
-    TEST_ASSERT(!matter_verhoeff_validate("34970112342"), "Verhoeff rejects single digit corruption");
-    TEST_ASSERT(!matter_verhoeff_validate("34970112331"), "Verhoeff rejects bad check digit");
-
-    /* Vector 3: Adjacent transposition error detection */
-    TEST_ASSERT(!matter_verhoeff_validate("34970112323"), "Verhoeff rejects transposed digits");
-
-    /* Vector 4: Known short vector "236" -> check digit is 3 */
-    TEST_ASSERT(matter_verhoeff_compute("236") == 3U, "Verhoeff check digit for '236' is 3");
-    TEST_ASSERT(matter_verhoeff_validate("2363"), "Verhoeff validates '2363'");
-
-    /* 3. Manual Pairing Code Generation (Roadmap T36) */
-    matter_commissioning_info_t cfg = {
-        .vendor_id              = MATTER_DEFAULT_VENDOR_ID,
-        .product_id             = MATTER_DEFAULT_PRODUCT_ID,
-        .discriminator          = MATTER_DEFAULT_DISCRIMINATOR,
-        .setup_passcode         = MATTER_DEFAULT_PASSCODE,
-        .commissioning_flow     = MATTER_COMMISSIONING_FLOW_STANDARD,
-        .discovery_capabilities = (MATTER_DISCOVERY_CAP_BLE | MATTER_DISCOVERY_CAP_ONNETWORK)
-    };
-
-    char code_formatted[MATTER_MANUAL_CODE_MAX_BUF];
-    char code_raw[MATTER_MANUAL_CODE_MAX_BUF];
-    memset(code_formatted, 0, sizeof(code_formatted));
-    memset(code_raw, 0, sizeof(code_raw));
-
-    TEST_ASSERT(matter_generate_manual_pairing_code(&cfg, code_formatted, sizeof(code_formatted), true) == MATTER_OK,
-                "matter_generate_manual_pairing_code formatted succeeds");
-    TEST_ASSERT(strcmp(code_formatted, "3497-011-2332") == 0,
-                "Standard manual pairing code matches '3497-011-2332'");
-
-    TEST_ASSERT(matter_generate_manual_pairing_code(&cfg, code_raw, sizeof(code_raw), false) == MATTER_OK,
-                "matter_generate_manual_pairing_code unformatted succeeds");
-    TEST_ASSERT(strcmp(code_raw, "34970112332") == 0,
-                "Raw unformatted manual code matches '34970112332'");
-
-    /* 4. Manual Pairing Code Parsing */
-    matter_commissioning_info_t parsed_info;
-    memset(&parsed_info, 0, sizeof(parsed_info));
-
-    TEST_ASSERT(matter_parse_manual_pairing_code("3497-011-2332", &parsed_info) == MATTER_OK,
-                "matter_parse_manual_pairing_code parses '3497-011-2332'");
-    TEST_ASSERT(parsed_info.discriminator == 3840U, "Parsed discriminator matches 3840 (0x0F00)");
-    TEST_ASSERT(parsed_info.setup_passcode == 20202021U, "Parsed passcode matches 20202021");
-
-    memset(&parsed_info, 0, sizeof(parsed_info));
-    TEST_ASSERT(matter_parse_manual_pairing_code("34970112332", &parsed_info) == MATTER_OK,
-                "matter_parse_manual_pairing_code parses raw '34970112332'");
-    TEST_ASSERT(parsed_info.discriminator == 3840U, "Raw parsed discriminator matches 3840");
-    TEST_ASSERT(parsed_info.setup_passcode == 20202021U, "Raw parsed passcode matches 20202021");
-
-    /* Error cases */
-    TEST_ASSERT(matter_parse_manual_pairing_code("3497-011-2330", &parsed_info) == MATTER_ERR_CHECKSUM,
-                "Reject manual code with invalid checksum");
-    TEST_ASSERT(matter_parse_manual_pairing_code("12345", &parsed_info) == MATTER_ERR_INVALID_PARAM,
-                "Reject manual code with invalid length");
-
-    /* 5. Extended 21-Digit Manual Code */
-    matter_commissioning_info_t ext_cfg = {
-        .vendor_id              = 0x1234U,
-        .product_id             = 0x5678U,
-        .discriminator          = 3840U,
-        .setup_passcode         = 20202021U,
-        .commissioning_flow     = MATTER_COMMISSIONING_FLOW_USER_ACTION,
-        .discovery_capabilities = MATTER_DISCOVERY_CAP_BLE
-    };
-
-    char ext_code[MATTER_MANUAL_CODE_MAX_BUF];
-    memset(ext_code, 0, sizeof(ext_code));
-    TEST_ASSERT(matter_generate_manual_pairing_code(&ext_cfg, ext_code, sizeof(ext_code), false) == MATTER_OK,
-                "Generate 21-digit extended manual code");
-    TEST_ASSERT(strlen(ext_code) == 21U, "Extended code length is exactly 21 digits");
-
-    matter_commissioning_info_t ext_parsed;
-    memset(&ext_parsed, 0, sizeof(ext_parsed));
-    TEST_ASSERT(matter_parse_manual_pairing_code(ext_code, &ext_parsed) == MATTER_OK,
-                "Parse 21-digit extended manual code");
-    TEST_ASSERT(ext_parsed.vendor_id == 0x1234U, "Extended code parsed vendor ID matches");
-    TEST_ASSERT(ext_parsed.product_id == 0x5678U, "Extended code parsed product ID matches");
-    TEST_ASSERT(ext_parsed.discriminator == 3840U, "Extended code parsed discriminator matches");
-    TEST_ASSERT(ext_parsed.setup_passcode == 20202021U, "Extended code parsed passcode matches");
-
-    /* 6. Base38 QR Code Onboarding Payload Serialization */
-    char qr_buf[MATTER_QR_CODE_MAX_BUF];
-    memset(qr_buf, 0, sizeof(qr_buf));
-    TEST_ASSERT(matter_generate_qr_code_payload(&cfg, qr_buf, sizeof(qr_buf)) == MATTER_OK,
-                "matter_generate_qr_code_payload succeeds");
-    TEST_ASSERT(strncmp(qr_buf, "MT:", 3) == 0, "QR payload starts with 'MT:' prefix");
-    TEST_ASSERT(strlen(qr_buf) == (MATTER_QR_PREFIX_LEN + MATTER_SETUP_PAYLOAD_QR_CHARS),
-                "QR payload length is exactly 22 chars");
-
-    matter_commissioning_info_t qr_parsed;
-    memset(&qr_parsed, 0, sizeof(qr_parsed));
-    TEST_ASSERT(matter_parse_qr_code_payload(qr_buf, &qr_parsed) == MATTER_OK,
-                "matter_parse_qr_code_payload roundtrips cleanly");
-    TEST_ASSERT(qr_parsed.vendor_id == MATTER_DEFAULT_VENDOR_ID, "QR roundtrip vendor ID matches");
-    TEST_ASSERT(qr_parsed.product_id == MATTER_DEFAULT_PRODUCT_ID, "QR roundtrip product ID matches");
-    TEST_ASSERT(qr_parsed.discriminator == MATTER_DEFAULT_DISCRIMINATOR, "QR roundtrip discriminator matches");
-    TEST_ASSERT(qr_parsed.setup_passcode == MATTER_DEFAULT_PASSCODE, "QR roundtrip passcode matches");
-
-    TEST_ASSERT(matter_parse_qr_code_payload("INVALID:PAYLOAD", &qr_parsed) == MATTER_ERR_INVALID_PARAM,
-                "Reject QR payload with invalid prefix");
-
-    /* 7. SHA-256 Hash Engine Verification */
-    uint8_t digest[MATTER_SHA256_DIGEST_SIZE];
-    const uint8_t nist_abc[] = "abc";
-    /* Expected SHA-256("abc"): ba7816bf 8f01cfea 414140de 5dae2223 b00361a3 96177a9c b410ff61 f20015ad */
-    const uint8_t nist_abc_expected[MATTER_SHA256_DIGEST_SIZE] = {
-        0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea,
-        0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
-        0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c,
-        0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad
-    };
-    TEST_ASSERT(matter_crypto_sha256(nist_abc, 3U, digest) == MATTER_OK, "matter_crypto_sha256('abc') succeeds");
-    TEST_ASSERT(memcmp(digest, nist_abc_expected, MATTER_SHA256_DIGEST_SIZE) == 0,
-                "SHA-256('abc') matches NIST test vector exactly");
-
-    /* Expected SHA-256(""): e3b0c442 98fc1c14 9afbf4c8 996fb924 27ae41e4 649b934c a495991b 7852b855 */
-    const uint8_t nist_empty_expected[MATTER_SHA256_DIGEST_SIZE] = {
-        0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14,
-        0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f, 0xb9, 0x24,
-        0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c,
-        0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52, 0xb8, 0x55
-    };
-    TEST_ASSERT(matter_crypto_sha256((const uint8_t *)"", 0U, digest) == MATTER_OK, "matter_crypto_sha256('') succeeds");
-    TEST_ASSERT(memcmp(digest, nist_empty_expected, MATTER_SHA256_DIGEST_SIZE) == 0,
-                "SHA-256('') matches NIST empty string vector");
-
-    /* 8. Data Model Clusters & Commissioning FSM */
-    TEST_ASSERT(matter_init(NULL) == MATTER_OK, "matter_init succeeds");
-    TEST_ASSERT(matter_get_state() == MATTER_COMMISSIONING_STATE_READY, "Initial state is READY");
-    TEST_ASSERT(!matter_get_onoff(), "Default On/Off state is false (Off)");
-
-    TEST_ASSERT(matter_toggle_onoff() == MATTER_OK, "matter_toggle_onoff toggles to true");
-    TEST_ASSERT(matter_get_onoff(), "On/Off state is now true (On)");
-
-    TEST_ASSERT(matter_set_onoff(false) == MATTER_OK, "matter_set_onoff sets false");
-    TEST_ASSERT(!matter_get_onoff(), "On/Off state is now false");
-
-    /* Cluster Command Dispatch: Endpoint 1 On/Off Cluster */
-    uint8_t resp[4];
-    size_t resp_len = sizeof(resp);
-    TEST_ASSERT(matter_process_cluster_command(MATTER_ENDPOINT_APPLICATION, MATTER_CLUSTER_ONOFF,
-                                              MATTER_CMD_ONOFF_ON, NULL, 0U, resp, &resp_len) == MATTER_OK,
-                "Process On/Off Cluster Command ON");
-    TEST_ASSERT(matter_get_onoff(), "Cluster command turned on the light/socket");
-
-    /* Cluster Command Dispatch: Endpoint 0 General Commissioning FailSafe */
-    TEST_ASSERT(matter_process_cluster_command(MATTER_ENDPOINT_ROOT, MATTER_CLUSTER_GENERAL_COMMISSIONING,
-                                              MATTER_CMD_GENCOMM_ARM_FAILSAFE, NULL, 0U, resp, &resp_len) == MATTER_OK,
-                "Process General Commissioning ArmFailSafe");
-    TEST_ASSERT(matter_get_state() == MATTER_COMMISSIONING_STATE_ARMED_FAILSAFE,
-                "State transitioned to ARMED_FAILSAFE");
-
-    /* Complete Commissioning */
-    TEST_ASSERT(matter_process_cluster_command(MATTER_ENDPOINT_ROOT, MATTER_CLUSTER_GENERAL_COMMISSIONING,
-                                              MATTER_CMD_GENCOMM_COMMISSIONING_COMPLETE, NULL, 0U, resp, &resp_len) == MATTER_OK,
-                "Process CommissioningComplete command");
-    TEST_ASSERT(matter_get_state() == MATTER_COMMISSIONING_STATE_COMMISSIONED,
-                "State transitioned to COMMISSIONED");
-
-    matter_telemetry_t telem_final;
-    TEST_ASSERT(matter_get_telemetry(&telem_final) == MATTER_OK, "matter_get_telemetry succeeds");
-    TEST_ASSERT(telem_final.fabric_count == 1U, "Fabric count is 1 after commissioning");
-    TEST_ASSERT(telem_final.ble_reclaimed, "BLE memory reclaimed after joining fabric");
-    TEST_ASSERT(telem_final.total_commands_processed >= 3U, "Telemetry records processed cluster commands");
-
-    /* Transport switching */
-    TEST_ASSERT(matter_set_transport(MATTER_TRANSPORT_THREAD) == MATTER_OK, "Set Thread transport");
-    TEST_ASSERT(matter_get_transport() == MATTER_TRANSPORT_THREAD, "Active transport is Thread");
-
-    TEST_ASSERT(matter_reset() == MATTER_OK, "matter_reset resets subsystem");
-    TEST_ASSERT(matter_get_state() == MATTER_COMMISSIONING_STATE_READY, "State after reset is READY");
 }
 
 static void test_shell_subsystem(void)
@@ -5027,7 +4557,6 @@ int main(void)
     test_gdma_subsystem();
     test_modem_subsystem();
     test_lp_wdt_subsystem();
-    test_ble_gatt_subsystem();
     test_wifi_mac_subsystem();
     test_wifi_custom_stack_refactor();
     test_ieee802154_subsystem();
@@ -5036,7 +4565,6 @@ int main(void)
     test_dhcp_dns_subsystem();
     test_softap_dns_modes();
     test_speedtest_subsystem();
-    test_matter_subsystem();
     test_shell_subsystem();
     test_efuse_subsystem();
     test_soak_anti_starvation_subsystem();

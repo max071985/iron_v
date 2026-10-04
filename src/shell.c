@@ -2046,6 +2046,10 @@ void FLASH_TEXT_ATTR shell_execute(char *input_buffer)
             }
             console_puts("\r\n");
         }
+        else if (strncmp(subcmd, "timers", 6) == 0)
+        {
+            wifi_os_adapter_print_timers();
+        }
         else if (strncmp(subcmd, "ring", 4) == 0)
         {
             uint32_t visited = 0;
@@ -2358,6 +2362,9 @@ void FLASH_TEXT_ATTR shell_execute(char *input_buffer)
             console_puts("  TX Errors:         ");
             put_dec(wt.tx_errors);
             console_puts("\r\n");
+            console_puts("  AP Inactive Time:  ");
+            put_dec(wifi_get_inactive_time_s(WIFI_TX_IF_AP));
+            console_puts(" s\r\n");
             console_puts("  ISR 1 Count:       ");
             put_dec(interrupt_get_count(1));
             console_puts("\r\n");

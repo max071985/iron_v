@@ -74,6 +74,7 @@ static wifi_telemetry_t s_wifi_telemetry = {
 
 static bool s_wifi_initialized = false;
 
+
 #if !defined(__riscv)
 static uint8_t s_host_last_tx[PACKET_BUFFER_SIZE];
 static uint16_t s_host_last_tx_len = 0U;
@@ -1301,6 +1302,20 @@ wifi_status_t wifi_stop_ap(void)
 bool wifi_is_ap_active(void)
 {
     return s_wifi_ap_running || (s_wifi_telemetry.state == WIFI_STATE_AP_ACTIVE);
+}
+
+uint16_t wifi_get_inactive_time_s(wifi_tx_if_t ifx)
+{
+    uint16_t sec = 0U;
+#if defined(__riscv)
+    if (s_vendor_wifi_inited && esp_wifi_get_inactive_time((wifi_interface_t)ifx, &sec) != 0)
+    {
+        sec = 0U;
+    }
+#else
+    (void)ifx;
+#endif
+    return sec;
 }
 
 const char *wifi_get_ap_ssid(void)

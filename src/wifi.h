@@ -205,6 +205,8 @@ uint32_t wifi_get_tx_cca_start_ts(void);
 wifi_status_t wifi_start_ap(const char *ssid, const char *password, uint8_t channel);
 wifi_status_t wifi_stop_ap(void);
 bool wifi_is_ap_active(void);
+/* Seconds of station silence before the blob deauths it (0 if unavailable) */
+uint16_t wifi_get_inactive_time_s(wifi_tx_if_t ifx);
 const char *wifi_get_ap_ssid(void);
 uint8_t wifi_get_ap_channel(void);
 

@@ -878,6 +878,7 @@ typedef struct {
     uint32_t      period_us;     /* Period in microseconds */
     bool          repeat;        /* Periodic timer */
     bool          active;        /* Arm status */
+    uint32_t      fires;         /* Callback invocations (diagnostics) */
 } wifi_timer_tracker_t;
 
 static wifi_timer_tracker_t s_timer_trackers[WIFI_MAX_ACTIVE_TIMERS];
@@ -1049,6 +1050,26 @@ static void wifi_timer_invalidate_handle(void *ptr)
     }
 }
 
+/* Shell diagnostics: one line per tracked blob timer */
+void wifi_os_adapter_print_timers(void)
+{
+    console_puts("slot fn         period_us  rep act fires\r\n");
+    for (uint32_t i = 0U; i < WIFI_MAX_ACTIVE_TIMERS; i++)
+    {
+        const wifi_timer_tracker_t *t = &s_timer_trackers[i];
+        if (t->timer_handle == NULL) continue;
+        put_dec(i);
+        console_puts("    ");
+        put_hex((uint32_t)(uintptr_t)t->fn);
+        console_puts(" ");
+        put_dec(t->period_us);
+        console_puts(t->repeat ? " R" : " -");
+        console_puts(t->active ? " A " : " - ");
+        put_dec(t->fires);
+        console_puts("\r\n");
+    }
+}
+
 static bool s_in_poll = false;
 void wifi_os_adapter_poll(void)
 {
@@ -1080,6 +1101,7 @@ void wifi_os_adapter_poll(void)
                 s_timer_trackers[i].active = false;
             }
 
+            s_timer_trackers[i].fires++;
             interrupt_global_restore(prev);
 
             if (is_valid_instruction_address((uintptr_t)fn))
@@ -1908,6 +1930,7 @@ void console_puts(const char *s) { (void)s; }
 void put_hex(uint32_t val) { (void)val; }
 void put_dec(uint32_t val) { (void)val; }
 void wifi_os_adapter_poll(void) {}
+void wifi_os_adapter_print_timers(void) {}
 void wifi_os_adapter_register_wpa_stubs(void) {}
 static void wifi_timer_invalidate_handle(void *ptr) { (void)ptr; }
 

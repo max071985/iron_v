@@ -23,6 +23,7 @@ extern "C" {
 /* OSAL Subsystem lifecycle */
 void wifi_os_adapter_init(void);
 void wifi_os_adapter_poll(void);
+void wifi_os_adapter_print_timers(void);
 
 /* OSAL Static Arena telemetry query */
 void wifi_os_adapter_get_heap_stats(size_t *used_bytes, size_t *free_bytes, size_t *peak_bytes);

@@ -1,0 +1,20 @@
+Espressif ESP32-C6 closed-source radio libraries, vendored unmodified.
+
+libnet80211.a, libpp.a, libcore.a
+  Source:  https://github.com/espressif/esp32-wifi-lib
+  Commit:  dda243ecef8005c7499448569b3800ebe462fb2b (master, 2026-09-04)
+           "feat(coex): support phy grant protect (5c2a13a4)"
+  Build ID printed at boot: "wifi firmware version: 5c2a13a"
+
+libphy.a, libbtbb.a
+  Source:  https://github.com/espressif/esp-phy-lib
+  Commit:  5695f4f38108658bc4a33e4712c1ebcb34911434 (2026-07-22)
+           "C6 phy_version: 345, 552b044, Jul 14 2026"
+
+License: Espressif binary libraries, distributed under the terms in the source
+repositories above.
+
+Do not patch these files. Earlier copies carried two undocumented 4-byte
+binary patches (libpp.a hal_mac.o: hal_init MAC-ready wait removed; libphy.a
+phy_rx_cal.o: ram_iq_est_enable wait removed). The second disabled RX IQ
+calibration and left the receiver deaf. Verify with:  sha256sum -c SHA256SUMS

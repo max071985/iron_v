@@ -1,18 +1,30 @@
-*.bin
-*.elf
+# Build outputs
 *.o
+*.d
+*.elf
+*.bin
 *.pdf
-.agent
-.*
-tests/test_freestanding
-gen_headers.py
-*.md
-docs
-scripts
-context**:Zone.Identifier
-context*
--l
-arch_cmds
-src/config_local.h
+/build/
+/tests/test_freestanding
 __pycache__/
 *.pyc
+
+# Local secrets and overrides
+/src/config_local.h
+
+# Local-only documentation (intentionally untracked)
+/docs/
+
+# Local-only agent configuration (Antigravity and Claude Code)
+/AGENTS.md
+/CLAUDE.md
+/.agents/
+/.claude/
+/.mcp.json
+
+# Local Python environment
+/.venv/
+
+# Scripts: only build-relevant generators are tracked
+/scripts/*
+!/scripts/gen_headers.py

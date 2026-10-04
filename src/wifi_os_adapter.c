@@ -1745,8 +1745,8 @@ struct wpa_funcs {
     int (*wpa_config_bss)(uint8_t *bssid);
     int (*wpa_michael_mic_failure)(uint16_t is_unicast);
     uint8_t *(*wpa3_build_sae_msg)(uint8_t *bssid, uint32_t type, size_t *len);
-    int (*wpa3_parse_sae_msg)(uint8_t *bssid, uint8_t *buffer, size_t len, uint32_t type, uint16_t status);
-    int (*wpa3_hostap_handle_auth)(uint8_t *bssid, uint8_t *buffer, size_t len, uint32_t type);
+    int (*wpa3_parse_sae_msg)(uint8_t *buf, size_t len, uint32_t type, uint16_t status);
+    int (*wpa3_hostap_handle_auth)(uint8_t *buf, size_t len, uint32_t type, uint16_t status, uint8_t *bssid);
     int (*wpa_sta_rx_mgmt)(uint8_t type, uint8_t *frame, size_t len, uint8_t *sender, int8_t rssi, uint8_t channel, uint64_t current_tsf);
     void (*wpa_config_done)(void);
     uint8_t *(*owe_build_dhie)(uint16_t group);
@@ -1755,6 +1755,10 @@ struct wpa_funcs {
     void (*wpa_config_reload)(void);
     int (*wpa_parse_wpa_ie_scan_only)(const uint8_t *wpa_ie, size_t wpa_ie_len, wifi_wpa_ie_t *data);
 };
+#if defined(__riscv)
+/* Same 28 slots in the same order as ESP-IDF 66ab063a9a7f esp_wifi_driver.h */
+_Static_assert(sizeof(struct wpa_funcs) == 112U, "struct wpa_funcs: 28 callbacks");
+#endif
 
 extern int esp_wifi_register_wpa_cb_internal(struct wpa_funcs *cb);
 

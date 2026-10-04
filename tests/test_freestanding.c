@@ -2042,8 +2042,8 @@ static void test_wifi_custom_stack_refactor(void)
     /* 5. Vendor Types, ABI Compatibility & OSAL Constants Verification */
     TEST_ASSERT(ESP_WIFI_OS_ADAPTER_VERSION == 0x00000009U, "ESP_WIFI_OS_ADAPTER_VERSION matches ABI");
     TEST_ASSERT(ESP_WIFI_OS_ADAPTER_MAGIC == 0xDEADBEAFU, "ESP_WIFI_OS_ADAPTER_MAGIC matches ABI");
-    TEST_ASSERT(WPA_CRYPTO_FUNCS_NUM == 11U, "WPA crypto function pointer slot count is 11");
-    TEST_ASSERT(sizeof(wpa_crypto_funcs_t) == (sizeof(uint32_t) * 2U + sizeof(void *) * WPA_CRYPTO_FUNCS_NUM), "wpa_crypto_funcs_t ABI layout matches");
+    TEST_ASSERT(offsetof(wpa_crypto_funcs_t, hmac_sha256_vector) == sizeof(uint32_t) * 2U, "wpa_crypto_funcs_t callbacks follow size and version");
+    TEST_ASSERT(offsetof(wpa_crypto_funcs_t, aes_unwrap) == offsetof(wpa_crypto_funcs_t, hmac_sha256_vector) + sizeof(void *) * 10U, "wpa_crypto_funcs_t has 11 callbacks in ESP-IDF order");
     TEST_ASSERT(WIFI_CSI_DISABLED == 0, "WIFI_CSI_DISABLED zero constant verified");
     TEST_ASSERT(WIFI_AMSDU_TX_DISABLED == 0, "WIFI_AMSDU_TX_DISABLED zero constant verified");
     TEST_ASSERT(WIFI_NVS_DISABLED == 0, "WIFI_NVS_DISABLED zero constant verified");

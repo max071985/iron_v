@@ -90,12 +90,43 @@ typedef void*     QueueHandle_t;
 /* Cryptographic Provider Callback Structure (wpa_crypto_funcs_t)            */
 /* ========================================================================= */
 #define ESP_WIFI_CRYPTO_VERSION         0x00000001
-#define WPA_CRYPTO_FUNCS_NUM            11U
 
+/* Callback types and order from ESP-IDF 66ab063a9a7f components/esp_wifi/include/esp_wifi_crypto_types.h */
+typedef int (*esp_hmac_sha256_vector_t)(const unsigned char *key, int key_len, int num_elem,
+                                        const unsigned char *addr[], const int *len, unsigned char *mac);
+typedef int (*esp_pbkdf2_sha1_t)(const char *passphrase, const char *ssid, unsigned int ssid_len,
+                                 int iterations, unsigned char *buf, unsigned int buflen);
+typedef int (*esp_aes_128_encrypt_t)(const unsigned char *key, const unsigned char *iv, unsigned char *data, int data_len);
+typedef int (*esp_aes_128_decrypt_t)(const unsigned char *key, const unsigned char *iv, unsigned char *data, int data_len);
+typedef int (*esp_omac1_aes_128_t)(const uint8_t *key, const uint8_t *data, size_t data_len, uint8_t *mic);
+typedef uint8_t *(*esp_ccmp_decrypt_t)(const uint8_t *tk, const uint8_t *ieee80211_hdr, const uint8_t *data,
+                                       size_t data_len, size_t *decrypted_len, bool espnow_pkt);
+typedef uint8_t *(*esp_ccmp_encrypt_t)(const uint8_t *tk, uint8_t *frame, size_t len, size_t hdrlen,
+                                       uint8_t *pn, int keyid, size_t *encrypted_len);
+typedef int (*esp_aes_gmac_t)(const uint8_t *key, size_t keylen, const uint8_t *iv, size_t iv_len,
+                              const uint8_t *aad, size_t aad_len, uint8_t *mic);
+typedef int (*esp_sha256_vector_t)(size_t num_elem, const uint8_t *addr[], const size_t *len, uint8_t *buf);
+typedef int (*esp_aes_wrap_t)(const unsigned char *kek, size_t kek_len, int n, const unsigned char *plain, unsigned char *cipher);
+typedef int (*esp_aes_unwrap_t)(const unsigned char *kek, size_t kek_len, int n, const unsigned char *cipher, unsigned char *plain);
+
+/* All callbacks are left NULL (g_wifi_default_wpa_crypto_funcs). The supplicant is
+ * src/wpa2_client.c and PMF, WPA3/SAE, FT and ESP-NOW are not used, so WPA2-PSK is not
+ * expected to reach them; not yet verified on a real join (REV-10/11). A call would
+ * fault on address 0 and show in the trap dump. */
 typedef struct wpa_crypto_funcs_t {
     uint32_t size;
     uint32_t version;
-    void *funcs[WPA_CRYPTO_FUNCS_NUM];
+    esp_hmac_sha256_vector_t hmac_sha256_vector;
+    esp_pbkdf2_sha1_t pbkdf2_sha1;
+    esp_aes_128_encrypt_t aes_128_encrypt;
+    esp_aes_128_decrypt_t aes_128_decrypt;
+    esp_omac1_aes_128_t omac1_aes_128;
+    esp_ccmp_decrypt_t ccmp_decrypt;
+    esp_ccmp_encrypt_t ccmp_encrypt;
+    esp_aes_gmac_t aes_gmac;
+    esp_sha256_vector_t sha256_vector;
+    esp_aes_wrap_t aes_wrap;
+    esp_aes_unwrap_t aes_unwrap;
 } wpa_crypto_funcs_t;
 
 extern const wpa_crypto_funcs_t g_wifi_default_wpa_crypto_funcs;
@@ -298,6 +329,21 @@ typedef struct {
     int                    wifi_task_stack_size;
     int                    magic;
 } wifi_init_config_t;
+
+/* ABI layout checks against ESP-IDF 66ab063a9a7f (pins the blobs in libs/esp32c6/VERSION).
+ * Expected values are the RV32 ILP32 layout of the upstream definitions. */
+#if defined(__riscv)
+#include <stddef.h>
+_Static_assert(sizeof(wpa_crypto_funcs_t) == 52U, "wpa_crypto_funcs_t: 2 words + 11 callbacks");
+_Static_assert(sizeof(wifi_osi_funcs_t) == 508U, "wifi_osi_funcs_t: _version + 125 callbacks + _magic");
+_Static_assert(offsetof(wifi_osi_funcs_t, _magic) == 504U, "wifi_osi_funcs_t: _magic is the last word");
+_Static_assert(offsetof(wifi_init_config_t, wpa_crypto_funcs) == 4U, "wifi_init_config_t layout");
+_Static_assert(offsetof(wifi_init_config_t, static_rx_buf_num) == 56U, "wifi_init_config_t layout");
+_Static_assert(offsetof(wifi_init_config_t, feature_caps) == 128U, "wifi_init_config_t layout");
+_Static_assert(offsetof(wifi_init_config_t, wifi_task_stack_size) == 152U, "wifi_init_config_t layout");
+_Static_assert(offsetof(wifi_init_config_t, magic) == 156U, "wifi_init_config_t layout");
+_Static_assert(sizeof(wifi_init_config_t) == 160U, "wifi_init_config_t size");
+#endif
 
 #define WIFI_INIT_CONFIG_DEFAULT() { \
     .osi_funcs = &g_wifi_osi_funcs, \

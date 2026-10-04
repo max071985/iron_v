@@ -22,14 +22,6 @@
 extern "C" {
 #endif
 
-#if defined(__riscv)
-#define MDNS_FLASH_TEXT   __attribute__((section(".flash.text")))
-#define MDNS_FLASH_RODATA __attribute__((section(".flash.rodata")))
-#else
-#define MDNS_FLASH_TEXT
-#define MDNS_FLASH_RODATA
-#endif
-
 /* ========================================================================= */
 /* Protocol Constants & Geometry                                             */
 /* ========================================================================= */
@@ -90,20 +82,20 @@ typedef struct {
 /* ========================================================================= */
 
 /* Subsystem Lifecycle */
-mdns_status_t mdns_init(void) MDNS_FLASH_TEXT;
-mdns_status_t mdns_start(const char *hostname) MDNS_FLASH_TEXT;
-mdns_status_t mdns_stop(void) MDNS_FLASH_TEXT;
-bool          mdns_is_active(void) MDNS_FLASH_TEXT;
-const char   *mdns_get_hostname(void) MDNS_FLASH_TEXT;
-mdns_status_t mdns_set_hostname(const char *hostname) MDNS_FLASH_TEXT;
+mdns_status_t mdns_init(void);
+mdns_status_t mdns_start(const char *hostname);
+mdns_status_t mdns_stop(void);
+bool          mdns_is_active(void);
+const char   *mdns_get_hostname(void);
+mdns_status_t mdns_set_hostname(const char *hostname);
 
 /* Network Processing & Advertising */
-mdns_status_t mdns_process_packet(const uint8_t *eth_frame, const uint8_t *payload, uint16_t len) MDNS_FLASH_TEXT;
-mdns_status_t mdns_announce(void) MDNS_FLASH_TEXT;
-mdns_status_t mdns_get_telemetry(mdns_telemetry_t *out_telem) MDNS_FLASH_TEXT;
+mdns_status_t mdns_process_packet(const uint8_t *eth_frame, const uint8_t *payload, uint16_t len);
+mdns_status_t mdns_announce(void);
+mdns_status_t mdns_get_telemetry(mdns_telemetry_t *out_telem);
 
 /* Diagnostic Visualizer (Flash XIP) */
-void mdns_print_status(void) MDNS_FLASH_TEXT;
+void mdns_print_status(void);
 
 #ifdef __cplusplus
 }

@@ -14,6 +14,7 @@
  */
 
 #include "wpa2_client.h"
+#include "section.h"
 #include "wifi.h"
 #include "net.h"
 #include "dhcp.h"
@@ -48,7 +49,7 @@ static bool             s_wpa2_initialized = false;
 /* ========================================================================= */
 /* Flash XIP Constant Tables (.flash.rodata)                                 */
 /* ========================================================================= */
-static const uint8_t s_aes_sbox[256] WPA2_FLASH_RODATA = {
+static const uint8_t s_aes_sbox[256] FLASH_RODATA_ATTR = {
     0x63U, 0x7CU, 0x77U, 0x7BU, 0xF2U, 0x6BU, 0x6FU, 0xC5U, 0x30U, 0x01U, 0x67U, 0x2BU, 0xFEU, 0xD7U, 0xABU, 0x76U,
     0xCAU, 0x82U, 0xC9U, 0x7DU, 0xFAU, 0x59U, 0x47U, 0xF0U, 0xADU, 0xD4U, 0xA2U, 0xAFU, 0x9CU, 0xA4U, 0x72U, 0xC0U,
     0xB7U, 0xFDU, 0x93U, 0x26U, 0x36U, 0x3FU, 0xF7U, 0xCCU, 0x34U, 0xA5U, 0xE5U, 0xF1U, 0x71U, 0xD8U, 0x31U, 0x15U,
@@ -67,7 +68,7 @@ static const uint8_t s_aes_sbox[256] WPA2_FLASH_RODATA = {
     0x8CU, 0xA1U, 0x89U, 0x0DU, 0xBFU, 0xE6U, 0x42U, 0x68U, 0x41U, 0x99U, 0x2DU, 0x0FU, 0xB0U, 0x54U, 0xBBU, 0x16U
 };
 
-static const uint8_t s_aes_inv_sbox[256] WPA2_FLASH_RODATA = {
+static const uint8_t s_aes_inv_sbox[256] FLASH_RODATA_ATTR = {
     0x52U, 0x09U, 0x6AU, 0xD5U, 0x30U, 0x36U, 0xA5U, 0x38U, 0xBFU, 0x40U, 0xA3U, 0x9EU, 0x81U, 0xF3U, 0xD7U, 0xFBU,
     0x7CU, 0xE3U, 0x39U, 0x82U, 0x9BU, 0x2FU, 0xFFU, 0x87U, 0x34U, 0x8EU, 0x43U, 0x44U, 0xC4U, 0xDEU, 0xE9U, 0xCBU,
     0x54U, 0x7BU, 0x94U, 0x32U, 0xA6U, 0xC2U, 0x23U, 0x3DU, 0xEEU, 0x4CU, 0x95U, 0x0BU, 0x42U, 0xFAU, 0xC3U, 0x4EU,
@@ -86,12 +87,12 @@ static const uint8_t s_aes_inv_sbox[256] WPA2_FLASH_RODATA = {
     0x17U, 0x2BU, 0x04U, 0x7EU, 0xBAU, 0x77U, 0xD6U, 0x26U, 0xE1U, 0x69U, 0x14U, 0x63U, 0x55U, 0x21U, 0x0CU, 0x7DU
 };
 
-static const uint8_t s_aes_rcon[11] WPA2_FLASH_RODATA = {
+static const uint8_t s_aes_rcon[11] FLASH_RODATA_ATTR = {
     0x00U, 0x01U, 0x02U, 0x04U, 0x08U, 0x10U, 0x20U, 0x40U, 0x80U, 0x1BU, 0x36U
 };
 
 /* Standard 802.11i RSN IE (WPA2 CCMP, PSK) */
-static const uint8_t s_wpa2_rsn_ie[] WPA2_FLASH_RODATA = {
+static const uint8_t s_wpa2_rsn_ie[] FLASH_RODATA_ATTR = {
     0x30U, 0x14U,                   /* Element ID = 48 (RSN), Length = 20 */
     0x01U, 0x00U,                   /* Version = 1 */
     0x00U, 0x0FU, 0xACU, 0x04U,     /* Group Cipher Suite: 00-0F-AC-04 (CCMP) */
@@ -113,7 +114,6 @@ typedef struct {
 
 #define SHA1_ROTL(x, n) (((x) << (n)) | ((x) >> (32U - (n))))
 
-WPA2_FLASH_TEXT
 static void wpa2_sha1_transform(uint32_t state[5], const uint8_t buffer[64])
 {
     uint32_t a = state[0], b = state[1], c = state[2], d = state[3], e = state[4];
@@ -163,7 +163,6 @@ static void wpa2_sha1_transform(uint32_t state[5], const uint8_t buffer[64])
     state[0] += a; state[1] += b; state[2] += c; state[3] += d; state[4] += e;
 }
 
-WPA2_FLASH_TEXT
 static void wpa2_sha1_init(wpa2_sha1_ctx_t *ctx)
 {
     ctx->state[0] = 0x67452301U;
@@ -175,7 +174,6 @@ static void wpa2_sha1_init(wpa2_sha1_ctx_t *ctx)
     ctx->count[1] = 0U;
 }
 
-WPA2_FLASH_TEXT
 static void wpa2_sha1_update(wpa2_sha1_ctx_t *ctx, const uint8_t *data, size_t len)
 {
     size_t i = 0U;
@@ -199,7 +197,6 @@ static void wpa2_sha1_update(wpa2_sha1_ctx_t *ctx, const uint8_t *data, size_t l
     memcpy(&ctx->buffer[j], &data[i], len - i);
 }
 
-WPA2_FLASH_TEXT
 static void wpa2_sha1_final(wpa2_sha1_ctx_t *ctx, uint8_t digest[20])
 {
     uint8_t finalcount[8];
@@ -219,7 +216,6 @@ static void wpa2_sha1_final(wpa2_sha1_ctx_t *ctx, uint8_t digest[20])
     }
 }
 
-WPA2_FLASH_TEXT
 static void wpa2_hmac_sha1(const uint8_t *key, size_t key_len,
                            const uint8_t *data, size_t data_len,
                            uint8_t digest[20])
@@ -263,13 +259,11 @@ static void wpa2_hmac_sha1(const uint8_t *key, size_t key_len,
 /* ========================================================================= */
 /* Cryptographic Subsystem: Freestanding AES-128 ECB (.flash.text)           */
 /* ========================================================================= */
-WPA2_FLASH_TEXT
 static uint8_t aes_xtime(uint8_t b)
 {
     return (uint8_t)((b << 1U) ^ ((b & 0x80U) ? 0x1BU : 0x00U));
 }
 
-WPA2_FLASH_TEXT
 static void aes_key_expand(const uint8_t key[16], uint8_t w[176])
 {
     memcpy(w, key, 16);
@@ -292,7 +286,6 @@ static void aes_key_expand(const uint8_t key[16], uint8_t w[176])
     }
 }
 
-WPA2_FLASH_TEXT
 static void __attribute__((unused)) aes_128_encrypt_block(const uint8_t key[16], const uint8_t in[16], uint8_t out[16])
 {
     uint8_t w[176];
@@ -333,20 +326,17 @@ static void __attribute__((unused)) aes_128_encrypt_block(const uint8_t key[16],
     memcpy(out, s, 16);
 }
 
-WPA2_FLASH_TEXT
 static inline uint8_t aes_mul9(uint8_t x)
 {
     return aes_xtime(aes_xtime(aes_xtime(x))) ^ x;
 }
 
-WPA2_FLASH_TEXT
 static inline uint8_t aes_mulb(uint8_t x)
 {
     uint8_t x2 = aes_xtime(x);
     return aes_xtime(aes_xtime(x2)) ^ x2 ^ x;
 }
 
-WPA2_FLASH_TEXT
 static inline uint8_t aes_muld(uint8_t x)
 {
     uint8_t x2 = aes_xtime(x);
@@ -354,7 +344,6 @@ static inline uint8_t aes_muld(uint8_t x)
     return aes_xtime(x4) ^ x4 ^ x;
 }
 
-WPA2_FLASH_TEXT
 static inline uint8_t aes_mule(uint8_t x)
 {
     uint8_t x2 = aes_xtime(x);
@@ -362,7 +351,6 @@ static inline uint8_t aes_mule(uint8_t x)
     return aes_xtime(x4) ^ x4 ^ x2;
 }
 
-WPA2_FLASH_TEXT
 static void aes_128_decrypt_block(const uint8_t key[16], const uint8_t in[16], uint8_t out[16])
 {
     uint8_t w[176];
@@ -405,7 +393,6 @@ static void aes_128_decrypt_block(const uint8_t key[16], const uint8_t in[16], u
 /* ========================================================================= */
 /* Public Cryptographic Engine APIs (.flash.text)                            */
 /* ========================================================================= */
-WPA2_FLASH_TEXT
 wpa2_status_t wpa2_crypto_pbkdf2_sha1(const char *passphrase, const char *ssid,
                                      uint32_t iterations, uint8_t *out_pmk)
 {
@@ -471,7 +458,6 @@ wpa2_status_t wpa2_crypto_pbkdf2_sha1(const char *passphrase, const char *ssid,
     return WPA2_OK;
 }
 
-WPA2_FLASH_TEXT
 wpa2_status_t wpa2_crypto_prf512(const uint8_t *pmk, const uint8_t *mac1, const uint8_t *mac2,
                                  const uint8_t *nonce1, const uint8_t *nonce2,
                                  wpa2_ptk_t *out_ptk)
@@ -531,7 +517,6 @@ wpa2_status_t wpa2_crypto_prf512(const uint8_t *pmk, const uint8_t *mac1, const 
     return WPA2_OK;
 }
 
-WPA2_FLASH_TEXT
 wpa2_status_t wpa2_crypto_compute_mic(const uint8_t *kck, const uint8_t *eapol_frame,
                                       uint16_t frame_len, uint8_t *out_mic)
 {
@@ -563,7 +548,6 @@ wpa2_status_t wpa2_crypto_compute_mic(const uint8_t *kck, const uint8_t *eapol_f
     return WPA2_OK;
 }
 
-WPA2_FLASH_TEXT
 wpa2_status_t wpa2_crypto_aes_unwrap(const uint8_t *kek, const uint8_t *wrapped,
                                      uint16_t wrapped_len, uint8_t *out_plain,
                                      uint16_t *out_plain_len)
@@ -628,7 +612,6 @@ wpa2_status_t wpa2_crypto_aes_unwrap(const uint8_t *kek, const uint8_t *wrapped,
     return WPA2_OK;
 }
 
-WPA2_FLASH_TEXT
 wpa2_status_t wpa2_crypto_aes_wrap(const uint8_t *kek, const uint8_t *plain,
                                    uint16_t plain_len, uint8_t *out_wrapped,
                                    uint16_t *out_wrapped_len)
@@ -680,7 +663,6 @@ wpa2_status_t wpa2_crypto_aes_wrap(const uint8_t *kek, const uint8_t *plain,
     return WPA2_OK;
 }
 
-WPA2_FLASH_TEXT
 wpa2_status_t wpa2_client_get_ptk(wpa2_ptk_t *out_ptk)
 {
     if (out_ptk == NULL || !s_wpa2_telem.has_ptk)
@@ -694,7 +676,6 @@ wpa2_status_t wpa2_client_get_ptk(wpa2_ptk_t *out_ptk)
 /* ========================================================================= */
 /* 802.11i 4-Way Handshake Processing Logic (.flash.text)                    */
 /* ========================================================================= */
-WPA2_FLASH_TEXT
 static void wpa2_generate_snonce(uint8_t snonce[WPA2_NONCE_LEN])
 {
     uint64_t t = systimer_get_us();
@@ -705,7 +686,6 @@ static void wpa2_generate_snonce(uint8_t snonce[WPA2_NONCE_LEN])
     }
 }
 
-WPA2_FLASH_TEXT
 wpa2_status_t wpa2_client_rx_eapol(const uint8_t *src_mac, const uint8_t *frame, uint16_t len)
 {
     if (src_mac == NULL || frame == NULL || len < (sizeof(eapol_ethernet_hdr_t) + sizeof(eapol_key_header_t)))
@@ -886,7 +866,6 @@ wpa2_status_t wpa2_client_rx_eapol(const uint8_t *src_mac, const uint8_t *frame,
     return WPA2_OK;
 }
 
-WPA2_FLASH_TEXT
 void wpa2_client_on_connected(const uint8_t *bssid)
 {
     if (bssid != NULL)
@@ -901,7 +880,6 @@ void wpa2_client_on_connected(const uint8_t *bssid)
     }
 }
 
-WPA2_FLASH_TEXT
 void wpa2_client_on_disconnected(uint8_t reason)
 {
     (void)reason;
@@ -911,7 +889,6 @@ void wpa2_client_on_disconnected(uint8_t reason)
     s_wpa2_telem.has_gtk = false;
 }
 
-WPA2_FLASH_TEXT
 wpa2_status_t wpa2_client_configure(const char *ssid, const char *passphrase)
 {
     if (ssid == NULL || passphrase == NULL)
@@ -954,7 +931,6 @@ wpa2_status_t wpa2_client_configure(const char *ssid, const char *passphrase)
     return pst;
 }
 
-WPA2_FLASH_TEXT
 wpa2_status_t wpa2_client_handover_chan(const char *ssid, const char *passphrase, uint8_t channel)
 {
     wpa2_status_t cst = wpa2_client_configure(ssid, passphrase);
@@ -989,13 +965,11 @@ wpa2_status_t wpa2_client_handover_chan(const char *ssid, const char *passphrase
     return WPA2_OK;
 }
 
-WPA2_FLASH_TEXT
 wpa2_status_t wpa2_client_handover(const char *ssid, const char *passphrase)
 {
     return wpa2_client_handover_chan(ssid, passphrase, 0U);
 }
 
-WPA2_FLASH_TEXT
 void wpa2_client_print_status(void)
 {
 #if defined(__riscv)
@@ -1041,7 +1015,6 @@ void wpa2_client_print_status(void)
 #endif
 }
 
-WPA2_FLASH_TEXT
 const char *wpa2_state_to_str(wpa2_state_t state)
 {
     switch (state)
@@ -1061,7 +1034,6 @@ const char *wpa2_state_to_str(wpa2_state_t state)
 /* ========================================================================= */
 /* Core Lifecycle APIs (.flash.text)                                         */
 /* ========================================================================= */
-WPA2_FLASH_TEXT
 wpa2_status_t wpa2_client_init(void)
 {
     s_wpa2_state = WPA2_STATE_DISCONNECTED;
@@ -1087,7 +1059,6 @@ wpa2_status_t wpa2_client_init(void)
     return WPA2_OK;
 }
 
-WPA2_FLASH_TEXT
 wpa2_status_t wpa2_client_start(void)
 {
     if (!s_wpa2_initialized)
@@ -1099,7 +1070,6 @@ wpa2_status_t wpa2_client_start(void)
     return WPA2_OK;
 }
 
-WPA2_FLASH_TEXT
 wpa2_status_t wpa2_client_stop(void)
 {
     s_wpa2_state = WPA2_STATE_DISCONNECTED;
@@ -1107,25 +1077,21 @@ wpa2_status_t wpa2_client_stop(void)
     return WPA2_OK;
 }
 
-WPA2_FLASH_TEXT
 wpa2_state_t wpa2_client_get_state(void)
 {
     return s_wpa2_state;
 }
 
-WPA2_FLASH_TEXT
 bool wpa2_client_is_in_4way(void)
 {
     return (s_wpa2_state >= WPA2_STATE_4WAY_M1_RECEIVED && s_wpa2_state <= WPA2_STATE_4WAY_M4_SENT);
 }
 
-WPA2_FLASH_TEXT
 bool wpa2_client_is_authenticated(void)
 {
     return (s_wpa2_state == WPA2_STATE_AUTHENTICATED);
 }
 
-WPA2_FLASH_TEXT
 wpa2_status_t wpa2_client_get_telemetry(wpa2_telemetry_t *out_telem)
 {
     if (out_telem == NULL)

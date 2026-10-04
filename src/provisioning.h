@@ -20,12 +20,6 @@
 extern "C" {
 #endif
 
-#if defined(__riscv)
-#define PROV_FLASH_TEXT __attribute__((section(".flash.text")))
-#else
-#define PROV_FLASH_TEXT
-#endif
-
 /* ========================================================================= */
 /* Provisioning Limits & Sizing Constants                                    */
 /* ========================================================================= */

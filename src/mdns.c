@@ -40,7 +40,6 @@ typedef struct {
 /* ========================================================================= */
 /* Internal Helper Routines (.flash.text)                                    */
 /* ========================================================================= */
-MDNS_FLASH_TEXT
 static char mdns_tolower(char c)
 {
     if (c >= 'A' && c <= 'Z')
@@ -50,7 +49,6 @@ static char mdns_tolower(char c)
     return c;
 }
 
-MDNS_FLASH_TEXT
 static bool mdns_strcasecmp(const char *s1, const char *s2)
 {
     while (*s1 && *s2)
@@ -65,7 +63,6 @@ static bool mdns_strcasecmp(const char *s1, const char *s2)
     return (*s1 == '\0' && *s2 == '\0');
 }
 
-MDNS_FLASH_TEXT
 static size_t mdns_encode_name(const char *hostname, uint8_t *out_buf, size_t max_len)
 {
     size_t host_len = strlen(hostname);
@@ -95,7 +92,6 @@ static size_t mdns_encode_name(const char *hostname, uint8_t *out_buf, size_t ma
     return pos;
 }
 
-MDNS_FLASH_TEXT
 static bool mdns_parse_query_name(const uint8_t *packet, size_t packet_len,
                                   size_t *inout_offset, char *out_name, size_t max_name_len)
 {
@@ -157,7 +153,6 @@ static bool mdns_parse_query_name(const uint8_t *packet, size_t packet_len,
 /* ========================================================================= */
 /* mDNS Announcement & Packet Processing (.flash.text)                       */
 /* ========================================================================= */
-MDNS_FLASH_TEXT
 mdns_status_t mdns_announce(void)
 {
     if (!s_mdns_active)
@@ -218,7 +213,6 @@ mdns_status_t mdns_announce(void)
     return MDNS_ERR_TX_FAIL;
 }
 
-MDNS_FLASH_TEXT
 mdns_status_t mdns_process_packet(const uint8_t *eth_frame, const uint8_t *payload, uint16_t len)
 {
     (void)eth_frame;
@@ -331,7 +325,6 @@ mdns_status_t mdns_process_packet(const uint8_t *eth_frame, const uint8_t *paylo
     return MDNS_OK;
 }
 
-MDNS_FLASH_TEXT
 void mdns_print_status(void)
 {
 #if defined(__riscv)
@@ -372,7 +365,6 @@ void mdns_print_status(void)
 /* ========================================================================= */
 /* Core Lifecycle APIs (.flash.text)                                         */
 /* ========================================================================= */
-MDNS_FLASH_TEXT
 mdns_status_t mdns_init(void)
 {
     memset(&s_mdns_telem, 0, sizeof(s_mdns_telem));
@@ -383,7 +375,6 @@ mdns_status_t mdns_init(void)
     return MDNS_OK;
 }
 
-MDNS_FLASH_TEXT
 mdns_status_t mdns_start(const char *hostname)
 {
     if (!s_mdns_initialized)
@@ -399,7 +390,6 @@ mdns_status_t mdns_start(const char *hostname)
     return MDNS_OK;
 }
 
-MDNS_FLASH_TEXT
 mdns_status_t mdns_stop(void)
 {
     s_mdns_active = false;
@@ -407,19 +397,16 @@ mdns_status_t mdns_stop(void)
     return MDNS_OK;
 }
 
-MDNS_FLASH_TEXT
 bool mdns_is_active(void)
 {
     return s_mdns_active;
 }
 
-MDNS_FLASH_TEXT
 const char *mdns_get_hostname(void)
 {
     return s_mdns_telem.hostname;
 }
 
-MDNS_FLASH_TEXT
 mdns_status_t mdns_set_hostname(const char *hostname)
 {
     if (hostname == NULL || strlen(hostname) == 0U || strlen(hostname) > MDNS_MAX_HOSTNAME_LEN)
@@ -430,7 +417,6 @@ mdns_status_t mdns_set_hostname(const char *hostname)
     return MDNS_OK;
 }
 
-MDNS_FLASH_TEXT
 mdns_status_t mdns_get_telemetry(mdns_telemetry_t *out_telem)
 {
     if (out_telem == NULL)

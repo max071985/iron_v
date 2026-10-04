@@ -534,7 +534,7 @@ dhcp_status_t dhcp_process_packet(const uint8_t *eth_frame, const uint8_t *paylo
 /* ========================================================================= */
 #if !CONFIG_SOFTAP_CAPTIVE_PORTAL
 /* True when the question name is CONFIG_DEVICE_HOSTNAME or <hostname>.local (case-insensitive) */
-static DHCP_FLASH_TEXT bool dns_name_is_local(const uint8_t *payload, uint16_t name_start, uint16_t name_end)
+static bool dns_name_is_local(const uint8_t *payload, uint16_t name_start, uint16_t name_end)
 {
     char name[DNS_MAX_NAME_LEN];
     uint16_t n = 0U;
@@ -563,7 +563,6 @@ static DHCP_FLASH_TEXT bool dns_name_is_local(const uint8_t *payload, uint16_t n
 }
 #endif
 
-DHCP_FLASH_TEXT
 dhcp_status_t dns_process_packet(const uint8_t *eth_frame, const uint8_t *payload, uint16_t len)
 {
     if (eth_frame == NULL || payload == NULL || len < sizeof(dns_header_t))
@@ -702,7 +701,6 @@ static dhcp_client_telemetry_t s_dhcp_client_telem;
 static bool s_dhcp_client_initialized = false;
 static uint64_t s_last_discover_us = 0ULL;
 
-DHCP_FLASH_TEXT
 static dhcp_status_t dhcp_client_send_discover(void)
 {
     /* Format DHCPDISCOVER packet */
@@ -753,7 +751,6 @@ static dhcp_status_t dhcp_client_send_discover(void)
     return st;
 }
 
-DHCP_FLASH_TEXT
 dhcp_status_t dhcp_client_init(void)
 {
     memset(&s_dhcp_client_telem, 0, sizeof(s_dhcp_client_telem));
@@ -764,7 +761,6 @@ dhcp_status_t dhcp_client_init(void)
     return DHCP_OK;
 }
 
-DHCP_FLASH_TEXT
 dhcp_status_t dhcp_client_start(void)
 {
     if (!s_dhcp_client_initialized)
@@ -779,7 +775,6 @@ dhcp_status_t dhcp_client_start(void)
     return dhcp_client_send_discover();
 }
 
-DHCP_FLASH_TEXT
 void dhcp_client_tick(void)
 {
     if (!s_dhcp_client_initialized)
@@ -803,20 +798,17 @@ void dhcp_client_tick(void)
     }
 }
 
-DHCP_FLASH_TEXT
 dhcp_status_t dhcp_client_stop(void)
 {
     s_dhcp_client_telem.state = DHCP_CLIENT_STATE_IDLE;
     return DHCP_OK;
 }
 
-DHCP_FLASH_TEXT
 dhcp_client_state_t dhcp_client_get_state(void)
 {
     return s_dhcp_client_telem.state;
 }
 
-DHCP_FLASH_TEXT
 dhcp_status_t dhcp_client_get_telemetry(dhcp_client_telemetry_t *out_telem)
 {
     if (out_telem == NULL)
@@ -827,7 +819,6 @@ dhcp_status_t dhcp_client_get_telemetry(dhcp_client_telemetry_t *out_telem)
     return DHCP_OK;
 }
 
-DHCP_FLASH_TEXT
 void dhcp_client_set_static_fallback(uint32_t ip, uint32_t netmask, uint32_t gateway, uint32_t dns)
 {
     s_dhcp_client_telem.assigned_ip = ip;
@@ -839,7 +830,6 @@ void dhcp_client_set_static_fallback(uint32_t ip, uint32_t netmask, uint32_t gat
     mdns_announce();
 }
 
-DHCP_FLASH_TEXT
 dhcp_status_t dhcp_client_process_packet(const uint8_t *eth_frame, const uint8_t *payload, uint16_t len)
 {
     (void)eth_frame;

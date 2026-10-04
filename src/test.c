@@ -41,12 +41,6 @@
 #define uart_puts console_puts
 #define uart_putc console_putc
 
-#if defined(__riscv)
-#define TEST_FLASH_TEXT __attribute__((section(".flash.text")))
-#else
-#define TEST_FLASH_TEXT
-#endif
-
 /* GDMA self-test: descriptors and buffers in HP SRAM (DMA cannot reach flash) */
 static dma_descriptor_t s_test_desc0 __attribute__((aligned(4)));
 static dma_descriptor_t s_test_desc1 __attribute__((aligned(4)));
@@ -3486,7 +3480,7 @@ void run_validation_suite(void)
 /* ========================================================================= */
 static test_soak_telemetry_t s_soak_telemetry = {0};
 
-TEST_FLASH_TEXT void test_soak_get_telemetry(test_soak_telemetry_t *out_telem)
+void test_soak_get_telemetry(test_soak_telemetry_t *out_telem)
 {
     if (out_telem != NULL)
     {
@@ -3494,7 +3488,7 @@ TEST_FLASH_TEXT void test_soak_get_telemetry(test_soak_telemetry_t *out_telem)
     }
 }
 
-TEST_FLASH_TEXT bool test_soak_run(uint32_t cycles, uint32_t delay_ms)
+bool test_soak_run(uint32_t cycles, uint32_t delay_ms)
 {
     uint32_t target = (cycles == 0U) ? 1000000U : cycles;
     s_soak_telemetry.target_cycles = cycles;

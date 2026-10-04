@@ -9,6 +9,7 @@
  */
 
 #include "wifi.h"
+#include "section.h"
 #include "gdma.h"
 #include "modem.h"
 #include "string.h"
@@ -676,7 +677,7 @@ const net_packet_t *wifi_get_rx_packet(uint32_t index)
 /* Active / Passive Scanning Engine                                          */
 /* ========================================================================= */
 
-WIFI_FLASH_TEXT
+FLASH_TEXT_ATTR
 wifi_status_t wifi_scan(const char *ssid, uint8_t channel, bool passive, uint32_t duration_ms)
 {
     if (!s_wifi_initialized)
@@ -981,7 +982,7 @@ static void wifi_promiscuous_rx_callback(void *buf, wifi_promiscuous_pkt_type_t 
 }
 #endif
 
-WIFI_FLASH_TEXT
+FLASH_TEXT_ATTR
 wifi_status_t wifi_sniffer(uint8_t channel, uint32_t duration_sec)
 {
     if (!s_wifi_initialized)
@@ -1367,7 +1368,7 @@ bool wifi_is_cca_enabled(void)
 /* Wi-Fi Station (STA) Subsystem (Task 8.2)                                  */
 /* ========================================================================= */
 
-WIFI_FLASH_TEXT
+FLASH_TEXT_ATTR
 wifi_status_t wifi_start_sta_chan(const char *ssid, const char *password, uint8_t channel)
 {
     if (ssid == NULL || ssid[0] == '\0')
@@ -1494,13 +1495,13 @@ wifi_status_t wifi_start_sta_chan(const char *ssid, const char *password, uint8_
     return WIFI_OK;
 }
 
-WIFI_FLASH_TEXT
+FLASH_TEXT_ATTR
 wifi_status_t wifi_start_sta(const char *ssid, const char *password)
 {
     return wifi_start_sta_chan(ssid, password, 0U);
 }
 
-WIFI_FLASH_TEXT
+FLASH_TEXT_ATTR
 wifi_status_t wifi_stop_sta(void)
 {
 #if defined(__riscv)
@@ -1514,13 +1515,13 @@ wifi_status_t wifi_stop_sta(void)
     return WIFI_OK;
 }
 
-WIFI_FLASH_TEXT
+FLASH_TEXT_ATTR
 bool wifi_is_sta_connected(void)
 {
     return s_wifi_sta_connected || (s_wifi_telemetry.state == WIFI_STATE_CONNECTED);
 }
 
-WIFI_FLASH_TEXT
+FLASH_TEXT_ATTR
 wifi_status_t wifi_sta_get_bssid(uint8_t *out_bssid)
 {
     if (out_bssid == NULL)

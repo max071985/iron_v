@@ -38,7 +38,7 @@ static bool                    s_prov_initialized = false;
 /* ========================================================================= */
 /* Zero-Libc String & Integer Formatting Utilities                           */
 /* ========================================================================= */
-static PROV_FLASH_TEXT size_t prov_u32_to_dec(uint32_t val, char *buf, size_t max_len)
+static size_t prov_u32_to_dec(uint32_t val, char *buf, size_t max_len)
 {
     if (buf == NULL || max_len < 2U) return 0U;
     if (val == 0U)
@@ -63,7 +63,7 @@ static PROV_FLASH_TEXT size_t prov_u32_to_dec(uint32_t val, char *buf, size_t ma
     return digits;
 }
 
-static PROV_FLASH_TEXT size_t prov_i32_to_dec(int32_t val, char *buf, size_t max_len)
+static size_t prov_i32_to_dec(int32_t val, char *buf, size_t max_len)
 {
     if (buf == NULL || max_len < 3U) return 0U;
     if (val == 0)
@@ -99,7 +99,7 @@ static PROV_FLASH_TEXT size_t prov_i32_to_dec(int32_t val, char *buf, size_t max
     return offset + digits;
 }
 
-static PROV_FLASH_TEXT size_t prov_str_append(char *dest, size_t dest_max, const char *src)
+static size_t prov_str_append(char *dest, size_t dest_max, const char *src)
 {
     if (dest == NULL || src == NULL || dest_max == 0U) return 0U;
     size_t dlen = strlen(dest);
@@ -135,7 +135,7 @@ static inline void prov_safe_copy(char *dest, size_t dest_size, const char *src)
 /* ========================================================================= */
 /* Payload Parameter Extraction (JSON & URL-Encoded Form Parser)             */
 /* ========================================================================= */
-static PROV_FLASH_TEXT bool prov_extract_param(const char *input, const char *key, char *out_val, size_t max_len)
+static bool prov_extract_param(const char *input, const char *key, char *out_val, size_t max_len)
 {
     if (input == NULL || key == NULL || out_val == NULL || max_len == 0U)
     {
@@ -223,7 +223,7 @@ static PROV_FLASH_TEXT bool prov_extract_param(const char *input, const char *ke
 /* ========================================================================= */
 /* Baseline Network Scan Table Initialization                                */
 /* ========================================================================= */
-static PROV_FLASH_TEXT void prov_populate_baseline_scan(void)
+static void prov_populate_baseline_scan(void)
 {
     s_prov_scan_count = 0U;
 
@@ -570,7 +570,7 @@ provisioning_status_t provisioning_get_telemetry(provisioning_telemetry_t *out_t
     return PROV_OK;
 }
 
-PROV_FLASH_TEXT const char *provisioning_state_to_str(provisioning_state_t state)
+const char *provisioning_state_to_str(provisioning_state_t state)
 {
     switch (state)
     {
@@ -584,7 +584,7 @@ PROV_FLASH_TEXT const char *provisioning_state_to_str(provisioning_state_t state
     }
 }
 
-PROV_FLASH_TEXT const char *provisioning_auth_mode_to_str(uint8_t auth_mode)
+const char *provisioning_auth_mode_to_str(uint8_t auth_mode)
 {
     switch (auth_mode)
     {
@@ -604,7 +604,7 @@ PROV_FLASH_TEXT const char *provisioning_auth_mode_to_str(uint8_t auth_mode)
 /* Flash XIP Diagnostic Visualizers (.flash.text)                            */
 /* ========================================================================= */
 
-void PROV_FLASH_TEXT provisioning_print_status(void)
+void provisioning_print_status(void)
 {
     if (!s_prov_initialized)
     {
@@ -658,7 +658,7 @@ void PROV_FLASH_TEXT provisioning_print_status(void)
     console_puts("========================================\r\n");
 }
 
-void PROV_FLASH_TEXT provisioning_print_scan(void)
+void provisioning_print_scan(void)
 {
     if (!s_prov_initialized)
     {
@@ -701,7 +701,7 @@ void PROV_FLASH_TEXT provisioning_print_scan(void)
 /* ========================================================================= */
 
 /* GET /setup -> Serves responsive Captive Portal HTML web form */
-void PROV_FLASH_TEXT provisioning_http_handler_setup(const char *query_params, char *response_body, size_t max_len)
+void provisioning_http_handler_setup(const char *query_params, char *response_body, size_t max_len)
 {
     (void)query_params;
     if (response_body == NULL || max_len == 0U) return;
@@ -716,7 +716,7 @@ void PROV_FLASH_TEXT provisioning_http_handler_setup(const char *query_params, c
 }
 
 /* GET /api/wifi/scan -> Returns JSON list of available 2.4 GHz SSIDs */
-void PROV_FLASH_TEXT provisioning_http_handler_scan(const char *query_params, char *response_body, size_t max_len)
+void provisioning_http_handler_scan(const char *query_params, char *response_body, size_t max_len)
 {
     (void)query_params;
     if (response_body == NULL || max_len == 0U) return;
@@ -753,7 +753,7 @@ void PROV_FLASH_TEXT provisioning_http_handler_scan(const char *query_params, ch
 }
 
 /* POST /api/wifi/configure -> Parses SSID & passphrase, persists to NVS */
-void PROV_FLASH_TEXT provisioning_http_handler_configure(const char *query_params, char *response_body, size_t max_len)
+void provisioning_http_handler_configure(const char *query_params, char *response_body, size_t max_len)
 {
     if (response_body == NULL || max_len == 0U) return;
 
@@ -805,7 +805,7 @@ void PROV_FLASH_TEXT provisioning_http_handler_configure(const char *query_param
 }
 
 /* GET /api/wifi/status -> Provisioning & SoftAP status JSON */
-void PROV_FLASH_TEXT provisioning_http_handler_status(const char *query_params, char *response_body, size_t max_len)
+void provisioning_http_handler_status(const char *query_params, char *response_body, size_t max_len)
 {
     (void)query_params;
     if (response_body == NULL || max_len == 0U) return;
@@ -830,7 +830,7 @@ void PROV_FLASH_TEXT provisioning_http_handler_status(const char *query_params, 
 }
 
 /* GET /api/wifi/credentials -> Returns configured Wi-Fi SSID JSON */
-void PROV_FLASH_TEXT provisioning_http_handler_credentials(const char *query_params, char *response_body, size_t max_len)
+void provisioning_http_handler_credentials(const char *query_params, char *response_body, size_t max_len)
 {
     (void)query_params;
     if (response_body == NULL || max_len == 0U) return;

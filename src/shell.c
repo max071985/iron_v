@@ -131,7 +131,7 @@ void shell_get_health_telemetry(system_health_telemetry_t *out_telem)
     out_telem->wifi_packets_tx = wtel.tx_packets;
 }
 
-void FLASH_TEXT_ATTR shell_print_health(void)
+void shell_print_health(void)
 {
     system_health_telemetry_t h;
     shell_get_health_telemetry(&h);
@@ -194,7 +194,7 @@ void FLASH_TEXT_ATTR shell_print_health(void)
     console_puts("=====================================================\r\n");
 }
 
-void FLASH_TEXT_ATTR shell_print_top(void)
+void shell_print_top(void)
 {
     system_health_telemetry_t h;
     shell_get_health_telemetry(&h);
@@ -216,8 +216,8 @@ void FLASH_TEXT_ATTR shell_print_top(void)
     console_puts("\r\n");
 }
 
-void FLASH_TEXT_ATTR print_help(void) { shell_print_help(); }
-void FLASH_TEXT_ATTR shell_print_help(void)
+void print_help(void) { shell_print_help(); }
+void shell_print_help(void)
 {
     console_puts("Iron V Shell Commands:\r\n");
     console_puts("  help                - Show available commands\r\n");
@@ -257,8 +257,8 @@ void FLASH_TEXT_ATTR shell_print_help(void)
     console_puts("  do-test             - Run full baseline validation test suite\r\n");
 }
 
-void FLASH_TEXT_ATTR print_info(void) { shell_print_info(); }
-void FLASH_TEXT_ATTR shell_print_info(void)
+void print_info(void) { shell_print_info(); }
+void shell_print_info(void)
 {
     clock_config_t clk;
     clock_get_config(&clk);
@@ -610,7 +610,7 @@ static int parse_uint(char **str, uint32_t *out)
     return 0;
 }
 
-void FLASH_TEXT_ATTR shell_execute(char *input_buffer)
+void shell_execute(char *input_buffer)
 {
     if (input_buffer[0] == '\0')
     {

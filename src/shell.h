@@ -14,12 +14,6 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#if defined(__riscv)
-#define FLASH_TEXT_ATTR __attribute__((section(".flash.text")))
-#else
-#define FLASH_TEXT_ATTR
-#endif
-
 /* ========================================================================= */
 /* System Health Telemetry Data Structure (Roadmap Task 6.4 Specification)   */
 /* ========================================================================= */

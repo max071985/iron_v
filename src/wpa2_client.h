@@ -24,14 +24,6 @@
 extern "C" {
 #endif
 
-#if defined(__riscv)
-#define WPA2_FLASH_TEXT   __attribute__((section(".flash.text")))
-#define WPA2_FLASH_RODATA __attribute__((section(".flash.rodata")))
-#else
-#define WPA2_FLASH_TEXT
-#define WPA2_FLASH_RODATA
-#endif
-
 /* ========================================================================= */
 /* Cryptographic & Geometry Constants (Zero Magic Numbers)                   */
 /* ========================================================================= */
@@ -169,43 +161,43 @@ typedef struct {
 /* ========================================================================= */
 
 /* Subsystem Lifecycle */
-wpa2_status_t wpa2_client_init(void) WPA2_FLASH_TEXT;
-wpa2_status_t wpa2_client_configure(const char *ssid, const char *passphrase) WPA2_FLASH_TEXT;
-wpa2_status_t wpa2_client_start(void) WPA2_FLASH_TEXT;
-wpa2_status_t wpa2_client_stop(void) WPA2_FLASH_TEXT;
-wpa2_state_t  wpa2_client_get_state(void) WPA2_FLASH_TEXT;
-bool          wpa2_client_is_in_4way(void) WPA2_FLASH_TEXT;
-bool          wpa2_client_is_authenticated(void) WPA2_FLASH_TEXT;
-wpa2_status_t wpa2_client_get_telemetry(wpa2_telemetry_t *out_telem) WPA2_FLASH_TEXT;
+wpa2_status_t wpa2_client_init(void);
+wpa2_status_t wpa2_client_configure(const char *ssid, const char *passphrase);
+wpa2_status_t wpa2_client_start(void);
+wpa2_status_t wpa2_client_stop(void);
+wpa2_state_t  wpa2_client_get_state(void);
+bool          wpa2_client_is_in_4way(void);
+bool          wpa2_client_is_authenticated(void);
+wpa2_status_t wpa2_client_get_telemetry(wpa2_telemetry_t *out_telem);
 
 /* Vendor Callback Hooks */
-wpa2_status_t wpa2_client_rx_eapol(const uint8_t *src_mac, const uint8_t *frame, uint16_t len) WPA2_FLASH_TEXT;
-void          wpa2_client_on_connected(const uint8_t *bssid) WPA2_FLASH_TEXT;
-void          wpa2_client_on_disconnected(uint8_t reason) WPA2_FLASH_TEXT;
+wpa2_status_t wpa2_client_rx_eapol(const uint8_t *src_mac, const uint8_t *frame, uint16_t len);
+void          wpa2_client_on_connected(const uint8_t *bssid);
+void          wpa2_client_on_disconnected(uint8_t reason);
 
 /* Handover & Home LAN Join Orchestrator */
-wpa2_status_t wpa2_client_handover(const char *ssid, const char *passphrase) WPA2_FLASH_TEXT;
-wpa2_status_t wpa2_client_handover_chan(const char *ssid, const char *passphrase, uint8_t channel) WPA2_FLASH_TEXT;
+wpa2_status_t wpa2_client_handover(const char *ssid, const char *passphrase);
+wpa2_status_t wpa2_client_handover_chan(const char *ssid, const char *passphrase, uint8_t channel);
 
 /* Cryptographic Engines & Test Vectors */
 wpa2_status_t wpa2_crypto_pbkdf2_sha1(const char *passphrase, const char *ssid,
-                                     uint32_t iterations, uint8_t *out_pmk) WPA2_FLASH_TEXT;
+                                     uint32_t iterations, uint8_t *out_pmk);
 wpa2_status_t wpa2_crypto_prf512(const uint8_t *pmk, const uint8_t *mac1, const uint8_t *mac2,
                                  const uint8_t *nonce1, const uint8_t *nonce2,
-                                 wpa2_ptk_t *out_ptk) WPA2_FLASH_TEXT;
+                                 wpa2_ptk_t *out_ptk);
 wpa2_status_t wpa2_crypto_compute_mic(const uint8_t *kck, const uint8_t *eapol_frame,
-                                      uint16_t frame_len, uint8_t *out_mic) WPA2_FLASH_TEXT;
+                                      uint16_t frame_len, uint8_t *out_mic);
 wpa2_status_t wpa2_crypto_aes_unwrap(const uint8_t *kek, const uint8_t *wrapped,
                                      uint16_t wrapped_len, uint8_t *out_plain,
-                                     uint16_t *out_plain_len) WPA2_FLASH_TEXT;
+                                     uint16_t *out_plain_len);
 wpa2_status_t wpa2_crypto_aes_wrap(const uint8_t *kek, const uint8_t *plain,
                                    uint16_t plain_len, uint8_t *out_wrapped,
-                                   uint16_t *out_wrapped_len) WPA2_FLASH_TEXT;
-wpa2_status_t wpa2_client_get_ptk(wpa2_ptk_t *out_ptk) WPA2_FLASH_TEXT;
+                                   uint16_t *out_wrapped_len);
+wpa2_status_t wpa2_client_get_ptk(wpa2_ptk_t *out_ptk);
 
 /* Diagnostic Visualizer (Flash XIP) */
-void wpa2_client_print_status(void) WPA2_FLASH_TEXT;
-const char *wpa2_state_to_str(wpa2_state_t state) WPA2_FLASH_TEXT;
+void wpa2_client_print_status(void);
+const char *wpa2_state_to_str(wpa2_state_t state);
 
 
 #ifdef __cplusplus

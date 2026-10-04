@@ -11,15 +11,10 @@
 #define IRON_V_WEB_ASSETS_H
 
 #include <stdint.h>
+#include "section.h"
 #include <stddef.h>
 
-#if defined(__riscv)
-#define HTTP_FLASH_RODATA __attribute__((section(".flash.rodata")))
-#else
-#define HTTP_FLASH_RODATA
-#endif
-
-static const char g_index_html[] HTTP_FLASH_RODATA =
+static const char g_index_html[] FLASH_RODATA_ATTR =
 "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Iron V</title>"
 "<style>body{background:#0f172a;color:#f8fafc;font-family:sans-serif;padding:15px}"
 "h1{color:#38bdf8;font-size:18px}.g{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin:10px 0}"
@@ -38,7 +33,7 @@ static const char g_index_html[] HTTP_FLASH_RODATA =
 "if(d.cpu_mhz)document.getElementById('c').innerText=d.cpu_mhz+' MHz';"
 "}).catch(e=>{});}setInterval(f,5000);f();</script></body></html>";
 
-static const char g_setup_html[] HTTP_FLASH_RODATA =
+static const char g_setup_html[] FLASH_RODATA_ATTR =
 "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
 "<title>Iron V Wi-Fi Setup</title>"
 "<style>body{background:#0f172a;color:#f8fafc;font-family:sans-serif;padding:20px;max-width:380px;margin:auto}"

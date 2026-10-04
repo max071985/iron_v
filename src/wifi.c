@@ -710,9 +710,25 @@ const net_packet_t *wifi_get_rx_packet(uint32_t index)
 /* Active / Passive Scanning Engine                                          */
 /* ========================================================================= */
 
+/* True (and explains why) when station-mode radio use is disabled in config.h */
+static bool wifi_sta_radio_disabled(void)
+{
+#if defined(__riscv) && !CONFIG_WIFI_STA_RADIO_ENABLED
+    console_puts("[Wi-Fi] Station-mode radio use is disabled until the coexistence stubs are fixed (REV-09, O-5).\r\n");
+    return true;
+#else
+    return false;
+#endif
+}
+
 WIFI_FLASH_TEXT
 wifi_status_t wifi_scan(const char *ssid, uint8_t channel, bool passive, uint32_t duration_ms)
 {
+    if (wifi_sta_radio_disabled())
+    {
+        return WIFI_ERR_DISABLED;
+    }
+
     if (!s_wifi_initialized)
     {
         wifi_init();
@@ -1018,6 +1034,11 @@ static void wifi_promiscuous_rx_callback(void *buf, wifi_promiscuous_pkt_type_t 
 WIFI_FLASH_TEXT
 wifi_status_t wifi_sniffer(uint8_t channel, uint32_t duration_sec)
 {
+    if (wifi_sta_radio_disabled())
+    {
+        return WIFI_ERR_DISABLED;
+    }
+
     if (!s_wifi_initialized)
     {
         wifi_init();
@@ -1398,6 +1419,11 @@ wifi_status_t wifi_start_sta_chan(const char *ssid, const char *password, uint8_
     if (ssid == NULL || ssid[0] == '\0')
     {
         return WIFI_ERR_INVALID_ARG;
+    }
+
+    if (wifi_sta_radio_disabled())
+    {
+        return WIFI_ERR_DISABLED;
     }
 
     if (!s_wifi_initialized)

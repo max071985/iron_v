@@ -1545,11 +1545,6 @@ static void test_ble_gatt_subsystem(void)
     /* 1. Register Address & Offset Calculation Validation (AGENTS.md rule) */
     TEST_ASSERT((uintptr_t)EFUSE_MAC_SYS_0_REG == 0x600B0844U, "EFUSE_MAC_SYS_0_REG address calculation");
     TEST_ASSERT((uintptr_t)EFUSE_MAC_SYS_1_REG == 0x600B0848U, "EFUSE_MAC_SYS_1_REG address calculation");
-    TEST_ASSERT((uintptr_t)BLE_LL_REG(0x000CU) == 0x600B000CU, "BLE_LL_REG macro address calculation");
-    TEST_ASSERT((uintptr_t)BLE_LL_CMD_REG == 0x600B000CU, "BLE_LL_CMD_REG address calculation");
-    TEST_ASSERT((uintptr_t)BLE_LL_STATUS_REG == 0x600B0058U, "BLE_LL_STATUS_REG address calculation");
-    TEST_ASSERT((uintptr_t)BLE_LL_CLK_LINK_REG == 0x600B00CCU, "BLE_LL_CLK_LINK_REG address calculation");
-    TEST_ASSERT((uintptr_t)BLE_LL_MODEM_LINK_REG == 0x600B0154U, "BLE_LL_MODEM_LINK_REG address calculation");
 
     /* 2. Concrete Data Structure Geometry & Packet Sizing */
     TEST_ASSERT(sizeof(ble_adv_packet_t) == 21U, "sizeof(ble_adv_packet_t) must be 21 bytes packed");

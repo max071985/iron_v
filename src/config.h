@@ -194,8 +194,9 @@
 #define CONFIG_BLE_DEVICE_NAME              "IRON-V-C6"
 #endif
 
+/* Off: there is no BLE controller on this build; advertising is a software model only */
 #ifndef CONFIG_BLE_AUTO_START_ADV
-#define CONFIG_BLE_AUTO_START_ADV           1U
+#define CONFIG_BLE_AUTO_START_ADV           0U
 #endif
 
 /* Advertising Interval in 0.625 ms units (160 * 0.625 = 100 ms) */

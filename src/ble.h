@@ -17,7 +17,6 @@
 #include "config.h"
 #include "ble_gatt.h"
 #include "ble_npl.h"
-#include "regs/ble_ll.h"
 
 /* ========================================================================= */
 /* HCI Packet Indicators (Bluetooth Core Spec v5.3 Vol 4, Part A)            */
@@ -120,11 +119,6 @@
 #define BLE_ADV_INT_MIN_DEFAULT         CONFIG_BLE_ADV_INTERVAL_MIN
 #define BLE_ADV_INT_MAX_DEFAULT         CONFIG_BLE_ADV_INTERVAL_MAX
 #define BLE_ADV_CHANNEL_MAP_DEFAULT     CONFIG_BLE_ADV_CHANNEL_MAP
-#define BLE_ADV_INTERVAL_DEFAULT_MS     100U
-#define BLE_ADV_PRIMARY_CH_37           37U
-#define BLE_ADV_PRIMARY_CH_38           38U
-#define BLE_ADV_PRIMARY_CH_39           39U
-#define BLE_ADV_PRIMARY_CH_COUNT        3U
 
 
 /* ========================================================================= */

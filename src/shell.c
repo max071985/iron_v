@@ -453,7 +453,7 @@ void FLASH_TEXT_ATTR shell_print_info(void)
 
     ble_telemetry_t btel;
     ble_get_telemetry(&btel);
-    console_puts(" BLE:     State: ");
+    console_puts(" BLE:     Software model, no RF. State: ");
     if (btel.state == BLE_STATE_STANDBY) console_puts("STANDBY");
     else if (btel.state == BLE_STATE_ADVERTISING) console_puts("ADVERTISING");
     else if (btel.state == BLE_STATE_CONNECTED) console_puts("CONNECTED");
@@ -1924,7 +1924,7 @@ void FLASH_TEXT_ATTR shell_execute(char *input_buffer)
             ble_status_t st = ble_gap_start_advertising();
             if (st == BLE_OK)
             {
-                console_puts("BLE GAP Advertising started successfully (Connectable undirected, interval 100ms).\r\n");
+                console_puts("BLE advertising state set (software model only; nothing is transmitted).\r\n");
             }
             else
             {
@@ -1985,7 +1985,7 @@ void FLASH_TEXT_ATTR shell_execute(char *input_buffer)
         {
             ble_telemetry_t bt;
             ble_get_telemetry(&bt);
-            console_puts("Bluetooth 5 (LE) Controller & Minimal GATT Server Status:\r\n");
+            console_puts("BLE software model status (no controller, nothing is transmitted):\r\n");
             console_puts("  GAP State:         ");
             if (bt.state == BLE_STATE_STANDBY) console_puts("STANDBY");
             else if (bt.state == BLE_STATE_ADVERTISING) console_puts("ADVERTISING");

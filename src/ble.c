@@ -43,21 +43,9 @@ static bool s_ble_initialized = false;
 static uint8_t s_active_adv_data[31];
 static uint8_t s_active_adv_len = 0U;
 
-static struct ble_npl_callout s_ble_adv_callout;
-
-static void ble_adv_callout_cb(struct ble_npl_event *ev)
-{
-    (void)ev;
-    if (s_ble_telemetry.state == BLE_STATE_ADVERTISING)
-    {
-        /* Pulse bare-metal Link Layer hardware advertising trigger */
-        ble_hw_start_advertising();
-        s_ble_telemetry.tx_packets++;
-
-        /* Rearm callout for next advertising interval (100 ms) */
-        ble_npl_callout_reset(&s_ble_adv_callout, ble_npl_time_ms_to_ticks32(BLE_ADV_INTERVAL_DEFAULT_MS));
-    }
-}
+/* Advertising state of the software model. There is no BLE controller on this build:
+ * nothing is transmitted and no radio, PHY or PMU register is touched. */
+static bool s_adv_enabled = false;
 
 /* ========================================================================= */
 /* Static Storage: GATT Database                                             */
@@ -96,24 +84,6 @@ static inline void ble_fence(void)
     __sync_synchronize();
 #endif
 }
-
-#if !defined(__riscv)
-/* Host Emulation Environment for Native Verification */
-#undef BLE_LL_CMD_REG
-#undef BLE_LL_STATUS_REG
-#undef BLE_LL_CLK_LINK_REG
-#undef BLE_LL_MODEM_LINK_REG
-
-static volatile uint32_t s_mock_ble_ll_cmd = 0U;
-static volatile uint32_t s_mock_ble_ll_status = 0U;
-static volatile uint32_t s_mock_ble_ll_clk_link = 0U;
-static volatile uint32_t s_mock_ble_ll_modem_link = 0xFC000000U;
-
-#define BLE_LL_CMD_REG        (&s_mock_ble_ll_cmd)
-#define BLE_LL_STATUS_REG     (&s_mock_ble_ll_status)
-#define BLE_LL_CLK_LINK_REG   (&s_mock_ble_ll_clk_link)
-#define BLE_LL_MODEM_LINK_REG (&s_mock_ble_ll_modem_link)
-#endif
 
 /* ========================================================================= */
 /* Internal HCI Event Queue Management                                       */
@@ -197,90 +167,36 @@ static void ble_read_hardware_mac(uint8_t *out_addr)
 }
 
 /* ========================================================================= */
-/* Bare-Metal Link Layer Hardware Driver                                     */
+/* Link Layer stand-in (no controller)                                       */
 /* ========================================================================= */
-
-#if defined(__riscv)
-extern void *g_phyFuns;
-extern void bt_bb_v2_init_cmplx(uint8_t version_print);
-extern void bt_set_chn(uint8_t chan);
-
-static uint8_t s_adv_chn_idx = 0U;
-static const uint8_t s_adv_channels[BLE_ADV_PRIMARY_CH_COUNT] = {
-    BLE_ADV_PRIMARY_CH_37,
-    BLE_ADV_PRIMARY_CH_38,
-    BLE_ADV_PRIMARY_CH_39
-};
-#endif
+/*
+ * The ESP32-C6 BLE controller is a closed Espressif blob that this build does not
+ * link. The former "BLE_LL_*" registers at 0x600B0000 were PMU registers
+ * (0x600B000C is PMU_HP_ACTIVE_ICG_MODEM_REG), and advertising retuned the shared
+ * radio with bt_set_chn(), so these functions now only track state in software.
+ */
 
 ble_status_t ble_hw_init(void)
 {
-    /* 1. Poll status register with timeout until stable */
-#if defined(__riscv)
-    uint64_t start_us = systimer_get_us();
-    uint32_t prev_status = *BLE_LL_STATUS_REG;
-    uint32_t stable_count = 0U;
-    while ((systimer_get_us() - start_us) < (uint64_t)BLE_LL_STATUS_TIMEOUT_US)
-    {
-        uint32_t cur_status = *BLE_LL_STATUS_REG;
-        if (cur_status == prev_status)
-        {
-            stable_count++;
-            if (stable_count >= 16U)
-            {
-                break;
-            }
-        }
-        else
-        {
-            stable_count = 0U;
-            prev_status = cur_status;
-        }
-    }
-
-    /* 2. Initialize Bluetooth Baseband hardware */
-    bt_bb_v2_init_cmplx(0U);
-#else
-    volatile uint32_t status = *BLE_LL_STATUS_REG;
-    (void)status;
-#endif
-
-    /* Memory barrier */
-    ble_fence();
-
+    s_adv_enabled = false;
     return BLE_OK;
 }
 
 ble_status_t ble_hw_start_advertising(void)
 {
-    uint32_t cmd = *BLE_LL_CMD_REG;
-    cmd &= BLE_LL_CMD_TRIG_CLR_MASK;
-    cmd |= BLE_LL_CMD_START_ADV_BIT;
-    *BLE_LL_CMD_REG = cmd;
-
-#if defined(__riscv)
-    if (g_phyFuns != NULL && !wifi_is_ap_active())
-    {
-        uint8_t ch = s_adv_channels[s_adv_chn_idx];
-        s_adv_chn_idx = (s_adv_chn_idx + 1U) % BLE_ADV_PRIMARY_CH_COUNT;
-        bt_set_chn(ch);
-    }
-#endif
-
-    ble_fence();
+    s_adv_enabled = true;
     return BLE_OK;
 }
 
 ble_status_t ble_hw_stop_advertising(void)
 {
-    *BLE_LL_CMD_REG &= ~BLE_LL_CMD_START_ADV_BIT;
-    ble_fence();
+    s_adv_enabled = false;
     return BLE_OK;
 }
 
 bool ble_hw_is_advertising(void)
 {
-    return (*BLE_LL_CMD_REG & BLE_LL_CMD_START_ADV_BIT) != 0U;
+    return s_adv_enabled;
 }
 
 /* ========================================================================= */
@@ -316,10 +232,7 @@ ble_status_t ble_init(void)
     s_ble_telemetry.adv_start_count = 0U;
     s_ble_telemetry.adv_stop_count = 0U;
 
-    /* 5. Initialize NimBLE NPL advertising callout */
-    ble_npl_callout_init(&s_ble_adv_callout, ble_npl_eventq_dflt_get(), ble_adv_callout_cb, NULL);
-
-    /* 6. Initialize static GATT attribute database */
+    /* 5. Initialize static GATT attribute database */
     gatt_db_init();
 
     s_ble_initialized = true;
@@ -654,15 +567,11 @@ ble_status_t ble_gap_start_advertising(void)
         return status;
     }
 
-    ble_status_t hw_st = ble_hw_start_advertising();
-    ble_npl_callout_reset(&s_ble_adv_callout, ble_npl_time_ms_to_ticks32(BLE_ADV_INTERVAL_DEFAULT_MS));
-    return hw_st;
+    return ble_hw_start_advertising();
 }
 
 ble_status_t ble_gap_stop_advertising(void)
 {
-    ble_npl_callout_stop(&s_ble_adv_callout);
-
     uint8_t disable_pkt[5];
     disable_pkt[0] = HCI_PKT_TYPE_CMD;
     disable_pkt[1] = (uint8_t)(HCI_OPCODE_LE_SET_ADV_ENABLE & 0xFFU);

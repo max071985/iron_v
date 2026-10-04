@@ -60,7 +60,6 @@
 #define WIFI_NVS_OFFSET_AP_LOW_RATE     1341U
 #define WIFI_NVS_STUB_DEFAULT_HANDLE    1U
 #define WIFI_NVS_LOW_RATE_ENABLED       1U
-#define WIFI_COEX_STATUS_DEFAULT        1U
 
 /* Fallback Event Identifiers for Host Simulation */
 #define WIFI_VENDOR_EVENT_AP_START       12
@@ -114,8 +113,7 @@ typedef enum {
     WIFI_ERR_RING_EMPTY = -5,
     WIFI_ERR_NOT_INITIALIZED = -6,
     WIFI_ERR_DMA_FAULT = -7,
-    WIFI_ERR_TIMEOUT = -8,
-    WIFI_ERR_DISABLED = -9
+    WIFI_ERR_TIMEOUT = -8
 } wifi_status_t;
 
 /* ========================================================================= */

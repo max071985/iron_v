@@ -182,13 +182,6 @@
 #define CONFIG_WIFI_USE_STATIC_IP           1U
 #endif
 
-/* Station-mode radio use (scan, sniffer, STA connect). Off until the coexistence
- * stubs match the Wi-Fi blob (REV-09, observation O-5): with the current stubs any
- * station-mode scan ends in a pm_coex.c assert and a watchdog reset. */
-#ifndef CONFIG_WIFI_STA_RADIO_ENABLED
-#define CONFIG_WIFI_STA_RADIO_ENABLED       0U
-#endif
-
 #ifndef CONFIG_WIFI_AUTO_START_AP
 #define CONFIG_WIFI_AUTO_START_AP           1U
 #endif

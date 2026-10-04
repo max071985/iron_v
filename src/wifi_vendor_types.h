@@ -91,6 +91,13 @@ typedef void*     QueueHandle_t;
 /* ========================================================================= */
 #define ESP_WIFI_CRYPTO_VERSION         0x00000001
 
+/* struct os_time from ESP-IDF 66ab063a9a7f wpa_supplicant/port/include/os.h
+ * (os_time_t is uint64_t, suseconds_t is long), filled by the _get_time callback */
+typedef struct {
+    uint64_t sec;
+    long     usec;
+} wifi_os_time_t;
+
 /* Callback types and order from ESP-IDF 66ab063a9a7f components/esp_wifi/include/esp_wifi_crypto_types.h */
 typedef int (*esp_hmac_sha256_vector_t)(const unsigned char *key, int key_len, int num_elem,
                                         const unsigned char *addr[], const int *len, unsigned char *mac);
@@ -334,6 +341,7 @@ typedef struct {
  * Expected values are the RV32 ILP32 layout of the upstream definitions. */
 #if defined(__riscv)
 #include <stddef.h>
+_Static_assert(sizeof(wifi_os_time_t) == 16U && offsetof(wifi_os_time_t, usec) == 8U, "struct os_time layout");
 _Static_assert(sizeof(wpa_crypto_funcs_t) == 52U, "wpa_crypto_funcs_t: 2 words + 11 callbacks");
 _Static_assert(sizeof(wifi_osi_funcs_t) == 508U, "wifi_osi_funcs_t: _version + 125 callbacks + _magic");
 _Static_assert(offsetof(wifi_osi_funcs_t, _magic) == 504U, "wifi_osi_funcs_t: _magic is the last word");

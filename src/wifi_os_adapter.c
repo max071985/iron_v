@@ -1314,9 +1314,18 @@ static int get_random_wrapper(uint8_t *buf, size_t len)
     return 0;
 }
 
+/* os_get_time(): monotonic time since boot (ESP-IDF uses gettimeofday). The blob
+ * uses it for station ageing; leaving it unwritten handed the blob stack garbage. */
 static int get_time_wrapper(void *t)
 {
-    (void)t;
+    if (t == NULL)
+    {
+        return -1;
+    }
+    uint64_t now_us = systimer_get_us();
+    wifi_os_time_t *ot = (wifi_os_time_t *)t;
+    ot->sec = now_us / US_PER_SECOND;
+    ot->usec = (long)(now_us % US_PER_SECOND);
     return 0;
 }
 

@@ -17,10 +17,79 @@ Performs:
 """
 import argparse
 import os
+import re
+import shutil
 import struct
 import subprocess
 import sys
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+IRAM_END = 0x40829000
+FLASH_XIP_START = 0x42000000
+FLASH_XIP_END = 0x42800000
+ROM_START = 0x40000000
+ROM_END = 0x40060000
+ROM_DATA_START = 0x4087E610      # ROM .bss/.data (ld/link.ld)
+IRAM_MIN_FREE = 16 * 1024        # budgets mirror the ASSERTs in ld/link.ld
+MAIN_STACK_MIN_SIZE = 32 * 1024
+
+# Code that must run without flash: before mmu_init() maps it, on trap/panic,
+# and the flash erase/write/read routines that run while flash is busy.
+# GCC clones keep the base name with a suffix (flash_write.isra.0).
+IRAM_ONLY_ROOTS = [
+    r"clock_init", r"mmu_init",
+    r"trap_handler", r"trap_entry_exception", r"trap_entry_interrupt", r"panic_dump",
+    r"flash_(read|write|erase_sector)(\..+)?",
+]
+FLASH_OP_ROUTINES_MIN = 6        # flash_read/write/erase_sector in nvs.c and ota.c
+
+FUNC_RE = re.compile(r"^([0-9a-f]+) <([^>]+)>:$")
+CALL_RE = re.compile(r"\b(?:jal|j|jalr|tail|call)\b.*?\b([0-9a-f]{8}) <([^>+]+)(\+0x[0-9a-f]+)?>")
+
+
+def find_objdump(explicit=None):
+    for cand in ([explicit] if explicit else []) + ["riscv64-unknown-elf-objdump", "riscv64-elf-objdump"]:
+        if cand and shutil.which(cand):
+            return cand
+    return None
+
+
+def iram_call_closure(elf_path, objdump, in_iram, in_flash):
+    """Walks direct calls from IRAM_ONLY_ROOTS through IRAM functions.
+
+    Returns (roots, walked, violations); a violation is a call path that reaches
+    a function in flash. Indirect calls through pointers are not followed.
+    """
+    listing = subprocess.run([objdump, "-d", "--no-show-raw-insn", elf_path],
+                             capture_output=True, text=True, check=True).stdout
+    names, calls, cur = {}, {}, None
+    for line in listing.splitlines():
+        m = FUNC_RE.match(line)
+        if m:
+            cur = int(m.group(1), 16)
+            names[cur] = m.group(2)
+            calls[cur] = set()
+            continue
+        m = CALL_RE.search(line) if cur is not None else None
+        if m and not (m.group(2) == names[cur] and m.group(3)):
+            calls[cur].add(int(m.group(1), 16))
+    roots = [a for a, n in names.items() if any(re.fullmatch(p, n) for p in IRAM_ONLY_ROOTS)]
+    walked, violations = set(), []
+    stack = [(a, [names[a]]) for a in roots]
+    while stack:
+        addr, path = stack.pop()
+        if addr in walked:
+            continue
+        walked.add(addr)
+        if not in_iram(addr):
+            violations.append(" -> ".join(path))
+            continue
+        for tgt in calls.get(addr, ()):
+            if in_flash(tgt):
+                violations.append(" -> ".join(path + [names.get(tgt, hex(tgt))]))
+            elif in_iram(tgt) and tgt in names:
+                stack.append((tgt, path + [names[tgt]]))
+    return [names[a] for a in roots], walked, violations
 
 # ELF constants
 EI_MAG0 = 0
@@ -142,7 +211,7 @@ def print_result_line(num, title, desc, expected, actual, pass_cond):
     print(f"  Result:      [ {'PASS' if pass_cond else 'FAIL'} ]")
     return 1 if pass_cond else 0
 
-def run_suite(elf_path, bin_path, native_test_bin):
+def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None):
 
     if not os.path.exists(elf_path):
         print(f"Error: {elf_path} not found. Run 'make' first.")
@@ -179,7 +248,17 @@ def run_suite(elf_path, bin_path, native_test_bin):
     ebss = symbols["_ebss"]["value"]
     stack_top = symbols["_stack_top"]["value"]
 
-    # TEST 1: Memory Section Topology & Monotonicity
+    # Placement predicates (ld/link.ld policy: code runs from flash unless kept in IRAM)
+    def in_iram(addr):
+        return stext <= addr < IRAM_END
+
+    def in_flash(addr):
+        return FLASH_XIP_START <= addr < FLASH_XIP_END
+
+    def in_exec(addr):
+        return in_iram(addr) or in_flash(addr)
+
+    # TEST: Memory Section Topology & Monotonicity
     total += 1
     t1_pass = (stext == 0x40800000 and stext < etext and etext <= srodata
                and srodata >= 0x40829000 and srodata < erodata
@@ -194,7 +273,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
         t1_pass
     )
 
-    # TEST 2: 16-Byte Section Alignment Verification
+    # TEST: 16-Byte Section Alignment Verification
     total += 1
     t2_pass = ((stext % 16 == 0) and (srodata % 16 == 0) and (sdata % 16 == 0) and (sbss % 16 == 0))
     passed += print_result_line(
@@ -206,7 +285,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
         t2_pass
     )
 
-    # TEST 3: RW Data Static Initial Value in ELF Binary
+    # TEST: RW Data Static Initial Value in ELF Binary
     total += 1
     sym_data = symbols["g_test_data_var"]
     sec_data = sections[".data"]
@@ -223,7 +302,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
         t3_pass
     )
 
-    # TEST 4: BSS Section Allocation & SHT_NOBITS Verification
+    # TEST: BSS Section Allocation & SHT_NOBITS Verification
     total += 1
     sym_bss = symbols["g_test_bss_var"]
     sec_bss = sections[".bss"]
@@ -239,7 +318,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
         t4_pass
     )
 
-    # TEST 5: Read-Only Memory (RODATA) Content & Flags Verification
+    # TEST: Read-Only Memory (RODATA) Content & Flags Verification
     total += 1
     sym_rodata = symbols["g_test_rodata_str"]
     sec_rodata = sections[".rodata"]
@@ -258,7 +337,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
         t5_pass
     )
 
-    # TEST 6: Harvard Segment Isolation & W^X Permission Safety
+    # TEST: Harvard Segment Isolation & W^X Permission Safety
     total += 1
     load_segs = [s for s in segments if s["type"] == PT_LOAD]
     rwx_segs = [s for s in load_segs if (s["flags"] & (PF_W | PF_X)) == (PF_W | PF_X)]
@@ -275,7 +354,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
         t6_pass
     )
 
-    # TEST 7: External Flash XIP Section Allocation Remediation
+    # TEST: External Flash XIP Section Allocation Remediation
     total += 1
     sec_xip = sections.get(".flash_xip")
     xip_ok = (sec_xip is not None and sec_xip["type"] == SHT_PROGBITS and sec_xip["addr"] == 0x42000000)
@@ -288,7 +367,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
         xip_ok
     )
 
-    # TEST 8: ESP32-C6 Flash Binary Image Geometry Validation
+    # TEST: ESP32-C6 Flash Binary Image Geometry Validation
     total += 1
     t8_pass = False
     actual_bin_desc = "firmware.bin not found"
@@ -314,7 +393,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
         t8_pass
     )
 
-    # TEST 9: Host-Native Freestanding C Unit Test Suite Execution
+    # TEST: Host-Native Freestanding C Unit Test Suite Execution
     total += 1
     t9_pass = False
     native_desc = f"{native_test_bin} not found (run 'make host-test')"
@@ -332,7 +411,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
         t9_pass
     )
 
-    # TEST 10: Low-Power SRAM, Flash XIP & Vector Table Symbols Validation
+    # TEST: Low-Power SRAM, Flash XIP & Vector Table Symbols Validation
     total += 1
     lp_sym = symbols.get("_lp_sram_start", {}).get("value", None)
     flash_text_sym = symbols.get("_flash_text_start", {}).get("value", None)
@@ -351,27 +430,29 @@ def run_suite(elf_path, bin_path, native_test_bin):
         t10_pass
     )
 
-    # TEST 11: Stack Pointer Boundary Geometry & Entry Vector Topology (Task 1.2)
+    # TEST: Stack Pointer Boundary Geometry & Entry Vector Topology (Task 1.2)
     total += 1
     stack_top = symbols["_stack_top"]["value"]
+    main_stack_top = symbols.get("_main_stack_top", {}).get("value", 0)
     start_sym = symbols.get("_start", {}).get("value", None)
-    stack_align_ok = (stack_top % 16 == 0)
-    stack_vma_ok = (stack_top == 0x40880000)
-    stack_headroom = stack_top - ebss
+    stack_align_ok = (main_stack_top % 16 == 0)
+    stack_vma_ok = (stack_top == 0x40880000) and (0 < main_stack_top <= ROM_DATA_START)
+    stack_headroom = main_stack_top - ebss
     entry_ok = (start_sym == 0x40800000) and (elf["entry"] == 0x40800000)
-    t11_pass = stack_align_ok and stack_vma_ok and (stack_headroom >= 32768) and entry_ok
-    t11_actual = f"_stack_top=0x{stack_top:08x} (align16={stack_align_ok}), Headroom={stack_headroom // 1024} KB, _start=0x{start_sym:08x}"
+    t11_pass = stack_align_ok and stack_vma_ok and (stack_headroom >= MAIN_STACK_MIN_SIZE) and entry_ok
+    t11_actual = (f"_main_stack_top=0x{main_stack_top:08x} (align16={stack_align_ok}), "
+                  f"main stack={stack_headroom // 1024} KB, _start=0x{start_sym:08x}")
     passed += print_result_line(
         total,
         "Stack Boundary Geometry & CRT0 Entry Vector Topology",
-        "Verify _stack_top at 0x40880000 with 16-byte alignment, >=32KB headroom above .bss, and entry at _start",
-        "_stack_top == 0x40880000, 16-byte aligned, Headroom >= 32KB, entry == 0x40800000",
+        "Verify the main stack (_ebss.._main_stack_top) stays below ROM .bss/.data, is 16-byte aligned and >= 32 KB, and entry at _start",
+        "_stack_top == 0x40880000, _main_stack_top <= 0x4087e610 and 16-byte aligned, main stack >= 32 KB, entry == 0x40800000",
         t11_actual,
         t11_pass
     )
 
 
-    # TEST 12: PCR Clock Subsystem Linkage & Symbols Validation (Task 1.3)
+    # TEST: PCR Clock Subsystem Linkage & Symbols Validation (Task 1.3)
     total += 1
     clock_syms = ["clock_init", "clock_get_config", "clock_get_cpu_freq_hz", "clock_get_apb_freq_hz"]
     found_clock_syms = [s for s in clock_syms if s in symbols]
@@ -391,7 +472,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
         t12_pass
     )
 
-    # TEST 13: Watchdog Supervisor Subsystem Linkage & Symbols Validation (Task 1.4)
+    # TEST: Watchdog Supervisor Subsystem Linkage & Symbols Validation (Task 1.4)
     total += 1
     wdt_syms = ["wdt_init", "wdt_feed", "wdt_supervisor_tick", "wdt_get_status", "wdt_get_reset_cause", "wdt_get_reset_cause_desc"]
     found_wdt_syms = [s for s in wdt_syms if s in symbols]
@@ -411,13 +492,13 @@ def run_suite(elf_path, bin_path, native_test_bin):
         t13_pass
     )
 
-    # TEST 14: RISC-V Machine Trap Handler & Vector Table Subsystem Linkage (Task 2.1)
+    # TEST: RISC-V Machine Trap Handler & Vector Table Subsystem Linkage (Task 2.1)
     total += 1
     trap_syms = ["_vector_table", "trap_entry_exception", "trap_entry_interrupt", "trap_init", "trap_handler", "panic_dump"]
     found_trap_syms = [s for s in trap_syms if s in symbols]
     all_trap_found = len(found_trap_syms) == len(trap_syms)
     all_trap_in_text = all(
-        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        in_iram(symbols[s]["value"])
         for s in found_trap_syms
     )
     vec_sym_val = symbols.get("_vector_table", {}).get("value", 0)
@@ -433,7 +514,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
         t14_pass
     )
 
-    # TEST 15: Interrupt Matrix (INTMTX) & INTPRI Controller Subsystem Linkage (Task 2.2)
+    # TEST: Interrupt Matrix (INTMTX) & INTPRI Controller Subsystem Linkage (Task 2.2)
     total += 1
     intr_syms = [
         "interrupt_init",
@@ -450,7 +531,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
     found_intr_syms = [s for s in intr_syms if s in symbols]
     all_intr_found = len(found_intr_syms) == len(intr_syms)
     all_intr_in_text = all(
-        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        in_iram(symbols[s]["value"])
         for s in found_intr_syms
     )
     t15_pass = all_intr_found and all_intr_in_text
@@ -464,7 +545,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
         t15_pass
     )
 
-    # TEST 16: Lock-Free SPSC DPC Queue Engine Subsystem Linkage (Task 2.3)
+    # TEST: Lock-Free SPSC DPC Queue Engine Subsystem Linkage (Task 2.3)
     total += 1
     dpc_syms = [
         "dpc_init",
@@ -484,7 +565,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
     found_dpc_syms = [s for s in dpc_syms if s in symbols]
     all_dpc_found = len(found_dpc_syms) == len(dpc_syms)
     all_dpc_in_text = all(
-        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        in_iram(symbols[s]["value"])
         for s in found_dpc_syms
     )
     t16_pass = all_dpc_found and all_dpc_in_text
@@ -498,7 +579,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
         t16_pass
     )
 
-    # TEST 17: USB-Serial-JTAG CDC-ACM Driver Subsystem Linkage (Task 2.4)
+    # TEST: USB-Serial-JTAG CDC-ACM Driver Subsystem Linkage (Task 2.4)
     total += 1
     usb_syms = [
         "usb_serial_init",
@@ -517,7 +598,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
     found_usb_syms = [s for s in usb_syms if s in symbols]
     all_usb_found = len(found_usb_syms) == len(usb_syms)
     all_usb_in_text = all(
-        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        in_iram(symbols[s]["value"])
         for s in found_usb_syms
     )
     t17_pass = all_usb_found and all_usb_in_text
@@ -531,7 +612,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
         t17_pass
     )
 
-    # TEST 18: Unified Dual-Console & Interrupt-Driven UART0 Subsystem Linkage (Task 2.5)
+    # TEST: Unified Dual-Console & Interrupt-Driven UART0 Subsystem Linkage (Task 2.5)
     total += 1
     console_syms = [
         "uart_init",
@@ -557,7 +638,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
     found_console_syms = [s for s in console_syms if s in symbols]
     all_console_found = len(found_console_syms) == len(console_syms)
     all_console_in_text = all(
-        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        in_iram(symbols[s]["value"])
         for s in found_console_syms
     )
     t18_pass = all_console_found and all_console_in_text
@@ -571,7 +652,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
         t18_pass
     )
 
-    # TEST 19: Hardware Periodic Timer (TIMG0 T0) Driver Linkage (Task 2.6)
+    # TEST: Hardware Periodic Timer (TIMG0 T0) Driver Linkage (Task 2.6)
     total += 1
     timer_syms = [
         "timer_init",
@@ -586,7 +667,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
     found_timer_syms = [s for s in timer_syms if s in symbols]
     all_timer_found = len(found_timer_syms) == len(timer_syms)
     all_timer_in_text = all(
-        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        in_iram(symbols[s]["value"])
         for s in found_timer_syms
     )
     t19_pass = all_timer_found and all_timer_in_text
@@ -600,7 +681,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
         t19_pass
     )
 
-    # TEST 20: Deterministic Static Arena Memory Allocator Linkage (Task 3.1)
+    # TEST: Deterministic Static Arena Memory Allocator Linkage (Task 3.1)
     total += 1
     arena_syms = [
         "arena_init",
@@ -617,7 +698,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
     found_arena_syms = [s for s in arena_syms if s in symbols]
     all_arena_found = len(found_arena_syms) == len(arena_syms)
     all_arena_in_text = all(
-        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        in_iram(symbols[s]["value"])
         for s in found_arena_syms
     )
     t20_pass = all_arena_found and all_arena_in_text
@@ -631,7 +712,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
         t20_pass
     )
 
-    # TEST 21: High-Resolution SYSTIMER Driver Linkage (Task 3.2)
+    # TEST: High-Resolution SYSTIMER Driver Linkage (Task 3.2)
     total += 1
     systimer_syms = [
         "systimer_init",
@@ -649,7 +730,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
     found_systimer_syms = [s for s in systimer_syms if s in symbols]
     all_systimer_found = len(found_systimer_syms) == len(systimer_syms)
     all_systimer_in_text = all(
-        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        in_iram(symbols[s]["value"])
         for s in found_systimer_syms
     )
     t21_pass = all_systimer_found and all_systimer_in_text
@@ -663,7 +744,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
         t21_pass
     )
 
-    # TEST 22: Cooperative Coroutine Scheduler Linkage (Task 3.3)
+    # TEST: Cooperative Coroutine Scheduler Linkage (Task 3.3)
     total += 1
     task_syms = [
         "task_init",
@@ -681,7 +762,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
     found_task_syms = [s for s in task_syms if s in symbols]
     all_task_found = len(found_task_syms) == len(task_syms)
     all_task_in_text = all(
-        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        in_iram(symbols[s]["value"])
         for s in found_task_syms
     )
     t22_pass = all_task_found and all_task_in_text
@@ -695,7 +776,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
         t22_pass
     )
 
-    # TEST 23: RISC-V PMP & APM Fault Isolation Linkage (Task 3.4)
+    # TEST: RISC-V PMP & APM Fault Isolation Linkage (Task 3.4)
     total += 1
     pmp_syms = [
         "pmp_init",
@@ -720,21 +801,21 @@ def run_suite(elf_path, bin_path, native_test_bin):
     found_pmp_syms = [s for s in pmp_syms if s in symbols]
     all_pmp_found = len(found_pmp_syms) == len(pmp_syms)
     all_pmp_in_text = all(
-        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        in_exec(symbols[s]["value"])
         for s in found_pmp_syms
     )
     t23_pass = all_pmp_found and all_pmp_in_text
-    t23_actual = f"Found {len(found_pmp_syms)}/{len(pmp_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    t23_actual = f"Found {len(found_pmp_syms)}/{len(pmp_syms)} symbols, all executable"
     passed += print_result_line(
         total,
         "RISC-V PMP & APM Fault Isolation Linkage",
-        "Verify pmp_init, napot calc/decode, set/get/disable, and apm driver symbols exist in IRAM",
-        f"All {len(pmp_syms)} PMP and APM symbols present in IRAM text section [0x40800000, 0x40829000)",
+        "Verify pmp_init, napot calc/decode, set/get/disable, and apm driver symbols are linked (IRAM or flash)",
+        f"All {len(pmp_syms)} PMP and APM symbols linked in executable memory (IRAM or flash XIP)",
         t23_actual,
         t23_pass
     )
 
-    # TEST 24: LP Core Coprocessor Driver Linkage & Symbols Validation (Task 4.1)
+    # TEST: LP Core Coprocessor Driver Linkage & Symbols Validation (Task 4.1)
     total += 1
     lp_syms = [
         "lp_core_init",
@@ -755,21 +836,21 @@ def run_suite(elf_path, bin_path, native_test_bin):
     found_lp_syms = [s for s in lp_syms if s in symbols]
     all_lp_found = len(found_lp_syms) == len(lp_syms)
     all_lp_in_text = all(
-        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        in_exec(symbols[s]["value"])
         for s in found_lp_syms
     )
     t24_pass = all_lp_found and all_lp_in_text
-    t24_actual = f"Found {len(found_lp_syms)}/{len(lp_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    t24_actual = f"Found {len(found_lp_syms)}/{len(lp_syms)} symbols, all executable"
     passed += print_result_line(
         total,
         "LP Core Coprocessor Driver Linkage & Symbols Validation",
-        "Verify lp_core_init, load, start/stop, trigger, handshake, and telemetry symbols exist in IRAM",
-        f"All {len(lp_syms)} LP Core driver symbols present in IRAM text section [0x40800000, 0x40829000)",
+        "Verify lp_core_init, load, start/stop, trigger, handshake, and telemetry symbols are linked (IRAM or flash)",
+        f"All {len(lp_syms)} LP Core driver symbols linked in executable memory (IRAM or flash XIP)",
         t24_actual,
         t24_pass
     )
 
-    # TEST 25: Power Management & LP Shared Mailbox Linkage & Symbols Validation (Task 4.2)
+    # TEST: Power Management & LP Shared Mailbox Linkage & Symbols Validation (Task 4.2)
     total += 1
     pwr_syms = [
         "power_init",
@@ -786,7 +867,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
     found_pwr_syms = [s for s in pwr_syms if s in symbols]
     all_pwr_found = len(found_pwr_syms) == len(pwr_syms)
     all_pwr_in_text = all(
-        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        in_iram(symbols[s]["value"])
         for s in found_pwr_syms
     )
     t25_pass = all_pwr_found and all_pwr_in_text
@@ -800,7 +881,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
         t25_pass
     )
 
-    # TEST 26: GPIO Matrix & IO_MUX Pin Routing Linkage & Symbols Validation (Task 4.3)
+    # TEST: GPIO Matrix & IO_MUX Pin Routing Linkage & Symbols Validation (Task 4.3)
     total += 1
     gpio_syms = [
         "gpio_init",
@@ -822,21 +903,21 @@ def run_suite(elf_path, bin_path, native_test_bin):
     found_gpio_syms = [s for s in gpio_syms if s in symbols]
     all_gpio_found = len(found_gpio_syms) == len(gpio_syms)
     all_gpio_in_text = all(
-        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        in_exec(symbols[s]["value"])
         for s in found_gpio_syms
     )
     t26_pass = all_gpio_found and all_gpio_in_text
-    t26_actual = f"Found {len(found_gpio_syms)}/{len(gpio_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    t26_actual = f"Found {len(found_gpio_syms)}/{len(gpio_syms)} symbols, all executable"
     passed += print_result_line(
         total,
         "GPIO Matrix & IO_MUX Pin Routing Subsystem Linkage",
-        "Verify gpio_init, set/get direction, pull, drive strength, level toggle, intr, and telemetry symbols exist in IRAM",
-        f"All {len(gpio_syms)} GPIO driver symbols present in IRAM text section [0x40800000, 0x40829000)",
+        "Verify gpio_init, set/get direction, pull, drive strength, level toggle, intr, and telemetry symbols are linked (IRAM or flash)",
+        f"All {len(gpio_syms)} GPIO driver symbols linked in executable memory (IRAM or flash XIP)",
         t26_actual,
         t26_pass
     )
 
-    # TEST 27: GDMA Multi-Channel Engine & Circular Buffer Descriptor Rings Linkage (Task 4.4)
+    # TEST: GDMA Multi-Channel Engine & Circular Buffer Descriptor Rings Linkage (Task 4.4)
     total += 1
     gdma_syms = [
         "gdma_init",
@@ -859,21 +940,21 @@ def run_suite(elf_path, bin_path, native_test_bin):
     found_gdma_syms = [s for s in gdma_syms if s in symbols]
     all_gdma_found = len(found_gdma_syms) == len(gdma_syms)
     all_gdma_in_text = all(
-        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        in_exec(symbols[s]["value"])
         for s in found_gdma_syms
     )
     t27_pass = all_gdma_found and all_gdma_in_text
-    t27_actual = f"Found {len(found_gdma_syms)}/{len(gdma_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    t27_actual = f"Found {len(found_gdma_syms)}/{len(gdma_syms)} symbols, all executable"
     passed += print_result_line(
         total,
         "GDMA Multi-Channel Engine & Circular Buffer Rings Linkage",
-        "Verify gdma_init, inlink/outlink controls, desc_init, circular linking, and telemetry symbols exist in IRAM",
-        f"All {len(gdma_syms)} GDMA driver symbols present in IRAM text section [0x40800000, 0x40829000)",
+        "Verify gdma_init, inlink/outlink controls, desc_init, circular linking, and telemetry symbols are linked (IRAM or flash)",
+        f"All {len(gdma_syms)} GDMA driver symbols linked in executable memory (IRAM or flash XIP)",
         t27_actual,
         t27_pass
     )
 
-    # TEST 28: Modem Clock & Power Control Linkage & Symbols Validation (Task 5.1)
+    # TEST: Modem Clock & Power Control Linkage & Symbols Validation (Task 5.1)
     total += 1
     modem_syms = [
         "modem_init",
@@ -898,21 +979,21 @@ def run_suite(elf_path, bin_path, native_test_bin):
     found_modem_syms = [s for s in modem_syms if s in symbols]
     all_modem_found = len(found_modem_syms) == len(modem_syms)
     all_modem_in_text = all(
-        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        in_exec(symbols[s]["value"])
         for s in found_modem_syms
     )
     t28_pass = all_modem_found and all_modem_in_text
-    t28_actual = f"Found {len(found_modem_syms)}/{len(modem_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    t28_actual = f"Found {len(found_modem_syms)}/{len(modem_syms)} symbols, all executable"
     passed += print_result_line(
         total,
         "Modem Clock & Power Control Subsystem Linkage",
-        "Verify modem_init, clock gating, reset release, and telemetry symbols exist in IRAM",
-        f"All {len(modem_syms)} modem driver symbols present in IRAM text section [0x40800000, 0x40829000)",
+        "Verify modem_init, clock gating, reset release, and telemetry symbols are linked (IRAM or flash)",
+        f"All {len(modem_syms)} modem driver symbols linked in executable memory (IRAM or flash XIP)",
         t28_actual,
         t28_pass
     )
 
-    # TEST 30: 802.11ax Wi-Fi 6 MAC Driver & Zero-Copy Packet Ring Linkage (Task 5.3)
+    # TEST: 802.11ax Wi-Fi 6 MAC Driver & Zero-Copy Packet Ring Linkage (Task 5.3)
     total += 1
     wifi_syms = [
         "wifi_init",
@@ -929,21 +1010,21 @@ def run_suite(elf_path, bin_path, native_test_bin):
     found_wifi_syms = [s for s in wifi_syms if s in symbols]
     all_wifi_found = len(found_wifi_syms) == len(wifi_syms)
     all_wifi_in_text = all(
-        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        in_exec(symbols[s]["value"])
         for s in found_wifi_syms
     )
     t30_pass = all_wifi_found and all_wifi_in_text
-    t30_actual = f"Found {len(found_wifi_syms)}/{len(wifi_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    t30_actual = f"Found {len(found_wifi_syms)}/{len(wifi_syms)} symbols, all executable"
     passed += print_result_line(
         total,
         "802.11ax Wi-Fi 6 MAC Driver & Zero-Copy Packet Ring Linkage",
-        "Verify wifi_init, ring initialization, verification, zero-copy poll/release, and telemetry symbols exist in IRAM",
-        f"All {len(wifi_syms)} Wi-Fi driver symbols present in IRAM text section [0x40800000, 0x40829000)",
+        "Verify wifi_init, RX queue init/verify, poll/release, and telemetry symbols are linked (IRAM or flash)",
+        f"All {len(wifi_syms)} Wi-Fi driver symbols linked in executable memory (IRAM or flash XIP)",
         t30_actual,
         t30_pass
     )
 
-    # TEST 31: IEEE 802.15.4 Radio Transceiver Driver Linkage (Task 5.4)
+    # TEST: IEEE 802.15.4 Radio Transceiver Driver Linkage (Task 5.4)
     total += 1
     ieee_syms = [
         "ieee802154_init",
@@ -968,21 +1049,21 @@ def run_suite(elf_path, bin_path, native_test_bin):
     found_ieee_syms = [s for s in ieee_syms if s in symbols]
     all_ieee_found = len(found_ieee_syms) == len(ieee_syms)
     all_ieee_in_text = all(
-        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        in_exec(symbols[s]["value"])
         for s in found_ieee_syms
     )
     t31_pass = all_ieee_found and all_ieee_in_text
-    t31_actual = f"Found {len(found_ieee_syms)}/{len(ieee_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    t31_actual = f"Found {len(found_ieee_syms)}/{len(ieee_syms)} symbols, all executable"
     passed += print_result_line(
         total,
         "IEEE 802.15.4 Radio Transceiver Driver Linkage",
-        "Verify ieee802154_init, cmd, channel, addressing, auto-ack, power, and telemetry symbols exist in IRAM",
-        f"All {len(ieee_syms)} IEEE 802.15.4 driver symbols present in IRAM text section [0x40800000, 0x40829000)",
+        "Verify ieee802154_init, cmd, channel, addressing, auto-ack, power, and telemetry symbols are linked (IRAM or flash)",
+        f"All {len(ieee_syms)} IEEE 802.15.4 driver symbols linked in executable memory (IRAM or flash XIP)",
         t31_actual,
         t31_pass
     )
 
-    # TEST 32: Bare-Metal TCP/IP Stack & Lightweight Protocol Engine Linkage (Task 5.5)
+    # TEST: Bare-Metal TCP/IP Stack & Lightweight Protocol Engine Linkage (Task 5.5)
     total += 1
     net_syms = [
         "net_init",
@@ -1017,21 +1098,21 @@ def run_suite(elf_path, bin_path, native_test_bin):
     found_net_syms = [s for s in net_syms if s in symbols]
     all_net_found = len(found_net_syms) == len(net_syms)
     all_net_in_text = all(
-        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        in_exec(symbols[s]["value"])
         for s in found_net_syms
     )
     t32_pass = all_net_found and all_net_in_text
-    t32_actual = f"Found {len(found_net_syms)}/{len(net_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    t32_actual = f"Found {len(found_net_syms)}/{len(net_syms)} symbols, all executable"
     passed += print_result_line(
         total,
         "Bare-Metal TCP/IP Stack & Lightweight Protocol Engine Linkage",
-        "Verify IPv4, ARP, ICMP, UDP and TCP state machine symbols exist in IRAM executable section",
-        f"All {len(net_syms)} TCP/IP driver symbols present in IRAM text section [0x40800000, 0x40829000)",
+        "Verify IPv4, ARP, ICMP, UDP and TCP state machine symbols are linked (IRAM or flash)",
+        f"All {len(net_syms)} TCP/IP driver symbols linked in executable memory (IRAM or flash XIP)",
         t32_actual,
         t32_pass
     )
 
-    # TEST 33: Zero-Allocation Local REST/HTTP Engine & Embedded Web UI (Task 6.1)
+    # TEST: Zero-Allocation Local REST/HTTP Engine & Embedded Web UI (Task 6.1)
     total += 1
     http_syms = [
         "http_server_init",
@@ -1049,21 +1130,21 @@ def run_suite(elf_path, bin_path, native_test_bin):
     found_http_syms = [s for s in http_syms if s in symbols]
     all_http_found = len(found_http_syms) == len(http_syms)
     all_http_in_text = all(
-        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        in_exec(symbols[s]["value"])
         for s in found_http_syms
     )
     t33_pass = all_http_found and all_http_in_text
-    t33_actual = f"Found {len(found_http_syms)}/{len(http_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    t33_actual = f"Found {len(found_http_syms)}/{len(http_syms)} symbols, all executable"
     passed += print_result_line(
         total,
         "Zero-Allocation Local REST/HTTP Engine & Embedded Web UI Linkage",
-        "Verify http_server_init, start/stop, routing, process_request, and telemetry symbols exist in IRAM",
-        f"All {len(http_syms)} HTTP server symbols present in IRAM text section [0x40800000, 0x40829000)",
+        "Verify http_server_init, start/stop, routing, process_request, and telemetry symbols are linked (IRAM or flash)",
+        f"All {len(http_syms)} HTTP server symbols linked in executable memory (IRAM or flash XIP)",
         t33_actual,
         t33_pass
     )
 
-    # TEST 34: LAN Network Diagnostics & Wi-Fi Speed-Test Benchmark Linkage (Task 6.2)
+    # TEST: LAN Network Diagnostics & Wi-Fi Speed-Test Benchmark Linkage (Task 6.2)
     total += 1
     speedtest_syms = [
         "speedtest_init",
@@ -1080,21 +1161,21 @@ def run_suite(elf_path, bin_path, native_test_bin):
     found_speedtest_syms = [s for s in speedtest_syms if s in symbols]
     all_speedtest_found = len(found_speedtest_syms) == len(speedtest_syms)
     all_speedtest_in_text = all(
-        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        in_exec(symbols[s]["value"])
         for s in found_speedtest_syms
     )
     t34_pass = all_speedtest_found and all_speedtest_in_text
-    t34_actual = f"Found {len(found_speedtest_syms)}/{len(speedtest_syms)} symbols in IRAM (.text) [stext=0x{stext:08x}]"
+    t34_actual = f"Found {len(found_speedtest_syms)}/{len(speedtest_syms)} symbols, all executable"
     passed += print_result_line(
         total,
         "LAN Network Diagnostics & Wi-Fi Speed-Test Benchmark Linkage",
-        "Verify speedtest_init, reset, bandwidth calculation, synthetic burst, UDP tx, and telemetry exist in IRAM",
-        f"All {len(speedtest_syms)} Speed-Test benchmark symbols present in IRAM text section [0x40800000, 0x40829000)",
+        "Verify speedtest_init, reset, bandwidth calculation, synthetic burst, UDP tx, and telemetry are linked (IRAM or flash)",
+        f"All {len(speedtest_syms)} Speed-Test benchmark symbols linked in executable memory (IRAM or flash XIP)",
         t34_actual,
         t34_pass
     )
 
-    # TEST 36: Extended Interactive Console Shell & 24/7 Health Monitoring Linkage (Task 6.4)
+    # TEST: Extended Interactive Console Shell & 24/7 Health Monitoring Linkage (Task 6.4)
     total += 1
     shell_iram_syms = [
         "shell_init",
@@ -1115,25 +1196,25 @@ def run_suite(elf_path, bin_path, native_test_bin):
     found_shell_syms = [s for s in all_shell_syms if s in symbols]
     all_shell_found = len(found_shell_syms) == len(all_shell_syms)
     all_iram_in_text = all(
-        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        in_exec(symbols[s]["value"])
         for s in shell_iram_syms if s in symbols
     )
     all_flash_in_xip = all(
-        (symbols[s]["value"] >= 0x42000000 and symbols[s]["value"] < 0x42800000)
+        in_flash(symbols[s]["value"])
         for s in shell_flash_syms if s in symbols
     )
     t36_pass = all_shell_found and all_iram_in_text and all_flash_in_xip
-    t36_actual = f"Found {len(found_shell_syms)}/{len(all_shell_syms)} symbols (IRAM={all_iram_in_text}, FlashXIP={all_flash_in_xip})"
+    t36_actual = f"Found {len(found_shell_syms)}/{len(all_shell_syms)} symbols (core executable={all_iram_in_text}, visualizers in flash={all_flash_in_xip})"
     passed += print_result_line(
         total,
         "Extended Interactive Console Shell & 24/7 Health Monitoring Linkage",
-        "Verify shell_init/tick/health/uptime in IRAM and shell_execute/help/top/info in Flash XIP (.flash.text)",
-        f"All {len(all_shell_syms)} Shell & Health Monitoring symbols properly allocated across IRAM and Flash XIP",
+        "Verify shell_init/tick/health/uptime are linked and shell_execute/help/top/info run from flash XIP",
+        f"All {len(all_shell_syms)} Shell & Health Monitoring symbols linked, visualizers in flash XIP",
         t36_actual,
         t36_pass
     )
 
-    # TEST 37: eFuse Memory Controller & Silicon Security Sealing Linkage (Task 7.1)
+    # TEST: eFuse Memory Controller & Silicon Security Sealing Linkage (Task 7.1)
     total += 1
     efuse_iram_syms = [
         "efuse_init",
@@ -1160,25 +1241,25 @@ def run_suite(elf_path, bin_path, native_test_bin):
     found_efuse_syms = [s for s in all_efuse_syms if s in symbols]
     all_efuse_found = len(found_efuse_syms) == len(all_efuse_syms)
     all_efuse_iram_ok = all(
-        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        in_exec(symbols[s]["value"])
         for s in efuse_iram_syms if s in symbols
     )
     all_efuse_flash_ok = all(
-        (symbols[s]["value"] >= 0x42000000 and symbols[s]["value"] < 0x42800000)
+        in_flash(symbols[s]["value"])
         for s in efuse_flash_syms if s in symbols
     )
     t37_pass = all_efuse_found and all_efuse_iram_ok and all_efuse_flash_ok
-    t37_actual = f"Found {len(found_efuse_syms)}/{len(all_efuse_syms)} symbols (IRAM={all_efuse_iram_ok}, FlashXIP={all_efuse_flash_ok})"
+    t37_actual = f"Found {len(found_efuse_syms)}/{len(all_efuse_syms)} symbols (core executable={all_efuse_iram_ok}, visualizers in flash={all_efuse_flash_ok})"
     passed += print_result_line(
         total,
         "eFuse Memory Controller & Silicon Security Sealing Linkage",
-        "Verify efuse_init, query APIs in IRAM (.text) and diagnostic visualizers in Flash XIP (.flash.text)",
-        f"All {len(all_efuse_syms)} eFuse Controller symbols properly allocated across IRAM and Flash XIP",
+        "Verify efuse_init and query APIs are linked and diagnostic visualizers run from flash XIP",
+        f"All {len(all_efuse_syms)} eFuse Controller symbols linked, visualizers in flash XIP",
         t37_actual,
         t37_pass
     )
 
-    # TEST 38: 24/7 Stability Soak, Memory Leak & Anti-Starvation Linkage (Task 7.2)
+    # TEST: 24/7 Stability Soak, Memory Leak & Anti-Starvation Linkage (Task 7.2)
     total += 1
     soak_iram_syms = [
         "soak_init",
@@ -1197,25 +1278,25 @@ def run_suite(elf_path, bin_path, native_test_bin):
     found_soak_syms = [s for s in all_soak_syms if s in symbols]
     all_soak_found = len(found_soak_syms) == len(all_soak_syms)
     all_soak_iram_ok = all(
-        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        in_exec(symbols[s]["value"])
         for s in soak_iram_syms if s in symbols
     )
     all_soak_flash_ok = all(
-        (symbols[s]["value"] >= 0x42000000 and symbols[s]["value"] < 0x42800000)
+        in_flash(symbols[s]["value"])
         for s in soak_flash_syms if s in symbols
     )
     t38_pass = all_soak_found and all_soak_iram_ok and all_soak_flash_ok
-    t38_actual = f"Found {len(found_soak_syms)}/{len(all_soak_syms)} symbols (IRAM={all_soak_iram_ok}, FlashXIP={all_soak_flash_ok})"
+    t38_actual = f"Found {len(found_soak_syms)}/{len(all_soak_syms)} symbols (core executable={all_soak_iram_ok}, visualizers in flash={all_soak_flash_ok})"
     passed += print_result_line(
         total,
         "24/7 Stability Soak, Memory Leak & Anti-Starvation Linkage",
-        "Verify soak_init, audit and stability APIs in IRAM (.text) and diagnostic visualizers in Flash XIP (.flash.text)",
-        f"All {len(all_soak_syms)} Soak stability symbols properly allocated across IRAM and Flash XIP",
+        "Verify soak_init, audit and stability APIs are linked and diagnostic visualizers run from flash XIP",
+        f"All {len(all_soak_syms)} Soak stability symbols linked, visualizers in flash XIP",
         t38_actual,
         t38_pass
     )
 
-    # TEST 39: Dual-Slot Flash OTA Firmware Upgrade & Rollback Linkage (Task 7.3)
+    # TEST: Dual-Slot Flash OTA Firmware Upgrade & Rollback Linkage (Task 7.3)
     total += 1
     ota_iram_syms = [
         "ota_init",
@@ -1241,25 +1322,25 @@ def run_suite(elf_path, bin_path, native_test_bin):
     found_ota_syms = [s for s in all_ota_syms if s in symbols]
     all_ota_found = len(found_ota_syms) == len(all_ota_syms)
     all_ota_iram_ok = all(
-        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        in_exec(symbols[s]["value"])
         for s in ota_iram_syms if s in symbols
     )
     all_ota_flash_ok = all(
-        (symbols[s]["value"] >= 0x42000000 and symbols[s]["value"] < 0x42800000)
+        in_flash(symbols[s]["value"])
         for s in ota_flash_syms if s in symbols
     )
     t39_pass = all_ota_found and all_ota_iram_ok and all_ota_flash_ok
-    t39_actual = f"Found {len(found_ota_syms)}/{len(all_ota_syms)} symbols (IRAM={all_ota_iram_ok}, FlashXIP={all_ota_flash_ok})"
+    t39_actual = f"Found {len(found_ota_syms)}/{len(all_ota_syms)} symbols (core executable={all_ota_iram_ok}, visualizers in flash={all_ota_flash_ok})"
     passed += print_result_line(
         total,
         "Dual-Slot Flash OTA Firmware Upgrade & Rollback Linkage",
-        "Verify ota_init, switch, rollback, verify APIs in IRAM and diagnostic visualizers in Flash XIP (.flash.text)",
-        f"All {len(all_ota_syms)} OTA subsystem symbols properly allocated across IRAM and Flash XIP",
+        "Verify ota_init, switch, rollback, verify APIs are linked and diagnostic visualizers run from flash XIP",
+        f"All {len(all_ota_syms)} OTA subsystem symbols linked, visualizers in flash XIP",
         t39_actual,
         t39_pass
     )
 
-    # TEST 40: Production Hardening, NVS Storage Engine & Golden Master Linkage (Task 7.4)
+    # TEST: Production Hardening, NVS Storage Engine & Golden Master Linkage (Task 7.4)
     total += 1
     nvs_iram_syms = [
         "nvs_init",
@@ -1283,25 +1364,25 @@ def run_suite(elf_path, bin_path, native_test_bin):
     found_nvs_syms = [s for s in all_nvs_syms if s in symbols]
     all_nvs_found = len(found_nvs_syms) == len(all_nvs_syms)
     all_nvs_iram_ok = all(
-        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        in_exec(symbols[s]["value"])
         for s in nvs_iram_syms if s in symbols
     )
     all_nvs_flash_ok = all(
-        (symbols[s]["value"] >= 0x42000000 and symbols[s]["value"] < 0x42800000)
+        in_flash(symbols[s]["value"])
         for s in nvs_flash_syms if s in symbols
     )
     t40_pass = all_nvs_found and all_nvs_iram_ok and all_nvs_flash_ok
-    t40_actual = f"Found {len(found_nvs_syms)}/{len(all_nvs_syms)} symbols (IRAM={all_nvs_iram_ok}, FlashXIP={all_nvs_flash_ok})"
+    t40_actual = f"Found {len(found_nvs_syms)}/{len(all_nvs_syms)} symbols (core executable={all_nvs_iram_ok}, visualizers in flash={all_nvs_flash_ok})"
     passed += print_result_line(
         total,
         "Production Hardening, NVS Storage Engine & Golden Master Linkage",
-        "Verify nvs_init, get/set/erase, stats in IRAM and visualizers in Flash XIP (.flash.text)",
-        f"All {len(all_nvs_syms)} NVS and Golden Master symbols properly allocated across IRAM and Flash XIP",
+        "Verify nvs_init, get/set/erase, stats are linked and visualizers run from flash XIP",
+        f"All {len(all_nvs_syms)} NVS and Golden Master symbols linked, visualizers in flash XIP",
         t40_actual,
         t40_pass
     )
 
-    # TEST 41: SoftAP Captive Portal Wi-Fi Provisioning Linkage (Task 8.1)
+    # TEST: SoftAP Captive Portal Wi-Fi Provisioning Linkage (Task 8.1)
     total += 1
     prov_iram_syms = [
         "provisioning_init",
@@ -1324,25 +1405,25 @@ def run_suite(elf_path, bin_path, native_test_bin):
     found_prov_syms = [s for s in all_prov_syms if s in symbols]
     all_prov_found = len(found_prov_syms) == len(all_prov_syms)
     all_prov_iram_ok = all(
-        (symbols[s]["value"] >= stext and symbols[s]["value"] < 0x40829000)
+        in_exec(symbols[s]["value"])
         for s in prov_iram_syms if s in symbols
     )
     all_prov_flash_ok = all(
-        (symbols[s]["value"] >= 0x42000000 and symbols[s]["value"] < 0x42800000)
+        in_flash(symbols[s]["value"])
         for s in prov_flash_syms if s in symbols
     )
     t41_pass = all_prov_found and all_prov_iram_ok and all_prov_flash_ok
-    t41_actual = f"Found {len(found_prov_syms)}/{len(all_prov_syms)} symbols (IRAM={all_prov_iram_ok}, FlashXIP={all_prov_flash_ok})"
+    t41_actual = f"Found {len(found_prov_syms)}/{len(all_prov_syms)} symbols (core executable={all_prov_iram_ok}, visualizers in flash={all_prov_flash_ok})"
     passed += print_result_line(
         total,
         "SoftAP Captive Portal Wi-Fi Provisioning Linkage",
-        "Verify provisioning_init, get/set/clear creds, scan in IRAM and visualizers in Flash XIP (.flash.text)",
-        f"All {len(all_prov_syms)} provisioning subsystem symbols properly allocated across IRAM and Flash XIP",
+        "Verify provisioning_init, get/set/clear creds, scan are linked and visualizers run from flash XIP",
+        f"All {len(all_prov_syms)} provisioning subsystem symbols linked, visualizers in flash XIP",
         t41_actual,
         t41_pass
     )
 
-    # TEST 42: Bare-Metal Wi-Fi Station (STA) WPA2-PSK Client & mDNS Linkage (Task 8.2)
+    # TEST: Bare-Metal Wi-Fi Station (STA) WPA2-PSK Client & mDNS Linkage (Task 8.2)
     total += 1
     wpa2_sta_flash_syms = [
         "wpa2_client_init",
@@ -1390,7 +1471,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
     found_wpa2_syms = [s for s in wpa2_sta_flash_syms if s in symbols]
     all_wpa2_found = len(found_wpa2_syms) == len(wpa2_sta_flash_syms)
     all_wpa2_flash_ok = all(
-        (symbols[s]["value"] >= 0x42000000 and symbols[s]["value"] < 0x42800000)
+        in_flash(symbols[s]["value"])
         for s in wpa2_sta_flash_syms if s in symbols
     )
     t42_pass = all_wpa2_found and all_wpa2_flash_ok
@@ -1404,7 +1485,7 @@ def run_suite(elf_path, bin_path, native_test_bin):
         t42_pass
     )
 
-    # TEST 43: Dedicated Companion Application & Extended REST API Engine (Task 8.3)
+    # TEST: Dedicated Companion Application & Extended REST API Engine (Task 8.3)
     total += 1
     app_files = [
         "app/index.html",
@@ -1425,13 +1506,13 @@ def run_suite(elf_path, bin_path, native_test_bin):
     found_comp_syms = [s for s in companion_flash_syms if s in symbols]
     all_comp_found = len(found_comp_syms) == len(companion_flash_syms)
     all_comp_flash_ok = all(
-        (symbols[s]["value"] >= 0x42000000 and symbols[s]["value"] < 0x42800000)
+        in_flash(symbols[s]["value"])
         for s in companion_flash_syms if s in symbols
     )
 
     etext_ok = ("_etext" in symbols) and (symbols["_etext"]["value"] <= 0x40829000)
     t43_pass = all_files_exist and all_comp_found and all_comp_flash_ok and etext_ok
-    t43_actual = f"ClientAssets={all_files_exist} ({len(app_files)}/6 files), Symbols={len(found_comp_syms)}/5 in FlashXIP, _etext=0x{symbols.get('_etext', {}).get('value', 0):08x} <= 0x40829000"
+    t43_actual = f"ClientAssets={all_files_exist} ({len(app_files)}/6 files), Symbols={len(found_comp_syms)}/{len(companion_flash_syms)} in FlashXIP, _etext=0x{symbols.get('_etext', {}).get('value', 0):08x} <= 0x40829000"
     passed += print_result_line(
         total,
         "Dedicated Companion Application & Extended REST API Engine Linkage",
@@ -1439,6 +1520,48 @@ def run_suite(elf_path, bin_path, native_test_bin):
         "All client assets validated, REST handlers linked in Flash XIP, and _etext <= 0x40829000",
         t43_actual,
         t43_pass
+    )
+
+    # TEST: Code that must run without flash never calls into flash (REV-08)
+    total += 1
+    objdump = find_objdump(objdump_path)
+    if objdump is None:
+        clo_pass = False
+        clo_actual = "objdump not found (pass --objdump)"
+    else:
+        clo_roots, clo_walked, clo_violations = iram_call_closure(elf_path, objdump, in_iram, in_flash)
+        flash_ops = [r for r in clo_roots if r.startswith("flash_")]
+        clo_pass = (not clo_violations) and len(flash_ops) >= FLASH_OP_ROUTINES_MIN and "mmu_init" in clo_roots
+        clo_actual = (f"{len(clo_roots)} roots ({len(flash_ops)} flash routines), {len(clo_walked)} IRAM functions walked, "
+                      f"{len(clo_violations)} calls into flash")
+        for v in clo_violations[:8]:
+            clo_actual += f"\n               flash call: {v}"
+    passed += print_result_line(
+        total,
+        "IRAM-Only Code Paths (pre-MMU, trap/panic, flash routines)",
+        "Walk direct calls from clock_init, mmu_init, trap/panic entry and the NVS/OTA flash routines through IRAM",
+        f"All roots in IRAM, >= {FLASH_OP_ROUTINES_MIN} flash routines found, no call path reaches flash XIP",
+        clo_actual,
+        clo_pass
+    )
+
+    # TEST: Memory budgets (mirror of the ld/link.ld ASSERTs, with the numbers)
+    total += 1
+    main_stack_top = symbols.get("_main_stack_top", {}).get("value", 0)
+    iram_free = IRAM_END - etext
+    main_stack = main_stack_top - ebss
+    flash_used = symbols["_eflash_xip"]["value"] - symbols["_sflash_xip"]["value"]
+    bud_pass = (iram_free >= IRAM_MIN_FREE and main_stack >= MAIN_STACK_MIN_SIZE
+                and 0 < main_stack_top <= ROM_DATA_START)
+    bud_actual = (f"IRAM used {etext - stext} B, free {iram_free} B; main stack {main_stack} B; "
+                  f"flash XIP {flash_used} B")
+    passed += print_result_line(
+        total,
+        "Memory Budgets: IRAM Headroom, Main Stack, Flash XIP",
+        "Report IRAM/stack/flash usage and enforce the headroom budgets",
+        f"IRAM free >= {IRAM_MIN_FREE} B, main stack >= {MAIN_STACK_MIN_SIZE} B, stack top <= 0x{ROM_DATA_START:08x}",
+        bud_actual,
+        bud_pass
     )
 
     print("\n" + "=" * 70)
@@ -1458,5 +1581,6 @@ if __name__ == "__main__":
     parser.add_argument("--elf", default="build/firmware.elf")
     parser.add_argument("--bin", default="build/firmware.bin")
     parser.add_argument("--host-test", default="build/host/test_freestanding")
+    parser.add_argument("--objdump", default=None, help="cross objdump (default: search PATH)")
     args = parser.parse_args()
-    run_suite(args.elf, args.bin, args.host_test)
+    run_suite(args.elf, args.bin, args.host_test, args.objdump)

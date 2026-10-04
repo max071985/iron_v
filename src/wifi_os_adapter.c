@@ -879,7 +879,11 @@ typedef struct {
     bool          repeat;        /* Periodic timer */
     bool          active;        /* Arm status */
     uint32_t      fires;         /* Callback invocations (diagnostics) */
+    uint32_t      max_us;        /* Longest callback run time (diagnostics) */
 } wifi_timer_tracker_t;
+
+/* Longest wifi_poll_rx_traffic() call made from the adapter poll (diagnostics) */
+static uint32_t s_poll_rx_max_us = 0U;
 
 static wifi_timer_tracker_t s_timer_trackers[WIFI_MAX_ACTIVE_TIMERS];
 
@@ -1053,7 +1057,10 @@ static void wifi_timer_invalidate_handle(void *ptr)
 /* Shell diagnostics: one line per tracked blob timer */
 void wifi_os_adapter_print_timers(void)
 {
-    console_puts("slot fn         period_us  rep act fires\r\n");
+    console_puts("RX drain max (adapter poll): ");
+    put_dec(s_poll_rx_max_us);
+    console_puts(" us\r\n");
+    console_puts("slot fn         period_us  rep act fires max_us\r\n");
     for (uint32_t i = 0U; i < WIFI_MAX_ACTIVE_TIMERS; i++)
     {
         const wifi_timer_tracker_t *t = &s_timer_trackers[i];
@@ -1066,6 +1073,8 @@ void wifi_os_adapter_print_timers(void)
         console_puts(t->repeat ? " R" : " -");
         console_puts(t->active ? " A " : " - ");
         put_dec(t->fires);
+        console_puts(" ");
+        put_dec(t->max_us);
         console_puts("\r\n");
     }
 }
@@ -1078,9 +1087,14 @@ void wifi_os_adapter_poll(void)
 
     wdt_feed();
     lp_wdt_feed();
+    uint64_t rx_start_us = systimer_get_us();
     wifi_poll_rx_traffic();
 
     uint64_t now_us = systimer_get_us();
+    if ((now_us - rx_start_us) > s_poll_rx_max_us)
+    {
+        s_poll_rx_max_us = (uint32_t)(now_us - rx_start_us);
+    }
 
     for (uint32_t i = 0U; i < WIFI_MAX_ACTIVE_TIMERS; i++)
     {
@@ -1106,7 +1120,13 @@ void wifi_os_adapter_poll(void)
 
             if (is_valid_instruction_address((uintptr_t)fn))
             {
+                uint64_t cb_start_us = systimer_get_us();
                 fn(arg);
+                uint32_t cb_us = (uint32_t)(systimer_get_us() - cb_start_us);
+                if (cb_us > s_timer_trackers[i].max_us)
+                {
+                    s_timer_trackers[i].max_us = cb_us;
+                }
             }
         }
         else

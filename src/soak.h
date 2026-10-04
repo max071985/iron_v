@@ -35,6 +35,11 @@ typedef enum {
 
 /* Tuning & Threshold Constants (Zero Magic Numbers) */
 #define SOAK_SCHED_LATENCY_THRESHOLD_US   (1000U)
+/* Yield latency is sampled in steady state: the warm-up yields let other tasks
+ * finish work queued while the caller ran (e.g. a SoftAP restart), then the
+ * worst of the sample yields is compared with the threshold. */
+#define SOAK_SCHED_WARMUP_YIELDS          (8U)
+#define SOAK_SCHED_SAMPLE_YIELDS          (16U)
 #define SOAK_TEST_SMALL_BLOCKS            (8U)
 #define SOAK_TEST_MED_BLOCKS              (4U)
 #define SOAK_TEST_SCRATCH_SIZE            (512U)

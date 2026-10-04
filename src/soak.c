@@ -138,11 +138,23 @@ int soak_audit_scheduler(soak_sched_audit_t *out_audit)
     out_audit->max_yield_latency_us = s_mock_sched_latency_us;
     out_audit->total_switches = 25U;
 #else
-    uint64_t t0 = systimer_get_us();
-    task_yield();
-    uint64_t t1 = systimer_get_us();
-    uint64_t delta = (t1 > t0) ? (t1 - t0) : 0ULL;
-    out_audit->max_yield_latency_us = delta;
+    for (uint32_t i = 0U; i < SOAK_SCHED_WARMUP_YIELDS; i++)
+    {
+        task_yield();
+    }
+    uint64_t max_delta = 0ULL;
+    for (uint32_t i = 0U; i < SOAK_SCHED_SAMPLE_YIELDS; i++)
+    {
+        uint64_t t0 = systimer_get_us();
+        task_yield();
+        uint64_t t1 = systimer_get_us();
+        uint64_t delta = (t1 > t0) ? (t1 - t0) : 0ULL;
+        if (delta > max_delta)
+        {
+            max_delta = delta;
+        }
+    }
+    out_audit->max_yield_latency_us = max_delta;
 
     task_scheduler_status_t status;
     task_get_status(&status);

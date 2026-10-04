@@ -10,6 +10,7 @@ CROSS_COMPILE ?= $(shell \
 CC = $(CROSS_COMPILE)gcc
 LD = $(CROSS_COMPILE)ld
 OBJCOPY = $(CROSS_COMPILE)objcopy
+OBJDUMP = $(CROSS_COMPILE)objdump
 
 # All build outputs live under $(BUILD)
 BUILD ?= build
@@ -170,7 +171,7 @@ host-test: $(HOST_TEST_BIN)
 	@python3 tests/test_companion_app.py
 
 test: host-test $(ELF) $(BIN)
-	@python3 tests/test_runner.py --elf $(ELF) --bin $(BIN) --host-test $(HOST_TEST_BIN)
+	@python3 tests/test_runner.py --elf $(ELF) --bin $(BIN) --host-test $(HOST_TEST_BIN) --objdump $(OBJDUMP)
 
 clean:
 	rm -rf $(BUILD)

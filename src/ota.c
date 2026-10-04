@@ -6,6 +6,7 @@
  */
 
 #include "ota.h"
+#include "section.h"
 #include "string.h"
 #include "console.h"
 #include "utils.h"
@@ -119,7 +120,7 @@ static uint32_t calc_crc32(const void *data, size_t len)
 }
 
 /* Low-Level Flash Operations Abstraction */
-static ota_status_t flash_read(uint32_t offset, void *dest, size_t len)
+static IRAM_ATTR ota_status_t flash_read(uint32_t offset, void *dest, size_t len)
 {
     if (dest == NULL || len == 0U)
     {
@@ -196,7 +197,7 @@ static ota_status_t flash_read(uint32_t offset, void *dest, size_t len)
 #endif
 }
 
-static ota_status_t flash_write(uint32_t offset, const void *src, size_t len)
+static IRAM_ATTR ota_status_t flash_write(uint32_t offset, const void *src, size_t len)
 {
     if (src == NULL || len == 0U)
     {
@@ -278,7 +279,7 @@ static ota_status_t flash_write(uint32_t offset, const void *src, size_t len)
 #endif
 }
 
-static ota_status_t flash_erase_sector(uint32_t offset)
+static IRAM_ATTR ota_status_t flash_erase_sector(uint32_t offset)
 {
     s_telemetry.flash_erases++;
 

@@ -6,10 +6,8 @@
 .global _hang
 
 _start:
-    /* 1. Setup Stack Pointer (Placed below ROM reserved DRAM at 0x4087CE00, 16-byte aligned) */
-    la sp, _stack_top
-    li t0, ESP32C6_ROM_RESERVED_DRAM_SIZE
-    sub sp, sp, t0
+    /* 1. Main stack below the ROM-reserved top of SRAM (ld/link.ld: _main_stack_top) */
+    la sp, _main_stack_top
 
     /* 2. Setup Global Pointer (gp) safely to optimize linker relaxation */
     .option push

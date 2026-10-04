@@ -106,6 +106,21 @@ static dhcp_status_t dhcp_send_udp_frame(const uint8_t *dest_mac, uint32_t dest_
     return (wst == WIFI_OK) ? DHCP_OK : DHCP_ERR_TX_FAILED;
 }
 
+/*
+ * Server reply destination per RFC 2131 section 4.1: OFFER/ACK go unicast to the
+ * client's hardware address and yiaddr unless it set the broadcast flag. Unicast
+ * 802.11 frames are acknowledged and retried; AP broadcasts are not and can be
+ * missed by a phone that just associated.
+ */
+static uint32_t dhcp_reply_dest_ip(const dhcp_packet_t *req, uint32_t yiaddr)
+{
+    if ((NET_NTOHS(req->flags) & DHCP_FLAG_BROADCAST) != 0U)
+    {
+        return DHCP_IP_BROADCAST;
+    }
+    return yiaddr;
+}
+
 /* ========================================================================= */
 /* Subsystem Lifecycle Initialization                                        */
 /* ========================================================================= */
@@ -366,7 +381,7 @@ dhcp_status_t dhcp_process_packet(const uint8_t *eth_frame, const uint8_t *paylo
             memset(&resp.options[opt_offset], 0, 300U - resp_len);
             resp_len = 300U;
         }
-        dhcp_status_t st = dhcp_send_udp_frame(req->chaddr, 0xFFFFFFFFU,
+        dhcp_status_t st = dhcp_send_udp_frame(req->chaddr, dhcp_reply_dest_ip(req, lease->ip),
                                                DHCP_SERVER_PORT, DHCP_CLIENT_PORT,
                                                &resp, resp_len);
         if (st == DHCP_OK)
@@ -486,7 +501,7 @@ dhcp_status_t dhcp_process_packet(const uint8_t *eth_frame, const uint8_t *paylo
             memset(&resp.options[opt_offset], 0, 300U - resp_len);
             resp_len = 300U;
         }
-        dhcp_status_t st = dhcp_send_udp_frame(req->chaddr, 0xFFFFFFFFU,
+        dhcp_status_t st = dhcp_send_udp_frame(req->chaddr, dhcp_reply_dest_ip(req, lease->ip),
                                                DHCP_SERVER_PORT, DHCP_CLIENT_PORT,
                                                &resp, resp_len);
         if (st == DHCP_OK)

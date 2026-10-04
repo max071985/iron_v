@@ -36,6 +36,10 @@
 #define DHCP_OPT_PAD                    0U
 #define DHCP_OPT_SUBNET_MASK            1U
 #define DHCP_OPT_ROUTER                 3U
+/* BOOTP flags: client asks for broadcast replies (RFC 2131 section 2) */
+#define DHCP_FLAG_BROADCAST             0x8000U
+#define DHCP_IP_BROADCAST               0xFFFFFFFFU
+
 #define DHCP_OPT_DNS                    6U
 #define DHCP_OPT_REQUESTED_IP           50U
 #define DHCP_OPT_LEASE_TIME             51U

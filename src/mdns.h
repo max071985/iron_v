@@ -30,6 +30,8 @@ extern "C" {
 #define MDNS_DEFAULT_HOSTNAME               "iron-v"
 #define MDNS_DOMAIN                         "local"
 #define MDNS_DEFAULT_TTL_SEC                120U
+#define MDNS_LEGACY_UNICAST_TTL_SEC         10U   /* RFC 6762 6.7: one-shot queriers cache briefly */
+#define MDNS_QCLASS_MASK                    0x7FFFU /* top bit: unicast-response requested (QU) */
 #define MDNS_MAX_HOSTNAME_LEN               32U
 #define MDNS_MAX_PACKET_LEN                 512U
 
@@ -43,6 +45,7 @@ extern "C" {
 
 /* DNS Record Types */
 #define MDNS_TYPE_A                         0x0001U
+#define MDNS_TYPE_AAAA                      0x001CU
 #define MDNS_TYPE_PTR                       0x000CU
 #define MDNS_TYPE_TXT                       0x0010U
 #define MDNS_TYPE_SRV                       0x0021U
@@ -91,6 +94,9 @@ mdns_status_t mdns_set_hostname(const char *hostname);
 
 /* Network Processing & Advertising */
 mdns_status_t mdns_process_packet(const uint8_t *eth_frame, const uint8_t *payload, uint16_t len);
+/* Query from src_ip:src_port. A source port other than 5353 is a one-shot (legacy) querier,
+ * e.g. a phone's system resolver: it gets a unicast reply with its ID and question (RFC 6762 6.7) */
+mdns_status_t mdns_process_query(const uint8_t *payload, uint16_t len, uint32_t src_ip, uint16_t src_port);
 mdns_status_t mdns_announce(void);
 mdns_status_t mdns_get_telemetry(mdns_telemetry_t *out_telem);
 

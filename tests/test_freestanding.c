@@ -3849,6 +3849,59 @@ static void test_wpa2_handshake(void)
                 WPA2_ERR_UNSUPPORTED, "64-character raw PSK is reported as unsupported");
 }
 
+/* Builds an mDNS query for iron-v.local (A, class IN) with the given ID; returns its length */
+static uint16_t build_mdns_a_query(uint8_t *q, uint16_t id)
+{
+    static const uint8_t name[] = {6, 'i', 'r', 'o', 'n', '-', 'v', 5, 'l', 'o', 'c', 'a', 'l', 0};
+    memset(q, 0, 12U);
+    q[0] = (uint8_t)(id >> 8U); q[1] = (uint8_t)id;
+    q[5] = 1U;                                    /* qdcount = 1 */
+    memcpy(&q[12], name, sizeof(name));
+    uint16_t n = (uint16_t)(12U + sizeof(name));
+    q[n++] = 0U; q[n++] = MDNS_TYPE_A;
+    q[n++] = 0U; q[n++] = MDNS_CLASS_IN;
+    return n;
+}
+
+/* REV-29 phone report: phones resolve .local with one-shot queries from a random port and only
+ * accept a unicast reply with their ID and question (RFC 6762 6.7) */
+static void test_mdns_legacy_unicast(void)
+{
+    printf("  [TEST] mDNS one-shot (legacy unicast) queries...\n");
+    uint8_t q[64];
+    uint16_t qlen = build_mdns_a_query(q, 0x1234U);
+    mdns_init();
+    mdns_set_hostname("iron-v");
+    net_set_ip(0x0A000029U, 0xFFFFFF00U, 0x0A000001U);   /* 10.0.0.41 */
+    arp_insert(0x0A000032U, (const uint8_t *)"\x02\x11\x22\x33\x44\x55");
+
+    TEST_ASSERT(mdns_process_query(q, qlen, 0x0A000032U, 40000U) == MDNS_OK, "One-shot query answered");
+    uint16_t flen = 0U;
+    const uint8_t *f = wifi_host_last_tx(&flen, NULL);
+    const uint8_t *udp = f + ETH_HDR_LEN + IPV4_MIN_HDR_LEN;
+    const uint8_t *dns = udp + UDP_HDR_LEN;
+    TEST_ASSERT(f[0] == 0x02U && f[5] == 0x55U, "Reply goes to the querier's MAC (unicast)");
+    TEST_ASSERT(((udp[2] << 8) | udp[3]) == 40000 && ((udp[0] << 8) | udp[1]) == MDNS_PORT, "Reply to the query's source port, from 5353");
+    TEST_ASSERT(dns[0] == 0x12U && dns[1] == 0x34U, "Reply echoes the query ID");
+    TEST_ASSERT(dns[5] == 1U && dns[7] == 1U, "Reply repeats the question and has one answer");
+    size_t ans = 12U + (qlen - 12U);                      /* answer follows the repeated question */
+    const uint8_t *rr = dns + ans + 14U;                  /* skip answer name (14 bytes) */
+    TEST_ASSERT(rr[2] == 0x00U && rr[3] == MDNS_CLASS_IN, "No cache-flush bit in a unicast reply");
+    TEST_ASSERT(rr[7] == MDNS_LEGACY_UNICAST_TTL_SEC && rr[10] == 10U && rr[13] == 41U, "Short TTL and the board's address");
+
+    TEST_ASSERT(mdns_process_query(q, qlen, 0x0A000032U, MDNS_PORT) == MDNS_OK, "Query from port 5353 answered");
+    f = wifi_host_last_tx(&flen, NULL);
+    udp = f + ETH_HDR_LEN + IPV4_MIN_HDR_LEN;
+    dns = udp + UDP_HDR_LEN;
+    TEST_ASSERT(f[0] == MDNS_MULTICAST_MAC_0 && ((udp[2] << 8) | udp[3]) == MDNS_PORT && dns[0] == 0U && dns[5] == 0U,
+                "Full mDNS querier: multicast answer, ID 0, no question");
+    q[qlen - 2U] = 0x80U;                                 /* QU bit */
+    TEST_ASSERT(mdns_process_query(q, qlen, 0x0A000032U, MDNS_PORT) == MDNS_OK, "QU query still matched");
+    q[qlen - 3U] = MDNS_TYPE_AAAA;
+    q[qlen - 2U] = 0U;
+    TEST_ASSERT(mdns_process_query(q, qlen, 0x0A000032U, 40000U) == MDNS_ERR_NO_MATCH, "AAAA query: no IPv6 address, no answer");
+}
+
 static void test_wpa2_client_and_mdns_subsystem(void)
 {
     printf("  [TEST] Bare-Metal Wi-Fi Station (STA) WPA2-PSK Client & Home LAN Join (Task 8.2)...\n");
@@ -5265,6 +5318,7 @@ int main(void)
     test_selftest_snapshots();
     test_provisioning_subsystem();
     test_provisioning_join();
+    test_mdns_legacy_unicast();
     test_wpa2_client_and_mdns_subsystem();
     test_wpa_ie_parsing();
     test_wpa2_handshake();

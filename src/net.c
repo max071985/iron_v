@@ -695,7 +695,8 @@ net_status_t net_input(const uint8_t *frame, uint16_t len)
                     }
                     else if (dest_port == MDNS_PORT)
                     {
-                        mdns_process_packet(frame, payload, payload_len);
+                        mdns_process_query(payload, payload_len, NET_NTOHL(ip->src_ip),
+                                           NET_NTOHS(udp->src_port));
                     }
                     else if (dest_port == SPEEDTEST_DEFAULT_PORT)
                     {

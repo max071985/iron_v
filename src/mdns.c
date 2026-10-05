@@ -216,6 +216,11 @@ mdns_status_t mdns_announce(void)
 mdns_status_t mdns_process_packet(const uint8_t *eth_frame, const uint8_t *payload, uint16_t len)
 {
     (void)eth_frame;
+    return mdns_process_query(payload, len, 0U, MDNS_PORT);
+}
+
+mdns_status_t mdns_process_query(const uint8_t *payload, uint16_t len, uint32_t src_ip, uint16_t src_port)
+{
     if (payload == NULL || len < sizeof(dns_hdr_t))
     {
         s_mdns_telem.invalid_packets++;
@@ -256,6 +261,7 @@ mdns_status_t mdns_process_packet(const uint8_t *eth_frame, const uint8_t *paylo
         }
 
         uint16_t qtype  = (uint16_t)(((uint16_t)payload[offset] << 8U) | (uint16_t)payload[offset + 1U]);
+        uint16_t qclass = (uint16_t)(((uint16_t)payload[offset + 2U] << 8U) | (uint16_t)payload[offset + 3U]);
         offset += 4U; /* Skip QTYPE and QCLASS */
 
         /* Target match: "<hostname>.local" */
@@ -265,7 +271,8 @@ mdns_status_t mdns_process_packet(const uint8_t *eth_frame, const uint8_t *paylo
         memcpy(target_fqdn + hlen, ".local", 7);
 
         if (mdns_strcasecmp(query_name, target_fqdn) &&
-            (qtype == MDNS_TYPE_A || qtype == MDNS_TYPE_ANY))
+            (qtype == MDNS_TYPE_A || qtype == MDNS_TYPE_ANY) &&
+            ((qclass & MDNS_QCLASS_MASK) == MDNS_CLASS_IN))
         {
             matched = true;
             s_mdns_telem.host_queries_matched++;
@@ -278,33 +285,6 @@ mdns_status_t mdns_process_packet(const uint8_t *eth_frame, const uint8_t *paylo
         return MDNS_ERR_NO_MATCH;
     }
 
-    /* Synthesize Response Packet */
-    uint8_t response[MDNS_MAX_PACKET_LEN];
-    dns_hdr_t *resp_hdr = (dns_hdr_t *)response;
-    resp_hdr->id = 0U; /* mDNS answers use ID 0 */
-    resp_hdr->flags = NET_HTONS(MDNS_FLAGS_RESPONSE_AA);
-    resp_hdr->qdcount = 0U;
-    resp_hdr->ancount = NET_HTONS(1U);
-    resp_hdr->nscount = 0U;
-    resp_hdr->arcount = 0U;
-
-    size_t pos = sizeof(dns_hdr_t);
-
-    /* Answer Name */
-    size_t name_len = mdns_encode_name(s_mdns_telem.hostname, &response[pos], sizeof(response) - pos);
-    if (name_len == 0U) return MDNS_ERR_BUFFER_SMALL;
-    pos += name_len;
-
-    /* Type A (0x0001) */
-    response[pos++] = 0x00U; response[pos++] = (uint8_t)MDNS_TYPE_A;
-    /* Class IN + Cache-Flush (0x8001) */
-    response[pos++] = 0x80U; response[pos++] = (uint8_t)MDNS_CLASS_IN;
-    /* TTL: 120 seconds */
-    response[pos++] = 0x00U; response[pos++] = 0x00U;
-    response[pos++] = 0x00U; response[pos++] = (uint8_t)MDNS_DEFAULT_TTL_SEC;
-    /* Data Length: 4 bytes */
-    response[pos++] = 0x00U; response[pos++] = 0x04U;
-
     net_config_t ncfg;
     net_get_config(&ncfg);
     if (ncfg.ip == 0U)
@@ -314,12 +294,60 @@ mdns_status_t mdns_process_packet(const uint8_t *eth_frame, const uint8_t *paylo
     uint32_t ip = ncfg.ip;
     s_mdns_telem.advertised_ip = ip;
 
+    bool legacy = (src_port != MDNS_PORT) && (src_ip != 0U);
+
+    /* Synthesize Response Packet */
+    uint8_t response[MDNS_MAX_PACKET_LEN];
+    dns_hdr_t *resp_hdr = (dns_hdr_t *)response;
+    resp_hdr->id = legacy ? hdr->id : 0U; /* multicast answers use ID 0 */
+    resp_hdr->flags = NET_HTONS(MDNS_FLAGS_RESPONSE_AA);
+    resp_hdr->qdcount = legacy ? NET_HTONS(1U) : 0U;
+    resp_hdr->ancount = NET_HTONS(1U);
+    resp_hdr->nscount = 0U;
+    resp_hdr->arcount = 0U;
+
+    size_t pos = sizeof(dns_hdr_t);
+    size_t name_len = 0U;
+
+    if (legacy)
+    {
+        /* One-shot resolvers match the reply to their question: repeat it */
+        name_len = mdns_encode_name(s_mdns_telem.hostname, &response[pos], sizeof(response) - pos);
+        if (name_len == 0U) return MDNS_ERR_BUFFER_SMALL;
+        pos += name_len;
+        response[pos++] = 0x00U; response[pos++] = (uint8_t)MDNS_TYPE_A;
+        response[pos++] = 0x00U; response[pos++] = (uint8_t)MDNS_CLASS_IN;
+    }
+
+    /* Answer Name */
+    name_len = mdns_encode_name(s_mdns_telem.hostname, &response[pos], sizeof(response) - pos);
+    if (name_len == 0U) return MDNS_ERR_BUFFER_SMALL;
+    pos += name_len;
+
+    /* Type A (0x0001) */
+    response[pos++] = 0x00U; response[pos++] = (uint8_t)MDNS_TYPE_A;
+    /* Class IN; cache-flush only in multicast answers (RFC 6762 6.7) */
+    response[pos++] = legacy ? 0x00U : 0x80U; response[pos++] = (uint8_t)MDNS_CLASS_IN;
+    /* TTL */
+    uint32_t ttl = legacy ? MDNS_LEGACY_UNICAST_TTL_SEC : MDNS_DEFAULT_TTL_SEC;
+    response[pos++] = (uint8_t)((ttl >> 24U) & 0xFFU); response[pos++] = (uint8_t)((ttl >> 16U) & 0xFFU);
+    response[pos++] = (uint8_t)((ttl >> 8U) & 0xFFU);  response[pos++] = (uint8_t)(ttl & 0xFFU);
+    /* Data Length: 4 bytes */
+    response[pos++] = 0x00U; response[pos++] = 0x04U;
+
     response[pos++] = (uint8_t)((ip >> 24U) & 0xFFU);
     response[pos++] = (uint8_t)((ip >> 16U) & 0xFFU);
     response[pos++] = (uint8_t)((ip >> 8U)  & 0xFFU);
     response[pos++] = (uint8_t)(ip & 0xFFU);
 
-    net_send_udp(MDNS_MULTICAST_IPV4, MDNS_PORT, MDNS_PORT, response, (uint16_t)pos);
+    if (legacy)
+    {
+        net_send_udp(src_ip, MDNS_PORT, src_port, response, (uint16_t)pos);
+    }
+    else
+    {
+        net_send_udp(MDNS_MULTICAST_IPV4, MDNS_PORT, MDNS_PORT, response, (uint16_t)pos);
+    }
     s_mdns_telem.responses_sent++;
 
     return MDNS_OK;

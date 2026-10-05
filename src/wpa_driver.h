@@ -64,6 +64,8 @@ void wpa_drv_deauthenticate(uint8_t reason);
 int  wpa_drv_tx_eapol(const uint8_t *eth_frame, uint16_t len);
 /* Hardware RNG */
 void wpa_drv_random(uint8_t *buf, size_t len);
+/* Station MAC address (SPA in the PTK derivation) */
+void wpa_drv_get_sta_mac(uint8_t mac[6]);
 
 #if !defined(__riscv)
 /* Host test hooks */
@@ -87,6 +89,10 @@ typedef struct {
     uint8_t           last_tx[256];
     uint16_t          last_tx_len;
     uint8_t           random_fill;
+    const uint8_t    *random_bytes;     /* when set, wpa_drv_random returns these (replayed nonces) */
+    size_t            random_len;
+    bool              sta_mac_set;      /* when set, wpa_drv_get_sta_mac returns sta_mac */
+    uint8_t           sta_mac[6];
 } wpa_drv_host_t;
 extern wpa_drv_host_t g_wpa_drv_host;
 void wpa_drv_host_reset(void);

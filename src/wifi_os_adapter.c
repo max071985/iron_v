@@ -1896,6 +1896,11 @@ void wpa_drv_random(uint8_t *buf, size_t len)
     (void)get_random_wrapper(buf, len);
 }
 
+void wpa_drv_get_sta_mac(uint8_t mac[6])
+{
+    (void)wifi_get_mac_addr(mac);
+}
+
 /* ------------------------------------------------------------------------- */
 /* struct wpa_funcs callbacks (ESP-IDF esp_supplicant_init order)             */
 /* ------------------------------------------------------------------------- */
@@ -2111,7 +2116,24 @@ int wpa_drv_tx_eapol(const uint8_t *eth_frame, uint16_t len)
     g_wpa_drv_host.last_tx_len = len;
     return 0;
 }
-void wpa_drv_random(uint8_t *buf, size_t len) { memset(buf, g_wpa_drv_host.random_fill, len); }
+void wpa_drv_random(uint8_t *buf, size_t len)
+{
+    if (g_wpa_drv_host.random_bytes != NULL && len <= g_wpa_drv_host.random_len)
+    {
+        memcpy(buf, g_wpa_drv_host.random_bytes, len);
+        return;
+    }
+    memset(buf, g_wpa_drv_host.random_fill, len);
+}
+void wpa_drv_get_sta_mac(uint8_t mac[6])
+{
+    if (g_wpa_drv_host.sta_mac_set)
+    {
+        memcpy(mac, g_wpa_drv_host.sta_mac, 6U);
+        return;
+    }
+    (void)wifi_get_mac_addr(mac);
+}
 
 #endif /* defined(__riscv) */
 

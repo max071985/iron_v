@@ -1281,7 +1281,7 @@ wpa2_status_t wpa2_client_handover_chan(const char *ssid, const char *passphrase
 
     /* 2. Configure Station Interface */
     uint8_t mac[WPA2_MAC_ADDR_LEN];
-    wifi_get_mac_addr(mac);
+    wpa_drv_get_sta_mac(mac);
     memcpy(s_sta_mac, mac, WPA2_MAC_ADDR_LEN);
     memcpy(s_wpa2_telem.local_mac, mac, WPA2_MAC_ADDR_LEN);
 
@@ -1407,11 +1407,9 @@ wpa2_status_t wpa2_client_init(void)
     s_install_pending = false;
 
     uint8_t mac[WPA2_MAC_ADDR_LEN];
-    if (wifi_get_mac_addr(mac) == WIFI_OK)
-    {
-        memcpy(s_sta_mac, mac, WPA2_MAC_ADDR_LEN);
-        memcpy(s_wpa2_telem.local_mac, mac, WPA2_MAC_ADDR_LEN);
-    }
+    wpa_drv_get_sta_mac(mac);
+    memcpy(s_sta_mac, mac, WPA2_MAC_ADDR_LEN);
+    memcpy(s_wpa2_telem.local_mac, mac, WPA2_MAC_ADDR_LEN);
 
     s_wpa2_initialized = true;
     return WPA2_OK;

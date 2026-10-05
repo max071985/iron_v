@@ -2113,6 +2113,8 @@ void shell_execute(char *input_buffer)
             dbg_lmac_hw_statis_dump();
             console_puts("=== LMAC General Statistics Dump ===\r\n");
             dbg_lmac_statis_dump();
+            console_puts("=== Blob statistics (esp_wifi_statis_dump) ===\r\n");
+            esp_wifi_statis_dump(WIFI_STATIS_ALL);
 #else
             console_puts("LMAC diagnostics only available on target hardware.\r\n");
 #endif

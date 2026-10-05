@@ -884,6 +884,9 @@ esp_err_t esp_wifi_get_config(wifi_interface_t interface, wifi_config_t *conf);
 esp_err_t esp_wifi_internal_reg_rxcb(wifi_interface_t ifx, wifi_rxcb_t fn);
 void      esp_wifi_internal_free_rx_buffer(void *eb);
 esp_err_t esp_wifi_internal_set_sta_ip(void);
+/* Blob statistics dump (esp_wifi_types_generic.h WIFI_STATIS_*): all modules */
+#define WIFI_STATIS_ALL         0xFFFFFFFFU
+esp_err_t esp_wifi_statis_dump(uint32_t modules);
 esp_err_t esp_wifi_internal_tx(wifi_interface_t ifx, void *buffer, uint16_t len);
 esp_err_t esp_wifi_get_mac(wifi_interface_t ifx, uint8_t mac[6]);
 esp_err_t esp_wifi_start(void);

@@ -1082,6 +1082,19 @@ void wifi_os_adapter_print_timers(void)
 }
 
 static bool s_in_poll = false;
+/* PHY PLL tracking (ESP-IDF phy_common.c): once when the PHY is enabled, then
+ * every WIFI_PHY_PLL_TRACK_PERIOD_US while Wi-Fi uses it. Without it the RF PLL
+ * is never re-tracked after calibration. */
+extern void phy_param_track_tot(bool en_wifi, bool en_ble_154);
+static volatile bool s_phy_wifi_enabled = false;
+static uint64_t s_phy_last_track_us = 0ULL;
+
+static void wifi_phy_track_pll(void)
+{
+    s_phy_last_track_us = systimer_get_us();
+    phy_param_track_tot(true, false);
+}
+
 void wifi_os_adapter_poll(void)
 {
     if (s_in_poll) return;
@@ -1096,6 +1109,11 @@ void wifi_os_adapter_poll(void)
     if ((now_us - rx_start_us) > s_poll_rx_max_us)
     {
         s_poll_rx_max_us = (uint32_t)(now_us - rx_start_us);
+    }
+
+    if (s_phy_wifi_enabled && (now_us - s_phy_last_track_us) >= WIFI_PHY_PLL_TRACK_PERIOD_US)
+    {
+        wifi_phy_track_pll();
     }
 
     for (uint32_t i = 0U; i < WIFI_MAX_ACTIVE_TIMERS; i++)
@@ -1284,10 +1302,13 @@ static void phy_enable_wrapper(void)
     *MODEM_RF_ENABLE_REG |= MODEM_RF_ENABLE_MASTER_BIT;
     asm volatile("fence" ::: "memory");
 #endif
+    s_phy_wifi_enabled = true;
+    wifi_phy_track_pll();
 }
 
 static void phy_disable_wrapper(void)
 {
+    s_phy_wifi_enabled = false;
     phy_wifi_enable_set(0U);
 }
 

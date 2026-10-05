@@ -355,6 +355,7 @@ modem_status_t modem_get_clock_state(modem_clock_state_t *state);
 uint32_t modem_get_syscon_date(void);
 uint32_t modem_get_lpcon_date(void);
 uint32_t modem_get_rf_enable_reg(void);
+uint32_t modem_get_lp_i2c_ana_mst_device_en(void);
 uint32_t modem_get_lp_ana_peri_pwr_reg(void);
 uint32_t modem_get_lp_ana_peri_clk_reg(void);
 bool modem_is_wifi_enabled(void);
@@ -365,8 +366,6 @@ bool modem_is_rf_synth_enabled(void);
 
 /* I2C Analog Master & SAR ADC Calibration APIs (Task 4) */
 modem_status_t modem_configure_i2c_analog_master(void);
-modem_status_t modem_bbpll_calibrate(void);
-bool modem_is_bbpll_calibrated(void);
 uint32_t modem_get_i2c_ana_mst_ana_conf0(void);
 modem_status_t modem_prime_sar_adc_calibration(void);
 uint32_t modem_get_i2c_ana_mst_link0_reg(void);

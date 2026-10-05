@@ -24,16 +24,6 @@ static modem_clock_state_t s_modem_state = {
 static bool s_modem_initialized = false;
 static bool s_rf_synth_enabled = false;
 static bool s_sar_adc_cal_primed = false;
-static bool s_bbpll_calibrated = false;
-
-#if defined(__riscv)
-extern void ets_delay_us(uint32_t us);
-#else
-static inline void ets_delay_us(uint32_t us)
-{
-    (void)us;
-}
-#endif
 
 #if defined(__riscv)
 
@@ -477,165 +467,27 @@ modem_status_t modem_enable_wifi_clocks(void)
     return MODEM_OK;
 }
 
-static modem_status_t regi2c_write(uint8_t slave_addr, uint8_t reg_addr, uint8_t data)
+/*
+ * Clock the modem analog I2C master (I2C_ANA_MST) that the PHY blob uses to
+ * program the RF analog blocks. BBPLL is left as the ROM configured it and
+ * the LP analog I2C master is not enabled: its DEVICE_EN routes the analog
+ * slaves away from I2C_ANA_MST, which made the radio miss frames (REV-31).
+ */
+modem_status_t modem_enable_i2c_ana_mst(void)
 {
-    volatile uint32_t *ctrl_reg = (reg_read(I2C_ANA_MST_ANA_CONF2_REG) & I2C_ANA_MST_ANA_CONF2_BBPLL_MST_SEL_BIT)
-                                  ? I2C_ANA_MST_I2C0_CTRL_REG : I2C_ANA_MST_I2C1_CTRL_REG;
-
-    uint32_t timeout = BBPLL_BUSY_POLL_TIMEOUT_CYCLES;
-    while ((reg_read(ctrl_reg) & I2C_ANA_MST_BUSY_BIT) != 0U)
-    {
-        if (--timeout == 0U)
-        {
-            return MODEM_ERR_TIMEOUT;
-        }
-    }
-
-    uint32_t cmd = I2C_ANA_MST_CMD_WRITE(slave_addr, reg_addr, data);
-    reg_write(ctrl_reg, cmd);
-
-    timeout = BBPLL_BUSY_POLL_TIMEOUT_CYCLES;
-    while ((reg_read(ctrl_reg) & I2C_ANA_MST_BUSY_BIT) != 0U)
-    {
-        if (--timeout == 0U)
-        {
-            return MODEM_ERR_TIMEOUT;
-        }
-    }
-
-    return MODEM_OK;
-}
-
-static modem_status_t regi2c_read(uint8_t slave_addr, uint8_t reg_addr, uint8_t *data_out)
-{
-    volatile uint32_t *ctrl_reg = (reg_read(I2C_ANA_MST_ANA_CONF2_REG) & I2C_ANA_MST_ANA_CONF2_BBPLL_MST_SEL_BIT)
-                                  ? I2C_ANA_MST_I2C0_CTRL_REG : I2C_ANA_MST_I2C1_CTRL_REG;
-
-    uint32_t timeout = BBPLL_BUSY_POLL_TIMEOUT_CYCLES;
-    while ((reg_read(ctrl_reg) & I2C_ANA_MST_BUSY_BIT) != 0U)
-    {
-        if (--timeout == 0U)
-        {
-            return MODEM_ERR_TIMEOUT;
-        }
-    }
-
-    uint32_t cmd = I2C_ANA_MST_CMD_READ(slave_addr, reg_addr);
-    reg_write(ctrl_reg, cmd);
-
-    timeout = BBPLL_BUSY_POLL_TIMEOUT_CYCLES;
-    while ((reg_read(ctrl_reg) & I2C_ANA_MST_BUSY_BIT) != 0U)
-    {
-        if (--timeout == 0U)
-        {
-            return MODEM_ERR_TIMEOUT;
-        }
-    }
-
-    if (data_out != NULL)
-    {
-        *data_out = (uint8_t)((reg_read(ctrl_reg) & I2C_ANA_MST_DATA_MASK) >> I2C_ANA_MST_DATA_SHIFT);
-    }
-
-    return MODEM_OK;
-}
-
-modem_status_t modem_bbpll_calibrate(void)
-{
-    /* 1. Enable LP_PERI Analog I2C clock and release reset */
-    reg_set_bits(LP_PERI_CLK_EN_REG, LP_PERI_CLK_LP_ANA_I2C_BIT);
-    reg_clear_bits(LP_PERI_RESET_EN_REG, LP_PERI_RST_LP_ANA_I2C_BIT);
-
-    /* 2. Configure MODEM_LPCON I2C Master clock (160 MHz source) */
+    /* 1. I2C master clock: 160 MHz source, enabled and forced on */
     reg_set_bits(MODEM_LPCON_I2C_MST_CLK_CONF_REG, MODEM_LPCON_I2C_MST_SEL_160M_BIT);
     reg_set_bits(MODEM_LPCON_CLK_CONF_REG, MODEM_LPCON_CLK_I2C_MST_EN_BIT);
     reg_set_bits(MODEM_LPCON_CLK_CONF_FORCE_ON_REG,
                  MODEM_LPCON_CLK_I2C_MST_FO_BIT | MODEM_LPCON_CLK_I2C_MST_MEM_FO_BIT);
 
-    /* 3. Power up I2C master memory and clear power down */
+    /* 2. Power up the I2C master memory */
     reg_set_bits(MODEM_LPCON_MEM_CONF_REG, MODEM_LPCON_MEM_I2C_MST_PU_BIT);
     reg_clear_bits(MODEM_LPCON_MEM_CONF_REG, MODEM_LPCON_MEM_I2C_MST_PD_BIT);
 
-    /* 4. Release MODEM_LPCON I2C Master reset */
+    /* 3. Release the I2C master reset */
     reg_clear_bits(MODEM_LPCON_RST_CONF_REG, MODEM_LPCON_RST_I2C_MST_BIT);
-
-    /* 5. Enable all analog I2C devices in LP_I2C_ANA_MST */
-    reg_write(LP_I2C_ANA_MST_DEVICE_EN_REG, LP_I2C_ANA_MST_ALL_DEVICES_EN);
-
-    /* 6. Power up BBPLL analog circuits via PMU */
-    reg_set_bits(PMU_IMM_HP_CK_POWER_REG, PMU_BBPLL_POWER_ENABLE_MASK);
-
-    /* 7. Configure slave routing for BBPLL in I2C_ANA_MST (Master 0, clear BBPLL_RD bit 7) */
-    reg_set_bits(I2C_ANA_MST_ANA_CONF2_REG, I2C_ANA_MST_ANA_CONF2_BBPLL_MST_SEL_BIT);
-    reg_write(I2C_ANA_MST_ANA_CONF1_REG,
-              I2C_ANA_MST_ANA_CONF1_DEFAULT_MASK &
-              ~(I2C_ANA_MST_ANA_CONF1_BBPLL_RD_BIT | I2C_ANA_MST_ANA_CONF1_BBPLL_PD_BIT));
-
-    /* 8. Start calibration: clear STOP_FORCE_HIGH, set STOP_FORCE_LOW */
-    reg_clear_bits(I2C_ANA_MST_ANA_CONF0_REG, I2C_ANA_MST_BBPLL_STOP_FORCE_HIGH_BIT);
-    reg_set_bits(I2C_ANA_MST_ANA_CONF0_REG, I2C_ANA_MST_BBPLL_STOP_FORCE_LOW_BIT);
-
-    /* 9. Write internal BBPLL analog configuration registers (Slave 0x66) */
-    if (regi2c_write(I2C_BBPLL_SLAVE_ADDR, I2C_BBPLL_OC_REF_ADDR, I2C_BBPLL_OC_REF_VAL) != MODEM_OK)
-    {
-        return MODEM_ERR_TIMEOUT;
-    }
-    if (regi2c_write(I2C_BBPLL_SLAVE_ADDR, I2C_BBPLL_OC_DIV_REG_ADDR, I2C_BBPLL_OC_DIV_REG_VAL) != MODEM_OK)
-    {
-        return MODEM_ERR_TIMEOUT;
-    }
-
-    uint8_t dr = 0U;
-    if (regi2c_read(I2C_BBPLL_SLAVE_ADDR, I2C_BBPLL_OC_DR_ADDR, &dr) != MODEM_OK)
-    {
-        return MODEM_ERR_TIMEOUT;
-    }
-    if (regi2c_write(I2C_BBPLL_SLAVE_ADDR, I2C_BBPLL_OC_DR_ADDR,
-                     dr & (uint8_t)~(I2C_BBPLL_OC_DR1_MASK | I2C_BBPLL_OC_DR3_MASK)) != MODEM_OK)
-    {
-        return MODEM_ERR_TIMEOUT;
-    }
-
-    if (regi2c_write(I2C_BBPLL_SLAVE_ADDR, I2C_BBPLL_REG6_ADDR, I2C_BBPLL_REG6_VAL) != MODEM_OK)
-    {
-        return MODEM_ERR_TIMEOUT;
-    }
-
-    uint8_t reg9 = 0U;
-    if (regi2c_read(I2C_BBPLL_SLAVE_ADDR, I2C_BBPLL_REG9_ADDR, &reg9) != MODEM_OK)
-    {
-        return MODEM_ERR_TIMEOUT;
-    }
-    if (regi2c_write(I2C_BBPLL_SLAVE_ADDR, I2C_BBPLL_REG9_ADDR,
-                     (reg9 & (uint8_t)~I2C_BBPLL_OC_VCO_DBIAS_MASK) | I2C_BBPLL_OC_VCO_DBIAS_DEFAULT) != MODEM_OK)
-    {
-        return MODEM_ERR_TIMEOUT;
-    }
-
-    /* 10. Poll CAL_DONE with bounded timeout */
-    uint32_t timeout = BBPLL_CALIBRATION_TIMEOUT_CYCLES;
-    while ((reg_read(I2C_ANA_MST_ANA_CONF0_REG) & I2C_ANA_MST_CAL_DONE_BIT) == 0U)
-    {
-        if (--timeout == 0U)
-        {
-            return MODEM_ERR_TIMEOUT;
-        }
-    }
-
-    /* 11. Erratum workaround: wait 10 us for analog phase settle */
-    ets_delay_us(BBPLL_SETTLE_DELAY_US);
-
-    /* 12. Stop calibration: set STOP_FORCE_HIGH, clear STOP_FORCE_LOW */
-    reg_set_bits(I2C_ANA_MST_ANA_CONF0_REG, I2C_ANA_MST_BBPLL_STOP_FORCE_HIGH_BIT);
-    reg_clear_bits(I2C_ANA_MST_ANA_CONF0_REG, I2C_ANA_MST_BBPLL_STOP_FORCE_LOW_BIT);
-
-    s_bbpll_calibrated = true;
     return MODEM_OK;
-}
-
-modem_status_t modem_enable_i2c_ana_mst(void)
-{
-    return modem_bbpll_calibrate();
 }
 
 modem_status_t modem_enable_rf_synthesizer(void)
@@ -936,6 +788,11 @@ uint32_t modem_get_rf_enable_reg(void)
     return reg_read(MODEM_RF_ENABLE_REG);
 }
 
+uint32_t modem_get_lp_i2c_ana_mst_device_en(void)
+{
+    return reg_read(LP_I2C_ANA_MST_DEVICE_EN_REG);
+}
+
 uint32_t modem_get_lp_ana_peri_pwr_reg(void)
 {
     return reg_read(LP_ANA_PERI_PWR_CONF_REG);
@@ -974,11 +831,6 @@ uint32_t modem_get_i2c_ana_mst_link0_reg(void)
 uint32_t modem_get_i2c_ana_mst_link1_reg(void)
 {
     return (uint32_t)I2C_ANA_MST_BASE_ADDR;
-}
-
-bool modem_is_bbpll_calibrated(void)
-{
-    return s_bbpll_calibrated;
 }
 
 uint32_t modem_get_i2c_ana_mst_ana_conf0(void)

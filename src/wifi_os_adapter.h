@@ -19,6 +19,8 @@ extern "C" {
 
 /* Maximum simultaneously tracked software timers */
 #define WIFI_MAX_ACTIVE_TIMERS 24U
+/* PHY PLL tracking period (ESP-IDF CONFIG_ESP_PHY_PLL_TRACK_PERIOD_MS default) */
+#define WIFI_PHY_PLL_TRACK_PERIOD_US 1000000ULL
 
 /* OSAL Subsystem lifecycle */
 void wifi_os_adapter_init(void);

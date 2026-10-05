@@ -32,9 +32,29 @@ size_t strlen(const char *str)
     return len;
 }
 
+/* Word copies when both pointers are word aligned. The Espressif blobs use
+ * these on MMIO RAM (e.g. the MAC key table), which only takes full 32-bit
+ * writes: a byte store there writes the whole word with one byte lane set. */
+#define STRING_WORD_SIZE        sizeof(uint32_t)
+#define STRING_WORD_ALIGN_MASK  (STRING_WORD_SIZE - 1U)
+#define STRING_IS_WORD_ALIGNED(p) ((((uintptr_t)(p)) & STRING_WORD_ALIGN_MASK) == 0U)
+#define STRING_BYTE_SPLAT       0x01010101U
+
 void *memset(void *s, int c, size_t n)
 {
     unsigned char *p = (unsigned char *)s;
+    if (STRING_IS_WORD_ALIGNED(p))
+    {
+        uint32_t w = (uint32_t)(unsigned char)c * STRING_BYTE_SPLAT;
+        uint32_t *wp = (uint32_t *)(void *)p;
+        while (n >= STRING_WORD_SIZE)
+        {
+            *wp++ = w;
+            n -= STRING_WORD_SIZE;
+            __asm__ __volatile__("" : "+r"(wp));
+        }
+        p = (unsigned char *)wp;
+    }
     while (n--)
     {
         *p++ = (unsigned char)c;
@@ -47,6 +67,19 @@ void *memcpy(void *dest, const void *src, size_t n)
 {
     unsigned char *d = (unsigned char *)dest;
     const unsigned char *s = (const unsigned char *)src;
+    if (STRING_IS_WORD_ALIGNED(d) && STRING_IS_WORD_ALIGNED(s))
+    {
+        uint32_t *wd = (uint32_t *)(void *)d;
+        const uint32_t *ws = (const uint32_t *)(const void *)s;
+        while (n >= STRING_WORD_SIZE)
+        {
+            *wd++ = *ws++;
+            n -= STRING_WORD_SIZE;
+            __asm__ __volatile__("" : "+r"(wd));
+        }
+        d = (unsigned char *)wd;
+        s = (const unsigned char *)ws;
+    }
     while (n--)
     {
         *d++ = *s++;
@@ -148,16 +181,25 @@ void *memmove(void *dest, const void *src, size_t n)
 
     if (d < s)
     {
-        while (n--)
-        {
-            *d++ = *s++;
-            __asm__ __volatile__("" : "+r"(d));
-        }
+        return memcpy(dest, src, n);
     }
     else if (d > s)
     {
         d += n;
         s += n;
+        if (STRING_IS_WORD_ALIGNED(d) && STRING_IS_WORD_ALIGNED(s))
+        {
+            uint32_t *wd = (uint32_t *)(void *)d;
+            const uint32_t *ws = (const uint32_t *)(const void *)s;
+            while (n >= STRING_WORD_SIZE)
+            {
+                *--wd = *--ws;
+                n -= STRING_WORD_SIZE;
+                __asm__ __volatile__("" : "+r"(wd));
+            }
+            d = (unsigned char *)wd;
+            s = (const unsigned char *)ws;
+        }
         while (n--)
         {
             *--d = *--s;

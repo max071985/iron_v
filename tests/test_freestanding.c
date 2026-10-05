@@ -400,6 +400,49 @@ static void test_memory_utils(void)
     memmove(move_buf, move_buf + 2, 6);
     TEST_ASSERT(move_buf[0] == 0 && move_buf[1] == 1 && move_buf[5] == 5, "memmove backward overlap");
 
+    /* Word paths (MMIO RAM only takes 32-bit writes): aligned, unaligned and odd tails */
+    uint32_t wsrc[9], wdst[9];
+    uint8_t *bs = (uint8_t *)wsrc, *bd = (uint8_t *)wdst;
+    for (size_t i = 0; i < sizeof(wsrc); i++) bs[i] = (uint8_t)(i * 7U + 1U);
+    for (size_t off_d = 0; off_d < 4; off_d++)
+    {
+        for (size_t off_s = 0; off_s < 4; off_s++)
+        {
+            for (size_t n = 0; n <= 29; n++)
+            {
+                memset(wdst, 0xEE, sizeof(wdst));
+                memcpy(bd + off_d, bs + off_s, n);
+                int ok = memcmp(bd + off_d, bs + off_s, n) == 0;
+                for (size_t i = 0; i < off_d; i++) ok &= (bd[i] == 0xEE);
+                for (size_t i = off_d + n; i < sizeof(wdst); i++) ok &= (bd[i] == 0xEE);
+                TEST_ASSERT(ok, "memcpy exact for every alignment and length, no overrun");
+            }
+        }
+    }
+    for (size_t off = 0; off < 4; off++)
+    {
+        memset(wdst, 0x11, sizeof(wdst));
+        memset(bd + off, 0x5A, 23);
+        int ok = 1;
+        for (size_t i = 0; i < sizeof(wdst); i++)
+            ok &= (bd[i] == ((i >= off && i < off + 23) ? 0x5A : 0x11));
+        TEST_ASSERT(ok, "memset exact for every alignment, no overrun");
+    }
+    for (size_t shift = 1; shift <= 8; shift++)
+    {
+        uint8_t ref[36];
+        for (size_t i = 0; i < sizeof(wsrc); i++) bs[i] = (uint8_t)i;
+        for (size_t i = 0; i < sizeof(ref); i++) ref[i] = (uint8_t)i;
+        memmove(bs + shift, bs, 24);
+        for (size_t i = 0; i < 24; i++) ref[shift + i] = (uint8_t)i;
+        TEST_ASSERT(memcmp(bs, ref, sizeof(ref)) == 0, "memmove backward overlap, word and byte paths");
+        for (size_t i = 0; i < sizeof(wsrc); i++) bs[i] = (uint8_t)i;
+        for (size_t i = 0; i < sizeof(ref); i++) ref[i] = (uint8_t)i;
+        memmove(bs, bs + shift, 24);
+        for (size_t i = 0; i < 24; i++) ref[i] = (uint8_t)(i + shift);
+        TEST_ASSERT(memcmp(bs, ref, sizeof(ref)) == 0, "memmove forward overlap, word and byte paths");
+    }
+
     /* strnlen, strcpy, strncpy */
     TEST_ASSERT(strnlen("hello", 10) == 5, "strnlen normal");
     TEST_ASSERT(strnlen("hello", 3) == 3, "strnlen clamped");
@@ -1493,13 +1536,10 @@ static void test_modem_subsystem(void)
     /* 10. Wi-Fi RX AGC Override Validation */
     modem_force_rx_agc();
 
-    /* 11. BBPLL 480 MHz Analog Calibration & Register Telemetry */
-    TEST_ASSERT(modem_bbpll_calibrate() == MODEM_OK, "modem_bbpll_calibrate succeeds");
-    TEST_ASSERT(modem_is_bbpll_calibrated(), "modem_is_bbpll_calibrated reports true after calibration");
-    TEST_ASSERT((modem_get_i2c_ana_mst_ana_conf0() & I2C_ANA_MST_CAL_DONE_BIT) != 0U, "CAL_DONE asserted in ANA_CONF0");
-    TEST_ASSERT((modem_get_i2c_ana_mst_ana_conf0() & I2C_ANA_MST_BBPLL_STOP_FORCE_HIGH_BIT) != 0U, "STOP_FORCE_HIGH asserted in ANA_CONF0");
-    TEST_ASSERT((modem_get_i2c_ana_mst_ana_conf0() & I2C_ANA_MST_BBPLL_STOP_FORCE_LOW_BIT) == 0U, "STOP_FORCE_LOW cleared in ANA_CONF0");
-    TEST_ASSERT(modem_enable_i2c_ana_mst() == MODEM_OK, "modem_enable_i2c_ana_mst succeeds with calibration");
+    /* 11. Analog I2C master: clocked for the PHY, BBPLL and the LP analog I2C master untouched */
+    TEST_ASSERT(modem_enable_i2c_ana_mst() == MODEM_OK, "modem_enable_i2c_ana_mst succeeds");
+    TEST_ASSERT(modem_get_lp_i2c_ana_mst_device_en() == 0U,
+                "LP analog I2C master keeps no analog slaves (they stay on I2C_ANA_MST)");
 }
 
 static void test_lp_wdt_subsystem(void)
@@ -3572,6 +3612,12 @@ static void test_wpa2_client_and_mdns_subsystem(void)
         ptk_nonzero |= ((uint8_t *)&ptk)[i];
     }
     TEST_ASSERT(ptk_nonzero != 0U, "Derived PTK is non-zero");
+    /* Known answer: 802.11 PRF-512 recomputed independently (Python hmac/hashlib) */
+    const uint8_t exp_kck[16] = {0x87,0x07,0x69,0x20,0xe9,0xb6,0x1c,0xf1,0xf1,0x8c,0xb5,0x36,0x12,0x18,0x26,0x15};
+    const uint8_t exp_kek[16] = {0xef,0x90,0x03,0x4c,0xc9,0x41,0x0d,0xa5,0xc2,0x99,0xe8,0xf0,0xca,0x75,0x88,0xf6};
+    const uint8_t exp_tk[16]  = {0x2d,0x0c,0xa9,0x56,0x77,0x8f,0x19,0x31,0x79,0xec,0xe5,0xb9,0x17,0x92,0x7d,0x10};
+    TEST_ASSERT(memcmp(ptk.kck, exp_kck, 16) == 0 && memcmp(ptk.kek, exp_kek, 16) == 0 &&
+                memcmp(ptk.tk, exp_tk, 16) == 0, "PRF-512 PTK (KCK, KEK, TK) matches the known answer");
 
     /* 1d. HMAC-SHA1 MIC over an 802.1X frame (the MIC field counts as zero) */
     uint8_t dummy_frame[128];

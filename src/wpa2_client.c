@@ -14,11 +14,12 @@
  */
 
 #include "wpa2_client.h"
+#include "wpa_ie.h"
+#include "wpa_driver.h"
 #include "section.h"
 #include "wifi.h"
 #include "net.h"
 #include "dhcp.h"
-#include "mdns.h"
 #include "systimer.h"
 #include "wdt.h"
 #include "string.h"
@@ -34,17 +35,36 @@
 static wpa2_state_t     s_wpa2_state = WPA2_STATE_DISCONNECTED;
 static wpa2_telemetry_t s_wpa2_telem;
 static uint8_t          s_pmk[WPA2_PMK_LEN];
-static wpa2_ptk_t       s_ptk;
+static wpa2_ptk_t       s_ptk;              /* verified by a valid M3 MIC */
+static wpa2_ptk_t       s_tptk;             /* derived from M1, not yet verified */
+static bool             s_ptk_valid = false;
+static bool             s_tptk_valid = false;
 static uint8_t          s_gtk[WPA2_GTK_LEN];
+static uint8_t          s_gtk_rsc[WPA2_GTK_RSC_LEN];
+static uint8_t          s_gtk_keyidx = 0U;
+static bool             s_gtk_tx = false;
 static uint8_t          s_anonce[WPA2_NONCE_LEN];
 static uint8_t          s_snonce[WPA2_NONCE_LEN];
+static bool             s_snonce_valid = false;   /* one SNonce per association */
 static uint8_t          s_last_replay[WPA2_REPLAY_LEN];
+static bool             s_replay_set = false;     /* set by the first frame with a valid MIC */
+static bool             s_m4_pending = false;     /* M4 handed to the blob, waiting for TX done */
+static bool             s_install_pending = false;/* keys of this M3 not installed yet */
 static uint8_t          s_ap_bssid[WPA2_MAC_ADDR_LEN];
 static uint8_t          s_sta_mac[WPA2_MAC_ADDR_LEN];
 static char             s_configured_ssid[WPA2_MAX_SSID_LEN + 1U];
-static char             s_configured_pass[WPA2_MAX_PASS_LEN + 1U];
 static uint64_t         s_handshake_start_us = 0ULL;
 static bool             s_wpa2_initialized = false;
+/* struct wifi_appie {u16 len; u8 ie[]} the blob references for the association request */
+static uint8_t          s_assoc_appie[WPA2_ASSOC_APPIE_LEN];
+
+#if defined(__riscv)
+#define WPA2_LOG(msg)   console_puts(msg)
+#define WPA2_LOG_DEC(v) put_dec((uint32_t)(v))
+#else
+#define WPA2_LOG(msg)   ((void)0)
+#define WPA2_LOG_DEC(v) ((void)(v))
+#endif
 
 /* ========================================================================= */
 /* Flash XIP Constant Tables (.flash.rodata)                                 */
@@ -89,18 +109,6 @@ static const uint8_t s_aes_inv_sbox[256] FLASH_RODATA_ATTR = {
 
 static const uint8_t s_aes_rcon[11] FLASH_RODATA_ATTR = {
     0x00U, 0x01U, 0x02U, 0x04U, 0x08U, 0x10U, 0x20U, 0x40U, 0x80U, 0x1BU, 0x36U
-};
-
-/* Standard 802.11i RSN IE (WPA2 CCMP, PSK) */
-static const uint8_t s_wpa2_rsn_ie[] FLASH_RODATA_ATTR = {
-    0x30U, 0x14U,                   /* Element ID = 48 (RSN), Length = 20 */
-    0x01U, 0x00U,                   /* Version = 1 */
-    0x00U, 0x0FU, 0xACU, 0x04U,     /* Group Cipher Suite: 00-0F-AC-04 (CCMP) */
-    0x01U, 0x00U,                   /* Pairwise Cipher Suite Count = 1 */
-    0x00U, 0x0FU, 0xACU, 0x04U,     /* Pairwise Cipher Suite: 00-0F-AC-04 (CCMP) */
-    0x01U, 0x00U,                   /* AKM Suite Count = 1 */
-    0x00U, 0x0FU, 0xACU, 0x02U,     /* AKM Suite: 00-0F-AC-02 (PSK) */
-    0x00U, 0x00U                    /* RSN Capabilities = 0 */
 };
 
 /* ========================================================================= */
@@ -520,31 +528,24 @@ wpa2_status_t wpa2_crypto_prf512(const uint8_t *pmk, const uint8_t *mac1, const 
 wpa2_status_t wpa2_crypto_compute_mic(const uint8_t *kck, const uint8_t *eapol_frame,
                                       uint16_t frame_len, uint8_t *out_mic)
 {
-    if (kck == NULL || eapol_frame == NULL || out_mic == NULL || frame_len < (sizeof(eapol_ethernet_hdr_t) + sizeof(eapol_key_header_t)))
+    if (kck == NULL || eapol_frame == NULL || out_mic == NULL || frame_len < WPA2_EAPOL_KEY_FRAME_MIN_LEN)
     {
         return WPA2_ERR_INVALID_ARG;
     }
 
-    /* Buffer must be copied to zero out MIC field */
+    /* Copy so the MIC field can be zeroed (IEEE 802.11-2020 12.7.2) */
     uint8_t temp_buf[NET_MAX_FRAME_SIZE];
     if (frame_len > sizeof(temp_buf))
     {
         return WPA2_ERR_BUFFER_SMALL;
     }
     memcpy(temp_buf, eapol_frame, frame_len);
-
-    /* Zero the MIC field in the EAPOL key header (offset 14 bytes into Ethernet header) */
-    eapol_key_header_t *key_hdr = (eapol_key_header_t *)(temp_buf + sizeof(eapol_ethernet_hdr_t));
+    eapol_key_header_t *key_hdr = (eapol_key_header_t *)(temp_buf + sizeof(eapol_1x_hdr_t));
     memset(key_hdr->key_mic, 0, WPA2_MIC_LEN);
 
-    /* EAPOL MIC is computed over 802.1X header + key descriptor (from offset 14) */
     uint8_t digest[20];
-    const uint8_t *eapol_payload = temp_buf + ETH_HDR_LEN;
-    uint16_t eapol_len = (uint16_t)(frame_len - ETH_HDR_LEN);
-
-    wpa2_hmac_sha1(kck, WPA2_KCK_LEN, eapol_payload, eapol_len, digest);
+    wpa2_hmac_sha1(kck, WPA2_KCK_LEN, temp_buf, frame_len, digest);
     memcpy(out_mic, digest, WPA2_MIC_LEN);
-
     return WPA2_OK;
 }
 
@@ -665,228 +666,550 @@ wpa2_status_t wpa2_crypto_aes_wrap(const uint8_t *kek, const uint8_t *plain,
 
 wpa2_status_t wpa2_client_get_ptk(wpa2_ptk_t *out_ptk)
 {
-    if (out_ptk == NULL || !s_wpa2_telem.has_ptk)
+    if (out_ptk == NULL || !(s_ptk_valid || s_tptk_valid))
     {
         return WPA2_ERR_INVALID_ARG;
     }
-    memcpy(out_ptk, &s_ptk, sizeof(wpa2_ptk_t));
+    memcpy(out_ptk, s_ptk_valid ? &s_ptk : &s_tptk, sizeof(wpa2_ptk_t));
     return WPA2_OK;
 }
 
 /* ========================================================================= */
-/* 802.11i 4-Way Handshake Processing Logic (.flash.text)                    */
+/* 802.11i 4-Way and Group Key Handshakes (.flash.text)                      */
+/* Order and checks follow ESP-IDF 66ab063a9a7f src/rsn_supp/wpa.c.          */
 /* ========================================================================= */
-static void wpa2_generate_snonce(uint8_t snonce[WPA2_NONCE_LEN])
+static void wpa2_reset_session(void);
+
+static void wpa2_set_state(wpa2_state_t st)
 {
-    uint64_t t = systimer_get_us();
-    for (size_t i = 0; i < WPA2_NONCE_LEN; i++)
-    {
-        t = t * 6364136223846793005ULL + 1442695040888963407ULL;
-        snonce[i] = (uint8_t)(t >> (i % 32));
-    }
+    s_wpa2_state = st;
+    s_wpa2_telem.state = st;
 }
 
-wpa2_status_t wpa2_client_rx_eapol(const uint8_t *src_mac, const uint8_t *frame, uint16_t len)
+static void wpa2_fail(wpa2_fail_t why)
 {
-    if (src_mac == NULL || frame == NULL || len < (sizeof(eapol_ethernet_hdr_t) + sizeof(eapol_key_header_t)))
+    s_wpa2_telem.last_fail = why;
+    WPA2_LOG("[WPA] Join failed: ");
+    WPA2_LOG(wpa2_fail_to_str(why));
+    WPA2_LOG("\r\n");
+}
+
+static void wpa2_fail_deauth(wpa2_fail_t why, uint8_t reason)
+{
+    wpa2_fail(why);
+    wpa2_set_state(WPA2_STATE_FAILED);
+    wpa_drv_deauthenticate(reason);
+}
+
+/* RSN element we sent in the association request: the blob keeps a reference
+ * to s_assoc_appie and may complete the element in place, so M2 reads it back. */
+static size_t wpa2_assoc_rsn_ie(const uint8_t **out_ie)
+{
+    const uint8_t *ie = &s_assoc_appie[WPA_DRV_APPIE_HDR_LEN];
+    if (ie[0] != WLAN_EID_RSN)
     {
-        return WPA2_ERR_INVALID_ARG;
+        /* No sta_connect callback yet (self-test frames): build the default element */
+        size_t n = wpa_ie_build_rsn(&s_assoc_appie[WPA_DRV_APPIE_HDR_LEN],
+                                    sizeof(s_assoc_appie) - WPA_DRV_APPIE_HDR_LEN,
+                                    WPA_CIPHER_CCMP, WPA_CIPHER_CCMP, WPA_KEY_MGMT_PSK, 0U);
+        if (n == 0U)
+        {
+            return 0U;
+        }
+    }
+    size_t len = (size_t)ie[1] + WPA_IE_HDR_LEN;
+    if (len > sizeof(s_assoc_appie) - WPA_DRV_APPIE_HDR_LEN)
+    {
+        return 0U;
+    }
+    *out_ie = ie;
+    return len;
+}
+
+/*
+ * Build an EAPOL-Key frame behind an Ethernet header, MIC it with kck and send it.
+ * key_data may be NULL when key_data_len is 0.
+ */
+static wpa2_status_t wpa2_send_key_frame(uint16_t key_info, const uint8_t *replay,
+                                         const uint8_t *nonce, const uint8_t *key_data,
+                                         uint16_t key_data_len, const uint8_t *kck)
+{
+    uint8_t tx_frame[sizeof(eapol_eth_hdr_t) + WPA2_EAPOL_KEY_FRAME_MIN_LEN + WPA2_KEY_DATA_MAX_LEN];
+    if (key_data_len > WPA2_KEY_DATA_MAX_LEN)
+    {
+        return WPA2_ERR_BUFFER_SMALL;
+    }
+    memset(tx_frame, 0, sizeof(tx_frame));
+
+    eapol_eth_hdr_t *eth = (eapol_eth_hdr_t *)tx_frame;
+    uint8_t *eapol = tx_frame + sizeof(eapol_eth_hdr_t);
+    eapol_1x_hdr_t *x = (eapol_1x_hdr_t *)eapol;
+    eapol_key_header_t *key = (eapol_key_header_t *)(eapol + sizeof(eapol_1x_hdr_t));
+    uint16_t eapol_len = (uint16_t)(WPA2_EAPOL_KEY_FRAME_MIN_LEN + key_data_len);
+
+    memcpy(eth->dest_mac, s_ap_bssid, WPA2_MAC_ADDR_LEN);
+    memcpy(eth->src_mac, s_sta_mac, WPA2_MAC_ADDR_LEN);
+    eth->ethertype = NET_HTONS(ETHERTYPE_EAPOL);
+
+    x->version = EAPOL_VERSION_1;
+    x->type = EAPOL_TYPE_KEY;
+    x->length = NET_HTONS((uint16_t)(sizeof(eapol_key_header_t) + key_data_len));
+
+    key->descriptor_type = EAPOL_DESC_TYPE_RSN;
+    key->key_info = NET_HTONS(key_info);
+    key->key_length = NET_HTONS(0U);
+    memcpy(key->replay_counter, replay, WPA2_REPLAY_LEN);
+    if (nonce != NULL)
+    {
+        memcpy(key->key_nonce, nonce, WPA2_NONCE_LEN);
+    }
+    key->key_data_length = NET_HTONS(key_data_len);
+    if (key_data_len > 0U)
+    {
+        memcpy(eapol + WPA2_EAPOL_KEY_FRAME_MIN_LEN, key_data, key_data_len);
     }
 
-    const eapol_ethernet_hdr_t *eth_hdr = (const eapol_ethernet_hdr_t *)frame;
-    if (NET_NTOHS(eth_hdr->ethertype) != ETHERTYPE_EAPOL || eth_hdr->type != EAPOL_TYPE_KEY)
+    wpa2_crypto_compute_mic(kck, eapol, eapol_len, key->key_mic);
+
+    if (wpa_drv_tx_eapol(tx_frame, (uint16_t)(sizeof(eapol_eth_hdr_t) + eapol_len)) != 0)
     {
-        return WPA2_ERR_INVALID_ARG;
+        return WPA2_ERR_TX_FAIL;
     }
+    return WPA2_OK;
+}
 
-    const eapol_key_header_t *key_hdr = (const eapol_key_header_t *)(frame + sizeof(eapol_ethernet_hdr_t));
-    uint16_t key_info = NET_NTOHS(key_hdr->key_info);
-
-    /* Verify Pairwise Key */
-    if ((key_info & WPA2_KEY_INFO_PAIRWISE) == 0U)
+static bool wpa2_verify_mic(const wpa2_ptk_t *ptk, const uint8_t *frame, uint16_t frame_len,
+                            const eapol_key_header_t *key)
+{
+    uint8_t expected[WPA2_MIC_LEN];
+    if (wpa2_crypto_compute_mic(ptk->kck, frame, frame_len, expected) != WPA2_OK)
     {
-        return WPA2_ERR_INVALID_ARG;
+        return false;
     }
-
-    /* Record AP BSSID */
-    memcpy(s_ap_bssid, src_mac, WPA2_MAC_ADDR_LEN);
-    memcpy(s_wpa2_telem.target_bssid, src_mac, WPA2_MAC_ADDR_LEN);
-
-    /* --------------------------------------------------------------------- */
-    /* Message 1 (AP -> STA): Pairwise=1, Ack=1, MIC=0                       */
-    /* --------------------------------------------------------------------- */
-    if ((key_info & WPA2_KEY_INFO_ACK) != 0U && (key_info & WPA2_KEY_INFO_MIC) == 0U)
+    uint8_t diff = 0U;
+    for (size_t i = 0U; i < WPA2_MIC_LEN; i++)
     {
-        s_wpa2_telem.m1_rx_count++;
+        diff |= (uint8_t)(expected[i] ^ key->key_mic[i]);
+    }
+    return diff == 0U;
+}
+
+/* AES key unwrap + KDE walk of encrypted key data (M3, group message 1) */
+static bool wpa2_decrypt_key_data(const uint8_t *data, uint16_t data_len, uint8_t *plain,
+                                  wpa_kde_t *kde)
+{
+    uint16_t plain_len = 0U;
+    if (data_len < WPA2_AES_KEYWRAP_MIN_LEN || (data_len % WPA2_AES_KEYWRAP_BLOCK) != 0U ||
+        data_len > WPA2_KEY_DATA_MAX_LEN)
+    {
+        return false;
+    }
+    if (wpa2_crypto_aes_unwrap(s_ptk.kek, data, data_len, plain, &plain_len) != WPA2_OK)
+    {
+        return false;
+    }
+    if (wpa_kde_parse(plain, plain_len, kde) != WPA_IE_OK)
+    {
+        return false;
+    }
+    /* WPA2-CCMP only: a 16-byte group key is mandatory */
+    return kde->gtk != NULL && kde->gtk_len == WPA2_GTK_LEN;
+}
+
+static void wpa2_store_gtk(const wpa_kde_t *kde, const eapol_key_header_t *key)
+{
+    memcpy(s_gtk, kde->gtk, WPA2_GTK_LEN);
+    memcpy(s_gtk_rsc, key->key_rsc, WPA2_GTK_RSC_LEN);
+    s_gtk_keyidx = kde->gtk_keyidx;
+    s_gtk_tx = kde->gtk_tx;
+}
+
+static void wpa2_install_gtk(void)
+{
+    int rc = wpa_drv_set_sta_key(WPA_DRV_ALG_CCMP, s_ap_bssid, (int)s_gtk_keyidx, s_gtk_tx ? 1 : 0,
+                        s_gtk_rsc, WPA2_GTK_RSC_LEN, s_gtk, WPA2_GTK_LEN,
+                        WPA_DRV_KEY_FLAG_GROUP | WPA_DRV_KEY_FLAG_RX);
+    if (rc != 0)
+    {
+        WPA2_LOG("[WPA] GTK install failed, rc=");
+        WPA2_LOG_DEC(rc);
+        WPA2_LOG("\r\n");
+        return;
+    }
+    s_wpa2_telem.has_gtk = true;
+    s_wpa2_telem.gtk_keyidx = s_gtk_keyidx;
+}
+
+static void wpa2_install_ptk(void)
+{
+    static const uint8_t zero_seq[WPA2_KEY_RSC_LEN] = {0};
+    int rc = wpa_drv_set_sta_key(WPA_DRV_ALG_CCMP, s_ap_bssid, 0, 1, zero_seq, WPA2_KEY_RSC_LEN,
+                        s_ptk.tk, WPA2_TK_LEN,
+                        WPA_DRV_KEY_FLAG_PAIRWISE | WPA_DRV_KEY_FLAG_RX | WPA_DRV_KEY_FLAG_TX);
+    if (rc != 0)
+    {
+        WPA2_LOG("[WPA] PTK install failed, rc=");
+        WPA2_LOG_DEC(rc);
+        WPA2_LOG("\r\n");
+        return;
+    }
+    s_wpa2_telem.has_ptk = true;
+}
+
+/* Message 1/4: AP -> STA, ANonce. Reply with M2 = SNonce + our RSN IE. */
+static wpa2_status_t wpa2_process_m1(const eapol_key_header_t *key)
+{
+    s_wpa2_telem.m1_rx_count++;
+    if (!s_wpa2_telem.has_pmk)
+    {
+        wpa2_fail(WPA2_FAIL_NO_PMK);
+        return WPA2_ERR_STATE;
+    }
+    if (s_wpa2_state != WPA2_STATE_4WAY_M2_SENT)
+    {
         s_wpa2_telem.handshakes_attempted++;
         s_handshake_start_us = systimer_get_us();
-
-        /* Store ANonce and Replay Counter */
-        memcpy(s_anonce, key_hdr->key_nonce, WPA2_NONCE_LEN);
-        memcpy(s_last_replay, key_hdr->replay_counter, WPA2_REPLAY_LEN);
-
-        /* Generate fresh SNonce */
-        wpa2_generate_snonce(s_snonce);
-
-        /* Derive PTK */
-        wpa2_crypto_prf512(s_pmk, s_ap_bssid, s_sta_mac, s_anonce, s_snonce, &s_ptk);
-        s_wpa2_telem.has_ptk = true;
-        s_wpa2_state = WPA2_STATE_4WAY_M1_RECEIVED;
-
-        /* Synthesize and Transmit Message 2 (STA -> AP) */
-        uint8_t tx_frame[NET_MAX_FRAME_SIZE];
-        eapol_ethernet_hdr_t *tx_eth = (eapol_ethernet_hdr_t *)tx_frame;
-        eapol_key_header_t *tx_key = (eapol_key_header_t *)(tx_frame + sizeof(eapol_ethernet_hdr_t));
-        uint8_t *tx_data = tx_frame + sizeof(eapol_ethernet_hdr_t) + sizeof(eapol_key_header_t);
-
-        /* Ethernet Header */
-        memcpy(tx_eth->dest_mac, s_ap_bssid, WPA2_MAC_ADDR_LEN);
-        memcpy(tx_eth->src_mac, s_sta_mac, WPA2_MAC_ADDR_LEN);
-        tx_eth->ethertype = NET_HTONS(ETHERTYPE_EAPOL);
-        tx_eth->version = EAPOL_VERSION_1;
-        tx_eth->type = EAPOL_TYPE_KEY;
-
-        /* Key Descriptor */
-        tx_key->descriptor_type = EAPOL_DESC_TYPE_RSN;
-        tx_key->key_info = NET_HTONS(WPA2_MSG2_KEY_INFO_NOMINAL);
-        tx_key->key_length = NET_HTONS(0U);
-        memcpy(tx_key->replay_counter, s_last_replay, WPA2_REPLAY_LEN);
-        memcpy(tx_key->key_nonce, s_snonce, WPA2_NONCE_LEN);
-        memset(tx_key->key_iv, 0, 16);
-        memset(tx_key->key_rsc, 0, 8);
-        memset(tx_key->key_id, 0, 8);
-        memset(tx_key->key_mic, 0, WPA2_MIC_LEN);
-
-        /* Append RSN IE */
-        uint16_t rsn_len = (uint16_t)sizeof(s_wpa2_rsn_ie);
-        memcpy(tx_data, s_wpa2_rsn_ie, rsn_len);
-        tx_key->key_data_length = NET_HTONS(rsn_len);
-
-        uint16_t total_len = (uint16_t)(sizeof(eapol_ethernet_hdr_t) + sizeof(eapol_key_header_t) + rsn_len);
-        tx_eth->length = NET_HTONS((uint16_t)(sizeof(eapol_key_header_t) + rsn_len));
-
-        /* Calculate MIC over entire EAPOL packet with MIC zeroed */
-        wpa2_crypto_compute_mic(s_ptk.kck, tx_frame, total_len, tx_key->key_mic);
-
-        /* Transmit via Wi-Fi stack */
-        wifi_tx_packet(WIFI_TX_IF_STA, tx_frame, total_len);
-        s_wpa2_telem.m2_tx_count++;
-        s_wpa2_state = WPA2_STATE_4WAY_M2_SENT;
-        return WPA2_OK;
     }
+    wpa2_set_state(WPA2_STATE_4WAY_M1_RECEIVED);
 
-    /* --------------------------------------------------------------------- */
-    /* Message 3 (AP -> STA): Pairwise=1, Install=1, Ack=1, MIC=1            */
-    /* --------------------------------------------------------------------- */
-    if ((key_info & WPA2_KEY_INFO_MIC) != 0U && (key_info & WPA2_KEY_INFO_ACK) != 0U)
+    if (!s_snonce_valid)
     {
-        s_wpa2_telem.m3_rx_count++;
-
-        /* 1. Verify Replay Counter >= last replay counter */
-        if (memcmp(key_hdr->replay_counter, s_last_replay, WPA2_REPLAY_LEN) < 0)
-        {
-            s_wpa2_telem.replay_errors++;
-            return WPA2_ERR_REPLAY;
-        }
-        memcpy(s_last_replay, key_hdr->replay_counter, WPA2_REPLAY_LEN);
-
-        /* 2. Verify AP's Message Integrity Code (MIC) */
-        uint8_t expected_mic[WPA2_MIC_LEN];
-        wpa2_crypto_compute_mic(s_ptk.kck, frame, len, expected_mic);
-        if (memcmp(expected_mic, key_hdr->key_mic, WPA2_MIC_LEN) != 0)
-        {
-            s_wpa2_telem.mic_failures++;
-            return WPA2_ERR_MIC_FAIL;
-        }
-
-        /* 3. Decrypt / Unwrap GTK from Key Data if present */
-        uint16_t key_data_len = NET_NTOHS(key_hdr->key_data_length);
-        if (key_data_len >= 24U)
-        {
-            const uint8_t *key_data_ptr = frame + sizeof(eapol_ethernet_hdr_t) + sizeof(eapol_key_header_t);
-            uint8_t plain_key_data[128];
-            uint16_t plain_len = 0U;
-
-            if (wpa2_crypto_aes_unwrap(s_ptk.kek, key_data_ptr, key_data_len, plain_key_data, &plain_len) == WPA2_OK)
-            {
-                /* Extract GTK payload (skip KDE header if present, or copy 16 bytes) */
-                if (plain_len >= 16U)
-                {
-                    size_t offset = (plain_len >= 24U && plain_key_data[0] == 0xDDU) ? 8U : 0U;
-                    memcpy(s_gtk, &plain_key_data[offset], WPA2_GTK_LEN);
-                    s_wpa2_telem.has_gtk = true;
-                }
-            }
-        }
-
-        s_wpa2_state = WPA2_STATE_4WAY_M3_RECEIVED;
-
-        /* Synthesize and Transmit Message 4 (STA -> AP) */
-        uint8_t tx_frame[NET_MAX_FRAME_SIZE];
-        eapol_ethernet_hdr_t *tx_eth = (eapol_ethernet_hdr_t *)tx_frame;
-        eapol_key_header_t *tx_key = (eapol_key_header_t *)(tx_frame + sizeof(eapol_ethernet_hdr_t));
-
-        memcpy(tx_eth->dest_mac, s_ap_bssid, WPA2_MAC_ADDR_LEN);
-        memcpy(tx_eth->src_mac, s_sta_mac, WPA2_MAC_ADDR_LEN);
-        tx_eth->ethertype = NET_HTONS(ETHERTYPE_EAPOL);
-        tx_eth->version = EAPOL_VERSION_1;
-        tx_eth->type = EAPOL_TYPE_KEY;
-        tx_eth->length = NET_HTONS((uint16_t)sizeof(eapol_key_header_t));
-
-        tx_key->descriptor_type = EAPOL_DESC_TYPE_RSN;
-        tx_key->key_info = NET_HTONS(WPA2_MSG4_KEY_INFO_NOMINAL);
-        tx_key->key_length = NET_HTONS(0U);
-        memcpy(tx_key->replay_counter, s_last_replay, WPA2_REPLAY_LEN);
-        memset(tx_key->key_nonce, 0, WPA2_NONCE_LEN);
-        memset(tx_key->key_iv, 0, 16);
-        memset(tx_key->key_rsc, 0, 8);
-        memset(tx_key->key_id, 0, 8);
-        memset(tx_key->key_mic, 0, WPA2_MIC_LEN);
-        tx_key->key_data_length = NET_HTONS(0U);
-
-        uint16_t total_len = (uint16_t)(sizeof(eapol_ethernet_hdr_t) + sizeof(eapol_key_header_t));
-        wpa2_crypto_compute_mic(s_ptk.kck, tx_frame, total_len, tx_key->key_mic);
-
-        /* Transmit Message 4 */
-        wifi_tx_packet(WIFI_TX_IF_STA, tx_frame, total_len);
-        s_wpa2_telem.m4_tx_count++;
-
-        /* Mark Complete & Authenticated */
-        s_wpa2_state = WPA2_STATE_AUTHENTICATED;
-        s_wpa2_telem.state = WPA2_STATE_AUTHENTICATED;
-        s_wpa2_telem.handshakes_completed++;
-        s_wpa2_telem.last_handshake_duration_us = systimer_get_us() - s_handshake_start_us;
-
-        /* Start Station DHCP client upon successful 4-Way Handshake */
-        dhcp_client_start();
-
-        return WPA2_OK;
+        wpa_drv_random(s_snonce, WPA2_NONCE_LEN);
+        s_snonce_valid = true;
     }
+    memcpy(s_anonce, key->key_nonce, WPA2_NONCE_LEN);
+    wpa2_crypto_prf512(s_pmk, s_ap_bssid, s_sta_mac, s_anonce, s_snonce, &s_tptk);
+    s_tptk_valid = true;
 
+    const uint8_t *ie = NULL;
+    size_t ie_len = wpa2_assoc_rsn_ie(&ie);
+    if (ie_len == 0U)
+    {
+        return WPA2_ERR_STATE;
+    }
+    wpa2_status_t st = wpa2_send_key_frame(WPA2_MSG2_KEY_INFO_NOMINAL, key->replay_counter,
+                                           s_snonce, ie, (uint16_t)ie_len, s_tptk.kck);
+    if (st != WPA2_OK)
+    {
+        return st;
+    }
+    s_wpa2_telem.m2_tx_count++;
+    wpa2_set_state(WPA2_STATE_4WAY_M2_SENT);
+    WPA2_LOG("[WPA] M1 received, M2 sent\r\n");
     return WPA2_OK;
 }
 
-void wpa2_client_on_connected(const uint8_t *bssid)
+/* Message 3/4: AP -> STA, GTK. MIC already verified by the caller. */
+static wpa2_status_t wpa2_process_m3(const eapol_key_header_t *key, uint16_t key_info,
+                                     const uint8_t *key_data, uint16_t key_data_len)
+{
+    s_wpa2_telem.m3_rx_count++;
+
+    if (memcmp(key->key_nonce, s_anonce, WPA2_NONCE_LEN) != 0)
+    {
+        wpa2_fail(WPA2_FAIL_ANONCE_MISMATCH);
+        return WPA2_ERR_PROTOCOL;
+    }
+
+    uint8_t plain[WPA2_KEY_DATA_MAX_LEN];
+    wpa_kde_t kde;
+    if ((key_info & WPA2_KEY_INFO_ENCRYPTED) == 0U || NET_NTOHS(key->key_length) != WPA2_TK_LEN ||
+        !wpa2_decrypt_key_data(key_data, key_data_len, plain, &kde))
+    {
+        wpa2_fail_deauth(WPA2_FAIL_BAD_KEY_DATA, WPA_DRV_REASON_UNSPECIFIED);
+        return WPA2_ERR_DECRYPT_FAIL;
+    }
+
+    /* The RSN IE in M3 must match the one the AP advertised (downgrade check) */
+    const uint8_t *ap_ie = wpa_drv_get_ap_rsn_ie(s_ap_bssid);
+    if (ap_ie != NULL)
+    {
+        size_t ap_len = (size_t)ap_ie[1] + WPA_IE_HDR_LEN;
+        if (kde.rsn_ie == NULL || kde.rsn_ie_len != ap_len || memcmp(kde.rsn_ie, ap_ie, ap_len) != 0)
+        {
+            wpa2_fail_deauth(WPA2_FAIL_IE_MISMATCH, WPA_DRV_REASON_IE_IN_4WAY_DIFFERS);
+            return WPA2_ERR_PROTOCOL;
+        }
+    }
+
+    /* A retransmitted M3 after the keys are in only gets a new M4 */
+    if (s_wpa2_state != WPA2_STATE_AUTHENTICATED)
+    {
+        wpa2_store_gtk(&kde, key);
+        s_install_pending = true;
+        wpa2_set_state(WPA2_STATE_4WAY_M3_RECEIVED);
+    }
+
+    s_m4_pending = true;
+    wpa2_status_t st = wpa2_send_key_frame(WPA2_MSG4_KEY_INFO_NOMINAL, key->replay_counter,
+                                           NULL, NULL, 0U, s_ptk.kck);
+    if (st != WPA2_OK)
+    {
+        s_m4_pending = false;
+        return st;
+    }
+    s_wpa2_telem.m4_tx_count++;
+    if (s_wpa2_state != WPA2_STATE_AUTHENTICATED)
+    {
+        wpa2_set_state(WPA2_STATE_4WAY_M4_SENT);
+    }
+    WPA2_LOG("[WPA] M3 verified, M4 sent\r\n");
+    return WPA2_OK;
+}
+
+/* Group key message 1/2 (GTK rekey). MIC already verified by the caller. */
+static wpa2_status_t wpa2_process_group1(const eapol_key_header_t *key, uint16_t key_info,
+                                         const uint8_t *key_data, uint16_t key_data_len)
+{
+    uint8_t plain[WPA2_KEY_DATA_MAX_LEN];
+    wpa_kde_t kde;
+    if ((key_info & WPA2_KEY_INFO_ENCRYPTED) == 0U ||
+        !wpa2_decrypt_key_data(key_data, key_data_len, plain, &kde))
+    {
+        wpa2_fail_deauth(WPA2_FAIL_BAD_KEY_DATA, WPA_DRV_REASON_UNSPECIFIED);
+        return WPA2_ERR_DECRYPT_FAIL;
+    }
+
+    /* Install before replying (ESP-IDF process_1_of_2); skip a key already in use */
+    if (memcmp(kde.gtk, s_gtk, WPA2_GTK_LEN) != 0 || kde.gtk_keyidx != s_gtk_keyidx)
+    {
+        wpa2_store_gtk(&kde, key);
+        wpa2_install_gtk();
+    }
+
+    wpa2_status_t st = wpa2_send_key_frame(WPA2_GROUP2_KEY_INFO_NOMINAL, key->replay_counter,
+                                           NULL, NULL, 0U, s_ptk.kck);
+    if (st == WPA2_OK)
+    {
+        s_wpa2_telem.group_rekeys++;
+        WPA2_LOG("[WPA] Group key updated\r\n");
+    }
+    return st;
+}
+
+/*
+ * EAPOL frame from the blob (wpa_funcs.wpa_sta_rx_eapol). The buffer starts at
+ * the IEEE 802.1X header; the blob has already removed the 802.11/LLC headers.
+ */
+wpa2_status_t wpa2_client_rx_eapol(const uint8_t *src_mac, const uint8_t *frame, uint16_t len)
+{
+    if (src_mac == NULL || frame == NULL || len < WPA2_EAPOL_KEY_FRAME_MIN_LEN)
+    {
+        return WPA2_ERR_INVALID_ARG;
+    }
+
+    const eapol_1x_hdr_t *x = (const eapol_1x_hdr_t *)frame;
+    uint16_t body_len = NET_NTOHS(x->length);
+    if (x->type != EAPOL_TYPE_KEY || body_len < sizeof(eapol_key_header_t) ||
+        body_len > len - sizeof(eapol_1x_hdr_t))
+    {
+        return WPA2_ERR_INVALID_ARG;
+    }
+    /* Ignore bytes after the 802.1X body */
+    uint16_t frame_len = (uint16_t)(sizeof(eapol_1x_hdr_t) + body_len);
+
+    const eapol_key_header_t *key = (const eapol_key_header_t *)(frame + sizeof(eapol_1x_hdr_t));
+    uint16_t key_info = NET_NTOHS(key->key_info);
+    uint16_t key_data_len = NET_NTOHS(key->key_data_length);
+    if (key->descriptor_type != EAPOL_DESC_TYPE_RSN ||
+        (key_info & WPA2_KEY_INFO_KEY_DESC_MASK) != WPA2_KEY_INFO_KEY_DESC_V2 ||
+        key_data_len > body_len - sizeof(eapol_key_header_t))
+    {
+        return WPA2_ERR_INVALID_ARG;
+    }
+    const uint8_t *key_data = frame + WPA2_EAPOL_KEY_FRAME_MIN_LEN;
+
+    if (s_wpa2_state == WPA2_STATE_DISCONNECTED || s_wpa2_state == WPA2_STATE_FAILED)
+    {
+        return WPA2_ERR_STATE;
+    }
+    if (memcmp(src_mac, s_ap_bssid, WPA2_MAC_ADDR_LEN) != 0)
+    {
+        return WPA2_ERR_INVALID_ARG;
+    }
+
+    /* Replay counter must increase once a MIC-verified frame set it */
+    if (s_replay_set && memcmp(key->replay_counter, s_last_replay, WPA2_REPLAY_LEN) <= 0)
+    {
+        s_wpa2_telem.replay_errors++;
+        return WPA2_ERR_REPLAY;
+    }
+
+    if ((key_info & WPA2_KEY_INFO_ACK) == 0U)
+    {
+        return WPA2_ERR_INVALID_ARG;
+    }
+
+    bool pairwise = (key_info & WPA2_KEY_INFO_PAIRWISE) != 0U;
+    if (pairwise && (key_info & WPA2_KEY_INFO_MIC) == 0U)
+    {
+        return wpa2_process_m1(key);
+    }
+    if ((key_info & WPA2_KEY_INFO_MIC) == 0U)
+    {
+        return WPA2_ERR_INVALID_ARG;
+    }
+
+    /* MIC frames: M3 verifies the temporary PTK from M1 */
+    if (pairwise && s_tptk_valid && wpa2_verify_mic(&s_tptk, frame, frame_len, key))
+    {
+        memcpy(&s_ptk, &s_tptk, sizeof(s_ptk));
+        s_ptk_valid = true;
+        s_tptk_valid = false;
+    }
+    else if (!s_ptk_valid || !wpa2_verify_mic(&s_ptk, frame, frame_len, key))
+    {
+        s_wpa2_telem.mic_failures++;
+        return WPA2_ERR_MIC_FAIL;
+    }
+    memcpy(s_last_replay, key->replay_counter, WPA2_REPLAY_LEN);
+    s_replay_set = true;
+
+    if (pairwise)
+    {
+        return wpa2_process_m3(key, key_info, key_data, key_data_len);
+    }
+    if (s_wpa2_state != WPA2_STATE_AUTHENTICATED)
+    {
+        return WPA2_ERR_STATE;
+    }
+    return wpa2_process_group1(key, key_info, key_data, key_data_len);
+}
+
+/*
+ * EAPOL TX done (esp_wifi_register_eapol_txdonecb_internal). Keys are installed
+ * only once the AP can have received M4, as ESP-IDF eapol_txcb() does.
+ */
+void wpa2_client_eapol_txdone(uint8_t *eapol, size_t len, bool tx_failure)
+{
+    if (eapol == NULL || len < WPA2_EAPOL_KEY_FRAME_MIN_LEN || !s_m4_pending)
+    {
+        return;
+    }
+    const eapol_1x_hdr_t *x = (const eapol_1x_hdr_t *)eapol;
+    const eapol_key_header_t *key = (const eapol_key_header_t *)(eapol + sizeof(eapol_1x_hdr_t));
+    uint16_t key_info = NET_NTOHS(key->key_info);
+    if (x->type != EAPOL_TYPE_KEY || (key_info & WPA2_KEY_INFO_PAIRWISE) == 0U ||
+        (key_info & WPA2_KEY_INFO_SECURE) == 0U)
+    {
+        return;     /* M2 or group 2/2 */
+    }
+    s_m4_pending = false;
+
+    if (tx_failure)
+    {
+        /* The AP retransmits M3; a new M4 follows */
+        s_wpa2_telem.last_fail = WPA2_FAIL_M4_TX;
+        return;
+    }
+    if (!s_install_pending)
+    {
+        return;
+    }
+    s_install_pending = false;
+
+    wpa2_install_ptk();
+    wpa2_install_gtk();
+    wpa2_set_state(WPA2_STATE_AUTHENTICATED);
+    s_wpa2_telem.last_fail = WPA2_FAIL_NONE;
+    s_wpa2_telem.handshakes_completed++;
+    s_wpa2_telem.last_handshake_duration_us = systimer_get_us() - s_handshake_start_us;
+    WPA2_LOG("[WPA] 4-way handshake complete, keys installed (GTK idx ");
+    WPA2_LOG_DEC(s_gtk_keyidx);
+    WPA2_LOG(")\r\n");
+    /* Port open: the blob posts WIFI_EVENT_STA_CONNECTED, which starts DHCP */
+    wpa_drv_auth_done();
+}
+
+/*
+ * wpa_funcs.wpa_sta_connect: the blob picked a BSS. Check it is WPA2-PSK/CCMP,
+ * register our RSN element for the association request, then let the blob
+ * authenticate and associate (ESP-IDF wpa_sta_connect -> esp_wifi_sta_connect_internal).
+ */
+int wpa2_client_sta_connect(const uint8_t *bssid)
+{
+    if (bssid == NULL)
+    {
+        return -1;
+    }
+    memcpy(s_ap_bssid, bssid, WPA2_MAC_ADDR_LEN);
+    memcpy(s_wpa2_telem.target_bssid, bssid, WPA2_MAC_ADDR_LEN);
+
+    wpa_drv_profile_t prof;
+    wpa_drv_get_profile(&prof);
+    if (!prof.is_rsn || prof.authmode != WPA_DRV_AUTH_WPA2_PSK ||
+        prof.pairwise_idx != WPA_DRV_CIPHER_IDX_CCMP || prof.group_idx != WPA_DRV_CIPHER_IDX_CCMP)
+    {
+        wpa2_fail(WPA2_FAIL_UNSUPPORTED_SECURITY);
+        WPA2_LOG("[WPA] AP authmode=");
+        WPA2_LOG_DEC(prof.authmode);
+        WPA2_LOG(" pairwise=");
+        WPA2_LOG_DEC(prof.pairwise_idx);
+        WPA2_LOG(" group=");
+        WPA2_LOG_DEC(prof.group_idx);
+        WPA2_LOG(" (need WPA2-PSK authmode=5, CCMP=3/3)\r\n");
+        wpa2_set_state(WPA2_STATE_FAILED);
+        return -1;
+    }
+    if (!s_wpa2_telem.has_pmk || strcmp(prof.ssid, s_configured_ssid) != 0)
+    {
+        wpa2_fail(WPA2_FAIL_NO_PMK);
+        wpa2_set_state(WPA2_STATE_FAILED);
+        return -1;
+    }
+
+    memset(s_assoc_appie, 0, sizeof(s_assoc_appie));
+    size_t ie_len = wpa_ie_build_rsn(&s_assoc_appie[WPA_DRV_APPIE_HDR_LEN],
+                                     sizeof(s_assoc_appie) - WPA_DRV_APPIE_HDR_LEN,
+                                     WPA_CIPHER_CCMP, WPA_CIPHER_CCMP, WPA_KEY_MGMT_PSK, 0U);
+    if (ie_len == 0U || wpa_drv_set_assoc_ie(s_assoc_appie, (uint16_t)ie_len) != 0)
+    {
+        return -1;
+    }
+
+    /* last_fail is kept across the blob's retries; configure() or success clears it */
+    wpa2_reset_session();
+    wpa2_set_state(WPA2_STATE_CONNECTING);
+    return wpa_drv_sta_connect(bssid);
+}
+
+/* Forget everything about the previous association's handshake */
+static void wpa2_reset_session(void)
+{
+    s_replay_set = false;
+    s_snonce_valid = false;
+    s_tptk_valid = false;
+    s_ptk_valid = false;
+    s_m4_pending = false;
+    s_install_pending = false;
+    s_wpa2_telem.has_ptk = false;
+    s_wpa2_telem.has_gtk = false;
+    memset(&s_ptk, 0, sizeof(s_ptk));
+    memset(&s_tptk, 0, sizeof(s_tptk));
+    memset(s_gtk, 0, sizeof(s_gtk));
+}
+
+/* wpa_funcs.wpa_sta_connected_cb. Despite the name, the blob calls it after
+ * the handshake, from inside wpa_drv_auth_done() (seen on the board), so it
+ * must not reset anything; wpa2_client_sta_connect() starts each session. */
+void wpa2_client_on_associated(const uint8_t *bssid)
 {
     if (bssid != NULL)
     {
         memcpy(s_ap_bssid, bssid, WPA2_MAC_ADDR_LEN);
         memcpy(s_wpa2_telem.target_bssid, bssid, WPA2_MAC_ADDR_LEN);
     }
-    if (s_wpa2_state != WPA2_STATE_AUTHENTICATED)
-    {
-        s_wpa2_state = WPA2_STATE_CONNECTING;
-        s_wpa2_telem.state = WPA2_STATE_CONNECTING;
-    }
 }
 
 void wpa2_client_on_disconnected(uint8_t reason)
 {
     (void)reason;
-    s_wpa2_state = WPA2_STATE_DISCONNECTED;
-    s_wpa2_telem.state = WPA2_STATE_DISCONNECTED;
-    s_wpa2_telem.has_ptk = false;
-    s_wpa2_telem.has_gtk = false;
+    if (s_wpa2_state == WPA2_STATE_4WAY_M2_SENT)
+    {
+        wpa2_fail(WPA2_FAIL_NO_M3);
+    }
+    wpa2_reset_session();
+    wpa2_set_state(WPA2_STATE_DISCONNECTED);
 }
 
 wpa2_status_t wpa2_client_configure(const char *ssid, const char *passphrase)
@@ -903,17 +1226,19 @@ wpa2_status_t wpa2_client_configure(const char *ssid, const char *passphrase)
     }
 
     memset(s_configured_ssid, 0, sizeof(s_configured_ssid));
-    memset(s_configured_pass, 0, sizeof(s_configured_pass));
     strncpy(s_configured_ssid, ssid, WPA2_MAX_SSID_LEN);
-    strncpy(s_configured_pass, passphrase, WPA2_MAX_PASS_LEN);
+    memset(s_wpa2_telem.target_ssid, 0, sizeof(s_wpa2_telem.target_ssid));
     strncpy(s_wpa2_telem.target_ssid, ssid, WPA2_MAX_SSID_LEN);
 
     /* Reset handshake telemetry & keys for clean connection attempt */
     memset(s_wpa2_telem.target_bssid, 0, sizeof(s_wpa2_telem.target_bssid));
+    s_wpa2_telem.has_pmk = false;
     s_wpa2_telem.has_ptk = false;
     s_wpa2_telem.has_gtk = false;
+    s_wpa2_telem.last_fail = WPA2_FAIL_NONE;
     s_wpa2_telem.handshakes_attempted = 0U;
     s_wpa2_telem.handshakes_completed = 0U;
+    s_wpa2_telem.group_rekeys = 0U;
     s_wpa2_telem.m1_rx_count = 0U;
     s_wpa2_telem.m2_tx_count = 0U;
     s_wpa2_telem.m3_rx_count = 0U;
@@ -921,8 +1246,13 @@ wpa2_status_t wpa2_client_configure(const char *ssid, const char *passphrase)
     s_wpa2_telem.mic_failures = 0U;
     s_wpa2_telem.replay_errors = 0U;
 
-    /* Derive PMK immediately */
-    wpa2_status_t pst = wpa2_crypto_pbkdf2_sha1(s_configured_pass, s_configured_ssid,
+    /* Derive the PMK now, outside the blob's callbacks (PBKDF2 takes seconds).
+     * A 64-character passphrase would be a raw hex PSK; not supported. */
+    if (plen == WPA2_MAX_PASS_LEN)
+    {
+        return WPA2_ERR_UNSUPPORTED;
+    }
+    wpa2_status_t pst = wpa2_crypto_pbkdf2_sha1(passphrase, s_configured_ssid,
                                                 WPA2_PBKDF2_ITERATIONS, s_pmk);
     if (pst == WPA2_OK)
     {
@@ -956,10 +1286,9 @@ wpa2_status_t wpa2_client_handover_chan(const char *ssid, const char *passphrase
     memcpy(s_wpa2_telem.local_mac, mac, WPA2_MAC_ADDR_LEN);
 
     /* 3. Transition State */
-    s_wpa2_state = WPA2_STATE_CONNECTING;
-    s_wpa2_telem.state = WPA2_STATE_CONNECTING;
+    wpa2_set_state(WPA2_STATE_CONNECTING);
 
-    /* 4. Trigger Station association */
+    /* 4. Trigger Station association; the blob calls back wpa2_client_sta_connect() */
     wifi_start_sta_chan(ssid, passphrase, channel);
 
     return WPA2_OK;
@@ -978,27 +1307,33 @@ void wpa2_client_print_status(void)
     console_puts("=======================================================\r\n");
     console_puts("  State:               ");
     console_puts(wpa2_state_to_str(s_wpa2_state));
+    console_puts("\r\n  Last Failure:        ");
+    console_puts(wpa2_fail_to_str(s_wpa2_telem.last_fail));
     console_puts("\r\n  Target SSID:         ");
     console_puts(s_wpa2_telem.target_ssid);
     console_puts("\r\n  Target BSSID:        ");
     const char hex_chars[] = "0123456789abcdef";
-    for (int i = 0; i < 6; i++)
+    for (uint32_t i = 0U; i < WPA2_MAC_ADDR_LEN; i++)
     {
         uint8_t b = s_wpa2_telem.target_bssid[i];
         console_putc(hex_chars[(b >> 4) & 0x0F]);
         console_putc(hex_chars[b & 0x0F]);
-        if (i < 5) console_puts(":");
+        if (i + 1U < WPA2_MAC_ADDR_LEN) console_puts(":");
     }
-    console_puts("\r\n  Keys Established:    PMK=");
+    console_puts("\r\n  Keys:                PMK=");
     put_dec(s_wpa2_telem.has_pmk);
-    console_puts(", PTK=");
+    console_puts(", PTK installed=");
     put_dec(s_wpa2_telem.has_ptk);
-    console_puts(", GTK=");
+    console_puts(", GTK installed=");
     put_dec(s_wpa2_telem.has_gtk);
-    console_puts("\r\n  Handshakes:          Completed=");
+    console_puts(" (idx ");
+    put_dec(s_wpa2_telem.gtk_keyidx);
+    console_puts(")\r\n  Handshakes:          Completed=");
     put_dec(s_wpa2_telem.handshakes_completed);
     console_puts(", Attempted=");
     put_dec(s_wpa2_telem.handshakes_attempted);
+    console_puts(", Group rekeys=");
+    put_dec(s_wpa2_telem.group_rekeys);
     console_puts("\r\n  Packets Exchanged:   M1_Rx=");
     put_dec(s_wpa2_telem.m1_rx_count);
     console_puts(", M2_Tx=");
@@ -1031,6 +1366,22 @@ const char *wpa2_state_to_str(wpa2_state_t state)
     }
 }
 
+const char *wpa2_fail_to_str(wpa2_fail_t fail)
+{
+    switch (fail)
+    {
+        case WPA2_FAIL_NONE:                 return "none";
+        case WPA2_FAIL_UNSUPPORTED_SECURITY: return "AP is not WPA2-PSK with CCMP (WPA3-only, WPA1/TKIP or open are not supported)";
+        case WPA2_FAIL_NO_PMK:               return "no passphrase configured for this SSID";
+        case WPA2_FAIL_NO_M3:                return "AP did not answer message 2 (wrong passphrase?)";
+        case WPA2_FAIL_ANONCE_MISMATCH:      return "ANonce in message 3 differs from message 1";
+        case WPA2_FAIL_IE_MISMATCH:          return "RSN IE in message 3 differs from the AP beacon";
+        case WPA2_FAIL_BAD_KEY_DATA:         return "message 3 key data invalid (no CCMP group key)";
+        case WPA2_FAIL_M4_TX:                return "message 4 transmit failed";
+        default:                             return "unknown";
+    }
+}
+
 /* ========================================================================= */
 /* Core Lifecycle APIs (.flash.text)                                         */
 /* ========================================================================= */
@@ -1040,13 +1391,20 @@ wpa2_status_t wpa2_client_init(void)
     memset(&s_wpa2_telem, 0, sizeof(s_wpa2_telem));
     memset(s_pmk, 0, sizeof(s_pmk));
     memset(&s_ptk, 0, sizeof(s_ptk));
+    memset(&s_tptk, 0, sizeof(s_tptk));
     memset(s_gtk, 0, sizeof(s_gtk));
     memset(s_anonce, 0, sizeof(s_anonce));
     memset(s_snonce, 0, sizeof(s_snonce));
     memset(s_last_replay, 0, sizeof(s_last_replay));
     memset(s_ap_bssid, 0, sizeof(s_ap_bssid));
     memset(s_configured_ssid, 0, sizeof(s_configured_ssid));
-    memset(s_configured_pass, 0, sizeof(s_configured_pass));
+    memset(s_assoc_appie, 0, sizeof(s_assoc_appie));
+    s_ptk_valid = false;
+    s_tptk_valid = false;
+    s_snonce_valid = false;
+    s_replay_set = false;
+    s_m4_pending = false;
+    s_install_pending = false;
 
     uint8_t mac[WPA2_MAC_ADDR_LEN];
     if (wifi_get_mac_addr(mac) == WIFI_OK)
@@ -1065,15 +1423,13 @@ wpa2_status_t wpa2_client_start(void)
     {
         wpa2_client_init();
     }
-    s_wpa2_state = WPA2_STATE_CONNECTING;
-    s_wpa2_telem.state = WPA2_STATE_CONNECTING;
+    wpa2_set_state(WPA2_STATE_CONNECTING);
     return WPA2_OK;
 }
 
 wpa2_status_t wpa2_client_stop(void)
 {
-    s_wpa2_state = WPA2_STATE_DISCONNECTED;
-    s_wpa2_telem.state = WPA2_STATE_DISCONNECTED;
+    wpa2_set_state(WPA2_STATE_DISCONNECTED);
     return WPA2_OK;
 }
 

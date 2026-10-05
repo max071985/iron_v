@@ -907,6 +907,24 @@ esp_err_t esp_wifi_set_sta_key_internal(int alg, const uint8_t *addr, int key_id
                                         const uint8_t *seq, size_t seq_len,
                                         const uint8_t *key, size_t key_len, int key_flag);
 
+/* Supplicant-facing blob API (ESP-IDF 66ab063a9a7f esp_wifi_driver.h) */
+typedef void (*eapol_txcb_t)(uint8_t *eapol_payload, size_t len, bool tx_failure);
+int      esp_wifi_set_appie_internal(uint8_t type, uint8_t *ie, uint16_t len, uint8_t flag);
+int      esp_wifi_unset_appie_internal(uint8_t type);
+esp_err_t esp_wifi_sta_connect_internal(const uint8_t *bssid);
+bool     esp_wifi_auth_done_internal(void);
+void     esp_wifi_deauthenticate_internal(uint8_t reason_code);
+int      esp_wifi_register_eapol_txdonecb_internal(eapol_txcb_t fn);
+bool     esp_wifi_sta_prof_is_rsn_internal(void);
+uint8_t  esp_wifi_sta_get_prof_authmode_internal(void);
+uint8_t  esp_wifi_sta_get_pairwise_cipher_internal(void);
+uint8_t  esp_wifi_sta_get_group_cipher_internal(void);
+struct wifi_ssid { int len; uint8_t ssid[32]; };
+struct wifi_ssid *esp_wifi_sta_get_prof_ssid_internal(void);
+uint8_t *esp_wifi_sta_get_ie(uint8_t *bssid, uint8_t elem_id);
+#define WIFI_APPIE_RSN                      4U
+#define WIFI_APPIE_BY_REFERENCE             1U
+
 esp_err_t esp_event_send_internal(esp_event_base_t event_base, int32_t event_id, void *event_data, size_t event_data_size, uint32_t ticks_to_wait);
 
 #ifdef __cplusplus

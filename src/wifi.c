@@ -250,6 +250,36 @@ static esp_err_t wifi_vendor_rx_callback(void *buffer, uint16_t len, void *eb)
 #endif
 
 #if defined(__riscv)
+/* A deauth after M2 (reason 15/2) usually means a wrong passphrase, but the
+ * supplicant's own verdict is in `sta status` (wpa2_fail_to_str) */
+FLASH_TEXT_ATTR
+static const char *wifi_disconnect_reason_str(uint32_t reason)
+{
+    switch (reason)
+    {
+        case WIFI_REASON_UNSPECIFIED:            return "unspecified";
+        case WIFI_REASON_AUTH_EXPIRE:            return "auth expired";
+        case WIFI_REASON_AUTH_LEAVE:             return "deauth: AP leaving";
+        case WIFI_REASON_ASSOC_EXPIRE:           return "inactivity";
+        case WIFI_REASON_ASSOC_TOOMANY:          return "AP full";
+        case WIFI_REASON_ASSOC_LEAVE:            return "disassoc: AP leaving";
+        case WIFI_REASON_MIC_FAILURE:            return "MIC failure";
+        case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT: return "4-way handshake timeout";
+        case WIFI_REASON_GROUP_KEY_UPDATE_TIMEOUT: return "group key update timeout";
+        case WIFI_REASON_IE_IN_4WAY_DIFFERS:     return "RSN IE differs in 4-way";
+        case WIFI_REASON_AKMP_INVALID:           return "AKM not accepted";
+        case WIFI_REASON_BEACON_TIMEOUT:         return "beacon timeout";
+        case WIFI_REASON_NO_AP_FOUND:            return "no AP found";
+        case WIFI_REASON_AUTH_FAIL:              return "auth failed";
+        case WIFI_REASON_ASSOC_FAIL:             return "assoc failed";
+        case WIFI_REASON_HANDSHAKE_TIMEOUT:      return "handshake timeout";
+        case WIFI_REASON_CONNECTION_FAIL:        return "connection failed";
+        case WIFI_REASON_NO_AP_FOUND_SECURITY:   return "no AP with compatible security";
+        case WIFI_REASON_NO_AP_FOUND_AUTHMODE:   return "no AP with compatible authmode";
+        default:                                 return "see IEEE 802.11 reason codes";
+    }
+}
+
 static void wifi_print_mac(const uint8_t *mac)
 {
     const char hex_chars[] = "0123456789abcdef";
@@ -301,9 +331,13 @@ void wifi_handle_vendor_event(int32_t event_id, void *event_data)
             console_puts("[Wi-Fi] Associated to AP on channel ");
             put_dec((uint32_t)conn->channel);
             console_puts("\r\n");
-            wpa2_client_on_connected(conn->bssid);
         }
+        /* ESP-IDF registers the STA RX path on every STA_CONNECTED
+         * (wifi_default_action_sta_connected) */
+        esp_wifi_internal_reg_rxcb(WIFI_IF_STA, wifi_vendor_rx_callback);
         esp_wifi_internal_set_sta_ip();
+        /* The blob posts STA_CONNECTED after the 4-way handshake (wpa_drv_auth_done) */
+        dhcp_client_start();
     }
     else if (event_id == WIFI_EVENT_STA_DISCONNECTED)
     {
@@ -314,23 +348,9 @@ void wifi_handle_vendor_event(int32_t event_id, void *event_data)
             const wifi_event_sta_disconnected_t *disconn = (const wifi_event_sta_disconnected_t *)event_data;
             console_puts(", reason=");
             put_dec((uint32_t)disconn->reason);
-            if (disconn->reason == 201)
-            {
-                console_puts(" (NO_AP_FOUND)");
-            }
-            else if (disconn->reason == 202 || disconn->reason == 15 || disconn->reason == 2)
-            {
-                console_puts(" (AUTH_FAILED / WRONG_PASSWORD)");
-            }
-            else if (disconn->reason == 204)
-            {
-                console_puts(" (HANDSHAKE_TIMEOUT)");
-            }
-            wpa2_client_on_disconnected(disconn->reason);
-        }
-        else
-        {
-            wpa2_client_on_disconnected(0);
+            console_puts(" (");
+            console_puts(wifi_disconnect_reason_str(disconn->reason));
+            console_puts(")");
         }
         console_puts("\r\n");
         s_wifi_telemetry.state = WIFI_STATE_ACTIVE;
@@ -1430,8 +1450,9 @@ wifi_status_t wifi_start_sta_chan(const char *ssid, const char *password, uint8_
         }
         sta_cfg.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
         sta_cfg.sta.threshold.rssi = WIFI_DEFAULT_SCAN_RSSI_THRESHOLD;
-        sta_cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
-        sta_cfg.sta.pmf_cfg.capable = true;
+        /* WPA2-PSK/CCMP only (wpa2_client.c); PMF off: the supplicant has no BIP/IGTK */
+        sta_cfg.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+        sta_cfg.sta.pmf_cfg.capable = false;
         sta_cfg.sta.pmf_cfg.required = false;
 
         esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);

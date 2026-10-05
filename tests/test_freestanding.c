@@ -48,6 +48,8 @@
 #include "nvs.h"
 #include "provisioning.h"
 #include "wpa2_client.h"
+#include "wpa_ie.h"
+#include "wpa_driver.h"
 #include "mdns.h"
 
 /* Host test stubs for hardware-specific functions */
@@ -3109,6 +3111,376 @@ static void test_softap_dns_modes(void)
     TEST_ASSERT(st == DHCP_ERR_CORRUPT_FRAME, "DNS query larger than the 512-byte reply buffer is rejected");
 }
 
+/* ------------------------------------------------------------------------- */
+/* WPA2 supplicant: frames as the AP would send them (802.1X header first,   */
+/* as the blob delivers them), checked against the recorded driver calls.    */
+/* ------------------------------------------------------------------------- */
+static uint16_t ap_key_frame(uint8_t *buf, uint16_t key_info, uint8_t replay, const uint8_t *nonce,
+                             const uint8_t *key_data, uint16_t key_data_len, const uint8_t *kck)
+{
+    memset(buf, 0, WPA2_EAPOL_KEY_FRAME_MIN_LEN + key_data_len);
+    eapol_1x_hdr_t *x = (eapol_1x_hdr_t *)buf;
+    eapol_key_header_t *k = (eapol_key_header_t *)(buf + sizeof(eapol_1x_hdr_t));
+    x->version = EAPOL_VERSION_2;
+    x->type = EAPOL_TYPE_KEY;
+    x->length = NET_HTONS((uint16_t)(sizeof(eapol_key_header_t) + key_data_len));
+    k->descriptor_type = EAPOL_DESC_TYPE_RSN;
+    k->key_info = NET_HTONS(key_info);
+    k->key_length = NET_HTONS(WPA2_TK_LEN);
+    k->replay_counter[WPA2_REPLAY_LEN - 1U] = replay;
+    if (nonce != NULL)
+    {
+        memcpy(k->key_nonce, nonce, WPA2_NONCE_LEN);
+    }
+    const uint8_t rsc[WPA2_KEY_RSC_LEN] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x00, 0x00};
+    memcpy(k->key_rsc, rsc, sizeof(rsc));
+    k->key_data_length = NET_HTONS(key_data_len);
+    if (key_data_len > 0U)
+    {
+        memcpy(buf + WPA2_EAPOL_KEY_FRAME_MIN_LEN, key_data, key_data_len);
+    }
+    uint16_t len = (uint16_t)(WPA2_EAPOL_KEY_FRAME_MIN_LEN + key_data_len);
+    if (kck != NULL)
+    {
+        wpa2_crypto_compute_mic(kck, buf, len, k->key_mic);
+    }
+    return len;
+}
+
+/* Encrypted key data: [RSN IE] + GTK KDE + 0xDD padding, AES-wrapped with kek */
+static uint16_t ap_key_data(uint8_t *out, const uint8_t *kek, const uint8_t *rsn_ie, size_t rsn_len,
+                            const uint8_t *gtk, uint8_t keyidx)
+{
+    uint8_t plain[96];
+    size_t n = 0U;
+    if (rsn_ie != NULL)
+    {
+        memcpy(plain, rsn_ie, rsn_len);
+        n = rsn_len;
+    }
+    plain[n++] = WPA_KDE_TYPE;
+    plain[n++] = (uint8_t)(RSN_SELECTOR_LEN + WPA_KDE_GTK_INFO_LEN + WPA2_GTK_LEN);
+    plain[n++] = 0x00U; plain[n++] = 0x0FU; plain[n++] = 0xACU; plain[n++] = 0x01U;
+    plain[n++] = keyidx;
+    plain[n++] = 0x00U;
+    memcpy(&plain[n], gtk, WPA2_GTK_LEN);
+    n += WPA2_GTK_LEN;
+    if ((n % WPA2_AES_KEYWRAP_BLOCK) != 0U)
+    {
+        plain[n++] = WPA_KDE_TYPE;
+        while ((n % WPA2_AES_KEYWRAP_BLOCK) != 0U)
+        {
+            plain[n++] = 0x00U;
+        }
+    }
+    uint16_t wl = 0U;
+    wpa2_crypto_aes_wrap(kek, plain, (uint16_t)n, out, &wl);
+    return wl;
+}
+
+/* MIC of the last frame the supplicant transmitted (Ethernet header stripped) */
+static bool sta_tx_mic_ok(const uint8_t *kck)
+{
+    const uint8_t *eapol = g_wpa_drv_host.last_tx + sizeof(eapol_eth_hdr_t);
+    uint16_t len = (uint16_t)(g_wpa_drv_host.last_tx_len - sizeof(eapol_eth_hdr_t));
+    const eapol_key_header_t *k = (const eapol_key_header_t *)(eapol + sizeof(eapol_1x_hdr_t));
+    uint8_t mic[WPA2_MIC_LEN];
+    wpa2_crypto_compute_mic(kck, eapol, len, mic);
+    return memcmp(mic, k->key_mic, WPA2_MIC_LEN) == 0;
+}
+
+static const eapol_key_header_t *sta_tx_key(void)
+{
+    return (const eapol_key_header_t *)(g_wpa_drv_host.last_tx + sizeof(eapol_eth_hdr_t) + sizeof(eapol_1x_hdr_t));
+}
+
+static void test_wpa_ie_parsing(void)
+{
+    printf("  [TEST] RSN/WPA IE and KDE parsing (REV-10)...\n");
+    wpa_ie_data_t d;
+
+    uint8_t ie[WPA_IE_MAX_LEN];
+    size_t n = wpa_ie_build_rsn(ie, sizeof(ie), WPA_CIPHER_CCMP, WPA_CIPHER_CCMP, WPA_KEY_MGMT_PSK, 0U);
+    const uint8_t exp_ie[] = {0x30, 0x14, 0x01, 0x00, 0x00, 0x0F, 0xAC, 0x04, 0x01, 0x00, 0x00, 0x0F, 0xAC, 0x04,
+                              0x01, 0x00, 0x00, 0x0F, 0xAC, 0x02, 0x00, 0x00};
+    TEST_ASSERT(n == sizeof(exp_ie) && memcmp(ie, exp_ie, n) == 0, "Built RSN IE is WPA2-PSK CCMP/CCMP, caps 0 (PMF off)");
+    TEST_ASSERT(wpa_ie_build_rsn(ie, 10U, WPA_CIPHER_CCMP, WPA_CIPHER_CCMP, WPA_KEY_MGMT_PSK, 0U) == 0U,
+                "RSN IE builder refuses a short buffer");
+    TEST_ASSERT(wpa_ie_build_rsn(ie, sizeof(ie), WPA_CIPHER_CCMP, WPA_CIPHER_CCMP, WPA_KEY_MGMT_SAE, 0U) == 0U,
+                "RSN IE builder refuses SAE (WPA3 not supported)");
+
+    TEST_ASSERT(wpa_ie_parse(exp_ie, sizeof(exp_ie), &d, true) == WPA_IE_OK &&
+                d.proto == WPA_PROTO_RSN && d.pairwise_cipher == WPA_CIPHER_CCMP &&
+                d.group_cipher == WPA_CIPHER_CCMP && d.key_mgmt == WPA_KEY_MGMT_PSK,
+                "WPA2-PSK RSN IE parses to RSN/CCMP/CCMP/PSK");
+
+    /* WPA2/WPA3 transition: PSK + SAE AKMs, MFPC set, TKIP+CCMP pairwise */
+    const uint8_t mixed[] = {0x30, 0x1C, 0x01, 0x00, 0x00, 0x0F, 0xAC, 0x02, 0x02, 0x00, 0x00, 0x0F, 0xAC, 0x02,
+                             0x00, 0x0F, 0xAC, 0x04, 0x02, 0x00, 0x00, 0x0F, 0xAC, 0x02, 0x00, 0x0F, 0xAC, 0x08,
+                             0x80, 0x00};
+    TEST_ASSERT(wpa_ie_parse(mixed, sizeof(mixed), &d, true) == WPA_IE_OK &&
+                d.key_mgmt == (WPA_KEY_MGMT_PSK | WPA_KEY_MGMT_SAE) &&
+                d.pairwise_cipher == (WPA_CIPHER_TKIP | WPA_CIPHER_CCMP) && d.group_cipher == WPA_CIPHER_TKIP &&
+                d.capabilities == WPA_CAPABILITY_MFPC,
+                "Transition-mode RSN IE reports both AKMs, both ciphers and MFPC (not hard-coded)");
+
+    const uint8_t sae_only[] = {0x30, 0x14, 0x01, 0x00, 0x00, 0x0F, 0xAC, 0x04, 0x01, 0x00, 0x00, 0x0F, 0xAC, 0x04,
+                                0x01, 0x00, 0x00, 0x0F, 0xAC, 0x08, 0xC0, 0x00};
+    TEST_ASSERT(wpa_ie_parse(sae_only, sizeof(sae_only), &d, true) == WPA_IE_OK && d.key_mgmt == WPA_KEY_MGMT_SAE,
+                "WPA3-only RSN IE reports SAE");
+
+    const uint8_t wpa1[] = {0xDD, 0x16, 0x00, 0x50, 0xF2, 0x01, 0x01, 0x00, 0x00, 0x50, 0xF2, 0x02,
+                            0x01, 0x00, 0x00, 0x50, 0xF2, 0x02, 0x01, 0x00, 0x00, 0x50, 0xF2, 0x02};
+    TEST_ASSERT(wpa_ie_parse(wpa1, sizeof(wpa1), &d, true) == WPA_IE_OK && d.proto == WPA_PROTO_WPA &&
+                d.pairwise_cipher == WPA_CIPHER_TKIP && d.key_mgmt == WPA_KEY_MGMT_PSK,
+                "WPA1 vendor IE parses to WPA/TKIP/PSK");
+
+    uint8_t bad[sizeof(exp_ie)];
+    memcpy(bad, exp_ie, sizeof(bad));
+    bad[1] = 0x30U;
+    TEST_ASSERT(wpa_ie_parse(bad, sizeof(bad), &d, true) == WPA_IE_ERR_MALFORMED, "IE length mismatch is rejected");
+    memcpy(bad, exp_ie, sizeof(bad));
+    bad[8] = 0x09U;     /* pairwise count larger than the element */
+    TEST_ASSERT(wpa_ie_parse(bad, sizeof(bad), &d, true) == WPA_IE_ERR_PAIRWISE, "Pairwise count overflow is rejected");
+    TEST_ASSERT(wpa_ie_parse(NULL, 0U, &d, true) == WPA_IE_ERR_EMPTY, "Missing IE reports empty");
+
+    /* KDEs: RSN IE, GTK KDE (key ID 1), padding */
+    const uint8_t gtk[WPA2_GTK_LEN] = {0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+                                       0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f};
+    uint8_t kd[64];
+    size_t k = 0U;
+    memcpy(kd, exp_ie, sizeof(exp_ie)); k = sizeof(exp_ie);
+    kd[k++] = 0xDD; kd[k++] = 22U; kd[k++] = 0x00; kd[k++] = 0x0F; kd[k++] = 0xAC; kd[k++] = 0x01;
+    kd[k++] = 0x01; kd[k++] = 0x00;
+    memcpy(&kd[k], gtk, sizeof(gtk)); k += sizeof(gtk);
+    kd[k++] = 0xDD; kd[k++] = 0x00;
+    wpa_kde_t kde;
+    TEST_ASSERT(wpa_kde_parse(kd, k, &kde) == WPA_IE_OK && kde.rsn_ie == kd && kde.rsn_ie_len == sizeof(exp_ie) &&
+                kde.gtk_len == WPA2_GTK_LEN && memcmp(kde.gtk, gtk, WPA2_GTK_LEN) == 0 && kde.gtk_keyidx == 1U &&
+                !kde.gtk_tx,
+                "KDE walk finds the RSN IE and the GTK (key ID 1) after it, stops at padding");
+    TEST_ASSERT(wpa_kde_parse(kd, sizeof(exp_ie) + 10U, &kde) == WPA_IE_ERR_MALFORMED,
+                "Truncated GTK KDE is rejected");
+}
+
+static void test_wpa2_handshake(void)
+{
+    printf("  [TEST] WPA2 4-way and group key handshakes against the blob interface (REV-10)...\n");
+
+    const uint8_t ap[WPA2_MAC_ADDR_LEN] = {0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb};
+    const uint8_t anonce[WPA2_NONCE_LEN] = {
+        0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f,
+        0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e, 0x4f};
+    const uint8_t gtk1[WPA2_GTK_LEN] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11,
+                                        0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99};
+    const uint8_t gtk2[WPA2_GTK_LEN] = {0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF,
+                                        0xFE, 0xDC, 0xBA, 0x98, 0x76, 0x54, 0x32, 0x10};
+    uint8_t ap_ie[WPA_IE_MAX_LEN];
+    size_t ap_ie_len = wpa_ie_build_rsn(ap_ie, sizeof(ap_ie), WPA_CIPHER_CCMP, WPA_CIPHER_CCMP, WPA_KEY_MGMT_PSK, 0U);
+    uint8_t frame[256];
+    uint8_t kd[128];
+    uint16_t len;
+    uint16_t kdl;
+    wpa2_telemetry_t t;
+
+    /* Expected keys, derived independently of the state machine */
+    uint8_t pmk[WPA2_PMK_LEN];
+    wpa2_crypto_pbkdf2_sha1("password", "IEEE", WPA2_PBKDF2_ITERATIONS, pmk);
+    uint8_t snonce[WPA2_NONCE_LEN];
+    memset(snonce, 0x5A, sizeof(snonce));
+
+    wpa_drv_host_reset();
+    g_wpa_drv_host.random_fill = 0x5AU;
+    strcpy(g_wpa_drv_host.profile.ssid, "IEEE");
+    TEST_ASSERT(wpa2_client_init() == WPA2_OK && wpa2_client_configure("IEEE", "password") == WPA2_OK,
+                "Supplicant configured (PMK derived before connecting)");
+    wpa2_client_get_telemetry(&t);
+    wpa2_ptk_t exp;
+    wpa2_crypto_prf512(pmk, ap, t.local_mac, anonce, snonce, &exp);
+
+    /* Profile checks in wpa_sta_connect */
+    g_wpa_drv_host.profile.authmode = 0x09U;    /* WPA3_AUTH_PSK */
+    TEST_ASSERT(wpa2_client_sta_connect(ap) < 0 && g_wpa_drv_host.connect_calls == 0U,
+                "WPA3-SAE BSS is rejected before association");
+    wpa2_client_get_telemetry(&t);
+    TEST_ASSERT(t.last_fail == WPA2_FAIL_UNSUPPORTED_SECURITY && t.state == WPA2_STATE_FAILED,
+                "Rejection is reported as unsupported security");
+    g_wpa_drv_host.profile.authmode = WPA_DRV_AUTH_WPA2_PSK;
+    g_wpa_drv_host.profile.group_idx = WPA_DRV_CIPHER_IDX_TKIP;
+    TEST_ASSERT(wpa2_client_sta_connect(ap) < 0, "WPA2 BSS with TKIP group cipher is rejected");
+    g_wpa_drv_host.profile.group_idx = WPA_DRV_CIPHER_IDX_CCMP;
+    strcpy(g_wpa_drv_host.profile.ssid, "Other");
+    wpa2_client_sta_connect(ap);
+    wpa2_client_get_telemetry(&t);
+    TEST_ASSERT(t.last_fail == WPA2_FAIL_NO_PMK, "BSS of another SSID is rejected: no PMK for it");
+    strcpy(g_wpa_drv_host.profile.ssid, "IEEE");
+
+    TEST_ASSERT(wpa2_client_sta_connect(ap) == 0 && g_wpa_drv_host.connect_calls == 1U,
+                "WPA2-PSK/CCMP BSS: association continues (esp_wifi_sta_connect_internal)");
+    TEST_ASSERT(g_wpa_drv_host.assoc_ie_calls == 1U && g_wpa_drv_host.assoc_ie_len == ap_ie_len &&
+                memcmp(g_wpa_drv_host.assoc_ie, ap_ie, ap_ie_len) == 0,
+                "Association RSN IE registered with the blob before association");
+
+    wpa2_client_on_associated(ap);
+    TEST_ASSERT(wpa2_client_get_state() == WPA2_STATE_CONNECTING, "Associated: waiting for message 1");
+
+    /* Message 1 */
+    len = ap_key_frame(frame, WPA2_MSG1_KEY_INFO_NOMINAL, 1U, anonce, NULL, 0U, NULL);
+    const uint8_t stranger[WPA2_MAC_ADDR_LEN] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x01};
+    TEST_ASSERT(wpa2_client_rx_eapol(stranger, frame, len) == WPA2_ERR_INVALID_ARG,
+                "EAPOL from a station other than the AP is ignored");
+    TEST_ASSERT(wpa2_client_rx_eapol(ap, frame, (uint16_t)(len - 1U)) == WPA2_ERR_INVALID_ARG,
+                "802.1X length beyond the buffer is rejected");
+    TEST_ASSERT(wpa2_client_rx_eapol(ap, frame, len) == WPA2_OK &&
+                wpa2_client_get_state() == WPA2_STATE_4WAY_M2_SENT && wpa2_client_is_in_4way(),
+                "Message 1 (802.1X header first, as the blob delivers it) answered with message 2");
+    TEST_ASSERT(g_wpa_drv_host.tx_calls == 1U &&
+                g_wpa_drv_host.last_tx[12] == 0x88U && g_wpa_drv_host.last_tx[13] == 0x8EU &&
+                memcmp(g_wpa_drv_host.last_tx, ap, WPA2_MAC_ADDR_LEN) == 0,
+                "Message 2 goes out as an EAPOL Ethernet frame to the AP");
+    const eapol_key_header_t *tk = sta_tx_key();
+    TEST_ASSERT(NET_NTOHS(tk->key_info) == WPA2_MSG2_KEY_INFO_NOMINAL && tk->replay_counter[7] == 1U &&
+                memcmp(tk->key_nonce, snonce, WPA2_NONCE_LEN) == 0,
+                "Message 2 key info, replay counter and SNonce (hardware RNG) are correct");
+    TEST_ASSERT(NET_NTOHS(tk->key_data_length) == ap_ie_len &&
+                memcmp(g_wpa_drv_host.last_tx + sizeof(eapol_eth_hdr_t) + WPA2_EAPOL_KEY_FRAME_MIN_LEN, ap_ie, ap_ie_len) == 0,
+                "Message 2 carries the same RSN IE as the association request");
+    TEST_ASSERT(sta_tx_mic_ok(exp.kck), "Message 2 MIC verifies with the independently derived KCK");
+    uint8_t m2_copy[256];
+    uint16_t m2_len = (uint16_t)(g_wpa_drv_host.last_tx_len - sizeof(eapol_eth_hdr_t));
+    memcpy(m2_copy, g_wpa_drv_host.last_tx + sizeof(eapol_eth_hdr_t), m2_len);
+
+    /* Message 3 failures */
+    g_wpa_drv_host.ap_rsn_ie = ap_ie;
+    kdl = ap_key_data(kd, exp.kek, ap_ie, ap_ie_len, gtk1, 1U);
+    len = ap_key_frame(frame, WPA2_MSG3_KEY_INFO_NOMINAL, 2U, anonce, kd, kdl, exp.kck);
+    frame[WPA2_EAPOL_KEY_FRAME_MIN_LEN - 3U] ^= 0xFFU;     /* corrupt the MIC */
+    TEST_ASSERT(wpa2_client_rx_eapol(ap, frame, len) == WPA2_ERR_MIC_FAIL, "Message 3 with a bad MIC is dropped");
+    wpa2_client_get_telemetry(&t);
+    TEST_ASSERT(t.mic_failures == 1U && g_wpa_drv_host.tx_calls == 1U, "MIC failure counted, nothing sent");
+
+    uint8_t other_nonce[WPA2_NONCE_LEN];
+    memset(other_nonce, 0x77, sizeof(other_nonce));
+    len = ap_key_frame(frame, WPA2_MSG3_KEY_INFO_NOMINAL, 2U, other_nonce, kd, kdl, exp.kck);
+    TEST_ASSERT(wpa2_client_rx_eapol(ap, frame, len) == WPA2_ERR_PROTOCOL, "Message 3 with a different ANonce is dropped");
+    wpa2_client_get_telemetry(&t);
+    TEST_ASSERT(t.last_fail == WPA2_FAIL_ANONCE_MISMATCH && g_wpa_drv_host.tx_calls == 1U, "ANonce mismatch reported");
+
+    /* Valid message 3 */
+    len = ap_key_frame(frame, WPA2_MSG3_KEY_INFO_NOMINAL, 3U, anonce, kd, kdl, exp.kck);
+    TEST_ASSERT(wpa2_client_rx_eapol(ap, frame, len) == WPA2_OK && wpa2_client_get_state() == WPA2_STATE_4WAY_M4_SENT,
+                "Valid message 3 answered with message 4");
+    tk = sta_tx_key();
+    TEST_ASSERT(g_wpa_drv_host.tx_calls == 2U && NET_NTOHS(tk->key_info) == WPA2_MSG4_KEY_INFO_NOMINAL &&
+                tk->replay_counter[7] == 3U && NET_NTOHS(tk->key_data_length) == 0U && sta_tx_mic_ok(exp.kck),
+                "Message 4 key info, replay counter, empty key data and MIC are correct");
+    TEST_ASSERT(g_wpa_drv_host.set_key_calls == 0U && g_wpa_drv_host.auth_done_calls == 0U,
+                "No key installed before the blob confirms message 4 was sent");
+    TEST_ASSERT(wpa2_client_rx_eapol(ap, frame, len) == WPA2_ERR_REPLAY, "Replayed message 3 is dropped");
+
+    /* TX done: M2 confirmation is ignored, M4 failure waits for the retransmitted M3 */
+    wpa2_client_eapol_txdone(m2_copy, m2_len, false);
+    TEST_ASSERT(g_wpa_drv_host.set_key_calls == 0U, "TX done of message 2 installs nothing");
+    uint8_t m4_copy[256];
+    uint16_t m4_len = (uint16_t)(g_wpa_drv_host.last_tx_len - sizeof(eapol_eth_hdr_t));
+    memcpy(m4_copy, g_wpa_drv_host.last_tx + sizeof(eapol_eth_hdr_t), m4_len);
+    wpa2_client_eapol_txdone(m4_copy, m4_len, true);
+    wpa2_client_get_telemetry(&t);
+    TEST_ASSERT(g_wpa_drv_host.set_key_calls == 0U && t.last_fail == WPA2_FAIL_M4_TX,
+                "Message 4 TX failure installs nothing");
+
+    len = ap_key_frame(frame, WPA2_MSG3_KEY_INFO_NOMINAL, 4U, anonce, kd, kdl, exp.kck);
+    TEST_ASSERT(wpa2_client_rx_eapol(ap, frame, len) == WPA2_OK && g_wpa_drv_host.tx_calls == 3U,
+                "Retransmitted message 3 gets a new message 4");
+    memcpy(m4_copy, g_wpa_drv_host.last_tx + sizeof(eapol_eth_hdr_t), m4_len);
+    wpa2_client_eapol_txdone(m4_copy, m4_len, false);
+    TEST_ASSERT(g_wpa_drv_host.set_key_calls == 2U && g_wpa_drv_host.auth_done_calls == 1U &&
+                wpa2_client_is_authenticated(),
+                "Message 4 sent: PTK and GTK installed, blob told the handshake is done");
+    TEST_ASSERT(g_wpa_drv_host.last_key_flag == (WPA_DRV_KEY_FLAG_GROUP | WPA_DRV_KEY_FLAG_RX) &&
+                g_wpa_drv_host.last_key_idx == 1 && memcmp(g_wpa_drv_host.last_key, gtk1, WPA2_GTK_LEN) == 0 &&
+                g_wpa_drv_host.last_seq[0] == 0x01U && g_wpa_drv_host.last_seq[5] == 0x06U,
+                "GTK from the KDE installed with its key ID and RSC (not the RSN IE bytes)");
+    wpa2_client_get_telemetry(&t);
+    TEST_ASSERT(t.has_ptk && t.has_gtk && t.handshakes_completed == 1U && t.last_fail == WPA2_FAIL_NONE,
+                "Telemetry: PTK and GTK installed, one handshake completed");
+    wpa2_client_on_associated(ap);     /* the blob calls it from inside auth_done */
+    wpa2_client_get_telemetry(&t);
+    TEST_ASSERT(wpa2_client_is_authenticated() && t.has_ptk && t.has_gtk,
+                "Blob's post-handshake connected callback keeps the session");
+
+    len = ap_key_frame(frame, WPA2_MSG3_KEY_INFO_NOMINAL, 5U, anonce, kd, kdl, exp.kck);
+    wpa2_client_rx_eapol(ap, frame, len);
+    memcpy(m4_copy, g_wpa_drv_host.last_tx + sizeof(eapol_eth_hdr_t), m4_len);
+    wpa2_client_eapol_txdone(m4_copy, m4_len, false);
+    TEST_ASSERT(g_wpa_drv_host.tx_calls == 4U && g_wpa_drv_host.set_key_calls == 2U,
+                "Message 3 after completion: message 4 resent, keys not reinstalled");
+
+    /* Group key rekey */
+    kdl = ap_key_data(kd, exp.kek, NULL, 0U, gtk2, 2U);
+    len = ap_key_frame(frame, WPA2_GROUP1_KEY_INFO_NOMINAL, 6U, NULL, kd, kdl, exp.kck);
+    TEST_ASSERT(wpa2_client_rx_eapol(ap, frame, len) == WPA2_OK, "Group key message 1 accepted");
+    tk = sta_tx_key();
+    TEST_ASSERT(g_wpa_drv_host.set_key_calls == 3U && g_wpa_drv_host.last_key_idx == 2 &&
+                memcmp(g_wpa_drv_host.last_key, gtk2, WPA2_GTK_LEN) == 0,
+                "New GTK installed with key ID 2");
+    TEST_ASSERT(NET_NTOHS(tk->key_info) == WPA2_GROUP2_KEY_INFO_NOMINAL && tk->replay_counter[7] == 6U &&
+                sta_tx_mic_ok(exp.kck),
+                "Group key message 2 sent with correct key info and MIC");
+    wpa2_client_get_telemetry(&t);
+    TEST_ASSERT(t.group_rekeys == 1U && wpa2_client_is_authenticated(), "Rekey counted, still authenticated");
+
+    wpa2_client_on_disconnected(3U);
+    wpa2_client_get_telemetry(&t);
+    TEST_ASSERT(wpa2_client_get_state() == WPA2_STATE_DISCONNECTED && !t.has_ptk && !t.has_gtk,
+                "Disconnect clears keys");
+
+    /* No message 3 after message 2: reported as a likely wrong passphrase. As on the
+     * board, the blob calls only wpa_sta_connect (no connected callback) */
+    TEST_ASSERT(wpa2_client_sta_connect(ap) == 0, "Reconnect: wpa_sta_connect alone prepares a new handshake");
+    len = ap_key_frame(frame, WPA2_MSG1_KEY_INFO_NOMINAL, 1U, anonce, NULL, 0U, NULL);
+    TEST_ASSERT(wpa2_client_rx_eapol(ap, frame, len) == WPA2_OK, "Message 1 accepted after wpa_sta_connect only");
+    wpa2_client_on_disconnected(15U);
+    wpa2_client_get_telemetry(&t);
+    TEST_ASSERT(t.last_fail == WPA2_FAIL_NO_M3, "Deauth after message 2 reported as no message 3 (wrong passphrase?)");
+    wpa2_client_sta_connect(ap);
+    wpa2_client_get_telemetry(&t);
+    TEST_ASSERT(t.last_fail == WPA2_FAIL_NO_M3, "The blob's automatic retry keeps the failure verdict");
+    wpa2_client_on_disconnected(4U);
+
+    /* RSN IE in message 3 differs from the beacon: deauth reason 17 */
+    wpa2_client_sta_connect(ap);
+    len = ap_key_frame(frame, WPA2_MSG1_KEY_INFO_NOMINAL, 1U, anonce, NULL, 0U, NULL);
+    wpa2_client_rx_eapol(ap, frame, len);
+    uint8_t beacon_ie[WPA_IE_MAX_LEN];
+    wpa_ie_build_rsn(beacon_ie, sizeof(beacon_ie), WPA_CIPHER_CCMP, WPA_CIPHER_CCMP, WPA_KEY_MGMT_PSK,
+                     WPA_CAPABILITY_MFPC);
+    g_wpa_drv_host.ap_rsn_ie = beacon_ie;
+    kdl = ap_key_data(kd, exp.kek, ap_ie, ap_ie_len, gtk1, 1U);
+    len = ap_key_frame(frame, WPA2_MSG3_KEY_INFO_NOMINAL, 2U, anonce, kd, kdl, exp.kck);
+    TEST_ASSERT(wpa2_client_rx_eapol(ap, frame, len) == WPA2_ERR_PROTOCOL &&
+                g_wpa_drv_host.last_deauth_reason == WPA_DRV_REASON_IE_IN_4WAY_DIFFERS,
+                "RSN IE downgrade in message 3 is refused with reason 17");
+    g_wpa_drv_host.ap_rsn_ie = ap_ie;
+
+    /* Key data without the encrypted flag is refused */
+    wpa2_client_sta_connect(ap);
+    len = ap_key_frame(frame, WPA2_MSG1_KEY_INFO_NOMINAL, 1U, anonce, NULL, 0U, NULL);
+    wpa2_client_rx_eapol(ap, frame, len);
+    len = ap_key_frame(frame, (uint16_t)(WPA2_MSG3_KEY_INFO_NOMINAL & ~WPA2_KEY_INFO_ENCRYPTED), 2U, anonce,
+                       kd, kdl, exp.kck);
+    TEST_ASSERT(wpa2_client_rx_eapol(ap, frame, len) == WPA2_ERR_DECRYPT_FAIL &&
+                g_wpa_drv_host.last_deauth_reason == WPA_DRV_REASON_UNSPECIFIED,
+                "Message 3 with unencrypted key data is refused");
+    wpa2_client_on_disconnected(1U);
+
+    /* Handover entry point still reconfigures and starts the STA join */
+    TEST_ASSERT(wpa2_client_handover("OfficeNet", "OfficeSecret123") == WPA2_OK,
+                "wpa2_client_handover reconfigures client and initiates STA join");
+    TEST_ASSERT(wpa2_client_configure("HexNet", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef") ==
+                WPA2_ERR_UNSUPPORTED, "64-character raw PSK is reported as unsupported");
+}
+
 static void test_wpa2_client_and_mdns_subsystem(void)
 {
     printf("  [TEST] Bare-Metal Wi-Fi Station (STA) WPA2-PSK Client & Home LAN Join (Task 8.2)...\n");
@@ -3201,130 +3573,18 @@ static void test_wpa2_client_and_mdns_subsystem(void)
     }
     TEST_ASSERT(ptk_nonzero != 0U, "Derived PTK is non-zero");
 
-    /* 1d. HMAC-SHA1 MIC computation */
+    /* 1d. HMAC-SHA1 MIC over an 802.1X frame (the MIC field counts as zero) */
     uint8_t dummy_frame[128];
     memset(dummy_frame, 0x33, sizeof(dummy_frame));
     uint8_t computed_mic[WPA2_MIC_LEN];
+    uint8_t computed_mic2[WPA2_MIC_LEN];
     TEST_ASSERT(wpa2_crypto_compute_mic(ptk.kck, dummy_frame, sizeof(dummy_frame), computed_mic) == WPA2_OK,
                 "wpa2_crypto_compute_mic succeeds");
+    memset(dummy_frame + sizeof(eapol_1x_hdr_t) + offsetof(eapol_key_header_t, key_mic), 0x00, WPA2_MIC_LEN);
+    wpa2_crypto_compute_mic(ptk.kck, dummy_frame, sizeof(dummy_frame), computed_mic2);
+    TEST_ASSERT(memcmp(computed_mic, computed_mic2, WPA2_MIC_LEN) == 0, "MIC ignores the MIC field contents");
 
-    /* 2. 802.11i 4-Way Handshake Full Exchange (M1 -> M2 -> M3 -> M4 -> AUTHENTICATED) */
-    TEST_ASSERT(wpa2_client_init() == WPA2_OK, "wpa2_client_init succeeds");
-    TEST_ASSERT(wpa2_client_get_state() == WPA2_STATE_DISCONNECTED, "Initial state is DISCONNECTED");
-    TEST_ASSERT(!wpa2_client_is_in_4way(), "Initially not in 4-way handshake");
-    TEST_ASSERT(!wpa2_client_is_authenticated(), "Initially not authenticated");
-
-    /* Configure credentials (derives PMK) */
-    TEST_ASSERT(wpa2_client_configure("IEEE", "password") == WPA2_OK, "wpa2_client_configure derives PMK");
-
-    /* On-connected event: AP association */
-    wpa2_client_on_connected(ap_bssid);
-    TEST_ASSERT(wpa2_client_get_state() == WPA2_STATE_CONNECTING, "State is CONNECTING after connection");
-
-    /* 2a. Message 1 (AP -> STA) */
-    uint8_t m1_frame[sizeof(eapol_ethernet_hdr_t) + sizeof(eapol_key_header_t)];
-    memset(m1_frame, 0, sizeof(m1_frame));
-    eapol_ethernet_hdr_t *eth = (eapol_ethernet_hdr_t *)m1_frame;
-    memcpy(eth->dest_mac, sta_mac, 6);
-    memcpy(eth->src_mac, ap_bssid, 6);
-    eth->ethertype = NET_HTONS(ETHERTYPE_EAPOL);
-    eth->version = EAPOL_VERSION_1;
-    eth->type = EAPOL_TYPE_KEY;
-    eth->length = NET_HTONS(sizeof(eapol_key_header_t));
-
-    eapol_key_header_t *key_hdr = (eapol_key_header_t *)(m1_frame + sizeof(eapol_ethernet_hdr_t));
-    key_hdr->descriptor_type = EAPOL_DESC_TYPE_RSN;
-    key_hdr->key_info = NET_HTONS(WPA2_MSG1_KEY_INFO_NOMINAL);
-    key_hdr->key_length = NET_HTONS(WPA2_TK_LEN);
-    key_hdr->replay_counter[7] = 1U; /* Replay = 1 */
-    memcpy(key_hdr->key_nonce, anonce, WPA2_NONCE_LEN);
-
-    /* Process M1 -> Client sends M2 and transitions to M2_SENT */
-    TEST_ASSERT(wpa2_client_rx_eapol(ap_bssid, m1_frame, sizeof(m1_frame)) == WPA2_OK,
-                "Client processes EAPOL Message 1 successfully");
-    TEST_ASSERT(wpa2_client_get_state() == WPA2_STATE_4WAY_M2_SENT, "State transitions to 4WAY_M2_SENT");
-    TEST_ASSERT(wpa2_client_is_in_4way(), "wpa2_client_is_in_4way returns true");
-
-    wpa2_telemetry_t wtelem;
-    TEST_ASSERT(wpa2_client_get_telemetry(&wtelem) == WPA2_OK, "Get telemetry succeeds");
-    TEST_ASSERT(wtelem.m1_rx_count == 1U, "m1_rx_count incremented");
-    TEST_ASSERT(wtelem.m2_tx_count == 1U, "m2_tx_count incremented");
-    TEST_ASSERT(wtelem.has_ptk, "Telemetry reports PTK derived");
-
-    /* Obtain the client's derived PTK to construct authentic Message 3 */
-    wpa2_ptk_t client_ptk;
-    TEST_ASSERT(wpa2_client_get_ptk(&client_ptk) == WPA2_OK, "wpa2_client_get_ptk retrieves active session PTK");
-
-    /* Wrap a dummy GTK using client's KEK */
-    const uint8_t raw_gtk[16] = {
-        0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11,
-        0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99
-    };
-    uint8_t wrapped_gtk[24];
-    uint16_t wrapped_gtk_len = 0U;
-    TEST_ASSERT(wpa2_crypto_aes_wrap(client_ptk.kek, raw_gtk, sizeof(raw_gtk), wrapped_gtk, &wrapped_gtk_len) == WPA2_OK,
-                "Wrap GTK using client's KEK succeeds");
-    TEST_ASSERT(wrapped_gtk_len == 24U, "Wrapped GTK length is 24 bytes");
-
-    /* 2b. Replay Attack Detection */
-    uint8_t m3_frame[sizeof(eapol_ethernet_hdr_t) + sizeof(eapol_key_header_t) + 24U];
-    memset(m3_frame, 0, sizeof(m3_frame));
-    eth = (eapol_ethernet_hdr_t *)m3_frame;
-    memcpy(eth->dest_mac, sta_mac, 6);
-    memcpy(eth->src_mac, ap_bssid, 6);
-    eth->ethertype = NET_HTONS(ETHERTYPE_EAPOL);
-    eth->version = EAPOL_VERSION_1;
-    eth->type = EAPOL_TYPE_KEY;
-    eth->length = NET_HTONS((uint16_t)(sizeof(eapol_key_header_t) + 24U));
-
-    key_hdr = (eapol_key_header_t *)(m3_frame + sizeof(eapol_ethernet_hdr_t));
-    key_hdr->descriptor_type = EAPOL_DESC_TYPE_RSN;
-    key_hdr->key_info = NET_HTONS(WPA2_MSG3_KEY_INFO_NOMINAL);
-    key_hdr->key_length = NET_HTONS(WPA2_TK_LEN);
-    key_hdr->replay_counter[7] = 0U; /* Stale Replay Counter (0 < 1) */
-    memcpy(key_hdr->key_nonce, anonce, WPA2_NONCE_LEN);
-    key_hdr->key_data_length = NET_HTONS(24U);
-    memcpy(m3_frame + sizeof(eapol_ethernet_hdr_t) + sizeof(eapol_key_header_t), wrapped_gtk, 24U);
-
-    TEST_ASSERT(wpa2_client_rx_eapol(ap_bssid, m3_frame, sizeof(m3_frame)) == WPA2_ERR_REPLAY,
-                "EAPOL rejects stale replay counter in Message 3");
-    wpa2_client_get_telemetry(&wtelem);
-    TEST_ASSERT(wtelem.replay_errors >= 1U, "Replay error counter incremented");
-
-    /* 2c. MIC Tampering Detection */
-    key_hdr->replay_counter[7] = 2U; /* Valid Replay Counter (2 > 1) */
-    memset(key_hdr->key_mic, 0xFF, WPA2_MIC_LEN); /* Corrupt MIC */
-    TEST_ASSERT(wpa2_client_rx_eapol(ap_bssid, m3_frame, sizeof(m3_frame)) == WPA2_ERR_MIC_FAIL,
-                "EAPOL rejects corrupted MIC in Message 3");
-    wpa2_client_get_telemetry(&wtelem);
-    TEST_ASSERT(wtelem.mic_failures >= 1U, "MIC failure counter incremented");
-
-    /* 2d. Authentic Message 3 Handling & Key Installation */
-    /* Compute valid MIC over m3_frame with key_mic zeroed */
-    memset(key_hdr->key_mic, 0, WPA2_MIC_LEN);
-    TEST_ASSERT(wpa2_crypto_compute_mic(client_ptk.kck, m3_frame, sizeof(m3_frame), key_hdr->key_mic) == WPA2_OK,
-                "Compute authentic M3 MIC using client's KCK");
-
-    /* Process authentic Message 3 */
-    TEST_ASSERT(wpa2_client_rx_eapol(ap_bssid, m3_frame, sizeof(m3_frame)) == WPA2_OK,
-                "Client processes authentic Message 3 successfully");
-    TEST_ASSERT(wpa2_client_get_state() == WPA2_STATE_AUTHENTICATED, "State transitions to AUTHENTICATED");
-    TEST_ASSERT(wpa2_client_is_authenticated(), "wpa2_client_is_authenticated returns true");
-    TEST_ASSERT(!wpa2_client_is_in_4way(), "wpa2_client_is_in_4way returns false after completion");
-
-    wpa2_client_get_telemetry(&wtelem);
-    TEST_ASSERT(wtelem.m3_rx_count >= 1U, "m3_rx_count incremented");
-    TEST_ASSERT(wtelem.m4_tx_count == 1U, "m4_tx_count incremented");
-    TEST_ASSERT(wtelem.has_gtk, "GTK unwrapped and installed");
-    TEST_ASSERT(wtelem.handshakes_completed == 1U, "handshakes_completed incremented to 1");
-
-    /* 2e. AP Drop / Disconnection Notification */
-    wpa2_client_on_disconnected(3U);
-    TEST_ASSERT(wpa2_client_get_state() == WPA2_STATE_DISCONNECTED, "State resets to DISCONNECTED on AP drop");
-
-    /* 2f. SoftAP-to-Station Handover Orchestrator */
-    TEST_ASSERT(wpa2_client_handover("OfficeNet", "OfficeSecret123") == WPA2_OK,
-                "wpa2_client_handover reconfigures client and initiates STA join");
+    /* 2. 4-way and group handshakes: test_wpa2_handshake() */
 
     /* 3. DHCP Client State Machine */
     TEST_ASSERT(dhcp_client_init() == DHCP_OK, "dhcp_client_init succeeds");
@@ -4616,6 +4876,8 @@ int main(void)
     test_selftest_snapshots();
     test_provisioning_subsystem();
     test_wpa2_client_and_mdns_subsystem();
+    test_wpa_ie_parsing();
+    test_wpa2_handshake();
 
     /* Hardened cross-module integration and edge case tests */
     test_coroutine_systimer_dpc_integration();

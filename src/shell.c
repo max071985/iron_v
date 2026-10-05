@@ -3069,9 +3069,9 @@ void shell_execute(char *input_buffer)
                     wpa2_status_t wst = wpa2_client_handover_chan(ssid, pass, chan);
                     if (wst != WPA2_OK)
                     {
-                        console_puts("Error: connection handover failed (status=");
-                        put_dec((uint32_t)wst);
-                        console_puts(")\r\n");
+                        console_puts("Error: connection handover failed (status=-");
+                        put_dec((uint32_t)(-(int32_t)wst));
+                        console_puts(wst == WPA2_ERR_UNSUPPORTED ? ", 64-char raw PSK not supported)\r\n" : ")\r\n");
                     }
                 }
             }

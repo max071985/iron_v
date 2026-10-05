@@ -35,7 +35,7 @@ HOST_CFLAGS = -O2 -fno-tree-loop-distribute-patterns -Wall -Wextra -Werror -Ites
 # Linker flags
 LDFLAGS = -T ld/link.ld -T ld/rom/esp32c6.rom.ld -T ld/rom/esp32c6.rom.phy.ld -T ld/rom/esp32c6.rom.pp.ld -T ld/rom/esp32c6.rom.net80211.ld -T ld/rom/esp32c6.rom.coexist.ld -Llibs/esp32c6 -nostdlib -Wl,--wrap=ram_set_chan_freq_sw_start
 
-SRCS = src/crt0.S src/trap_entry.S src/task_switch.S src/main.c src/string.c src/utils.c src/test.c src/clock.c src/mmu.c src/wdt.c src/trap.c src/panic.c src/interrupt.c src/dpc.c src/usb_serial.c src/uart.c src/console.c src/timer.c src/arena.c src/systimer.c src/task.c src/pmp.c src/lp_core.c src/power.c src/gpio.c src/gdma.c src/modem.c src/wifi.c src/ieee802154.c src/net.c src/tcp.c src/dhcp.c src/wifi_os_adapter.c src/wifi_regulatory.c src/wifi_ftm_cal.c src/wifi_phy_data.c src/http_server.c src/speedtest.c src/shell.c src/efuse.c src/soak.c src/ota.c src/nvs.c src/provisioning.c src/wpa2_client.c src/mdns.c
+SRCS = src/crt0.S src/trap_entry.S src/task_switch.S src/main.c src/string.c src/utils.c src/test.c src/clock.c src/mmu.c src/wdt.c src/trap.c src/panic.c src/interrupt.c src/dpc.c src/usb_serial.c src/uart.c src/console.c src/timer.c src/arena.c src/systimer.c src/task.c src/pmp.c src/lp_core.c src/power.c src/gpio.c src/gdma.c src/modem.c src/wifi.c src/ieee802154.c src/net.c src/tcp.c src/dhcp.c src/wifi_os_adapter.c src/wifi_regulatory.c src/wifi_ftm_cal.c src/wifi_phy_data.c src/http_server.c src/speedtest.c src/shell.c src/efuse.c src/soak.c src/ota.c src/nvs.c src/provisioning.c src/wpa2_client.c src/wpa_ie.c src/mdns.c
 
 # Sources that only make sense on the target (startup, traps, console, timers, scheduler,
 # the on-board self-test). Everything else in SRCS is also compiled into the host tests.

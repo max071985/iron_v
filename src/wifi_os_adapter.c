@@ -29,6 +29,8 @@
 #include "wifi_vendor_types.h"
 #include "wdt.h"
 #include "wpa2_client.h"
+#include "wpa_ie.h"
+#include "wpa_driver.h"
 
 /* ========================================================================= */
 /* 1. Deterministic Static Memory Arena for Wi-Fi Subsystem (54 KB)          */
@@ -1813,39 +1815,109 @@ _Static_assert(sizeof(struct wpa_funcs) == 112U, "struct wpa_funcs: 28 callbacks
 
 extern int esp_wifi_register_wpa_cb_internal(struct wpa_funcs *cb);
 
+/* ------------------------------------------------------------------------- */
+/* Supplicant driver shim (wpa_driver.h) on top of the blob                   */
+/* ------------------------------------------------------------------------- */
+void wpa_drv_get_profile(wpa_drv_profile_t *out)
+{
+    memset(out, 0, sizeof(*out));
+    out->is_rsn = esp_wifi_sta_prof_is_rsn_internal();
+    out->authmode = esp_wifi_sta_get_prof_authmode_internal();
+    out->pairwise_idx = esp_wifi_sta_get_pairwise_cipher_internal();
+    out->group_idx = esp_wifi_sta_get_group_cipher_internal();
+    const struct wifi_ssid *ssid = esp_wifi_sta_get_prof_ssid_internal();
+    if (ssid != NULL && ssid->len > 0 && (size_t)ssid->len < sizeof(out->ssid))
+    {
+        memcpy(out->ssid, ssid->ssid, (size_t)ssid->len);
+    }
+}
+
+const uint8_t *wpa_drv_get_ap_rsn_ie(const uint8_t *bssid)
+{
+    return esp_wifi_sta_get_ie((uint8_t *)bssid, WLAN_EID_RSN);
+}
+
+int wpa_drv_set_assoc_ie(uint8_t *appie, uint16_t ie_len)
+{
+    return esp_wifi_set_appie_internal(WIFI_APPIE_RSN, appie, ie_len, WIFI_APPIE_BY_REFERENCE);
+}
+
+int wpa_drv_sta_connect(const uint8_t *bssid)
+{
+    return (int)esp_wifi_sta_connect_internal(bssid);
+}
+
+int wpa_drv_set_sta_key(int alg, const uint8_t *addr, int key_idx, int set_tx,
+                        const uint8_t *seq, size_t seq_len,
+                        const uint8_t *key, size_t key_len, uint32_t key_flag)
+{
+    return (int)esp_wifi_set_sta_key_internal(alg, addr, key_idx, set_tx, seq, seq_len,
+                                              key, key_len, (int)key_flag);
+}
+
+void wpa_drv_auth_done(void)
+{
+    esp_wifi_auth_done_internal();
+}
+
+void wpa_drv_deauthenticate(uint8_t reason)
+{
+    esp_wifi_deauthenticate_internal(reason);
+}
+
+int wpa_drv_tx_eapol(const uint8_t *eth_frame, uint16_t len)
+{
+    return (wifi_tx_packet(WIFI_TX_IF_STA, eth_frame, len) == WIFI_OK) ? 0 : -1;
+}
+
+void wpa_drv_random(uint8_t *buf, size_t len)
+{
+    (void)get_random_wrapper(buf, len);
+}
+
+/* ------------------------------------------------------------------------- */
+/* struct wpa_funcs callbacks (ESP-IDF esp_supplicant_init order)             */
+/* ------------------------------------------------------------------------- */
 static bool s_wpa_sta_init(void)
 {
-    /* Station WPA context initialized at kernel boot; do not wipe configured credentials */
-    return true;
+    /* ESP-IDF wpa_attach(): EAPOL TX-done drives key installation after M4 */
+    return esp_wifi_register_eapol_txdonecb_internal(wpa2_client_eapol_txdone) == 0;
 }
 static bool s_wpa_sta_deinit(void)
 {
+    esp_wifi_register_eapol_txdonecb_internal(NULL);
     wpa2_client_stop();
     return true;
 }
 static int s_wpa_sta_connect(uint8_t *bssid)
 {
-    wpa2_client_on_connected(bssid);
-    return 0;
+    return wpa2_client_sta_connect(bssid);
 }
 static void s_wpa_sta_connected_cb(uint8_t *bssid)
 {
-    console_puts("[WPA] Connected CB\r\n");
-    wpa2_client_on_connected(bssid);
+    console_puts("[WPA] Blob reports connection complete\r\n");
+    wpa2_client_on_associated(bssid);
 }
 static void s_wpa_sta_disconnected_cb(uint8_t reason)
 {
-    console_puts("[WPA] Disconnected CB, reason=");
-    put_dec((uint32_t)reason);
-    console_puts("\r\n");
     wpa2_client_on_disconnected(reason);
 }
 static int s_wpa_sta_rx_eapol(uint8_t *src_addr, uint8_t *buf, uint32_t len)
 {
-    console_puts("[WPA] RX EAPOL frame len=");
-    put_dec(len);
-    console_puts("\r\n");
-    return (int)wpa2_client_rx_eapol(src_addr, buf, (uint16_t)len);
+    if (len > UINT16_MAX)
+    {
+        return -1;
+    }
+    wpa2_status_t st = wpa2_client_rx_eapol(src_addr, buf, (uint16_t)len);
+    if (st != WPA2_OK)
+    {
+        console_puts("[WPA] EAPOL frame dropped, status=");
+        put_dec((uint32_t)(-(int32_t)st));
+        console_puts(" len=");
+        put_dec(len);
+        console_puts("\r\n");
+    }
+    return 0;
 }
 static bool s_wpa_sta_in_4way(void)
 {
@@ -1860,37 +1932,53 @@ static uint8_t *s_wpa_ap_get_ie(size_t *len) { if (len) *len = 0; return NULL; }
 static bool s_wpa_ap_rx_eapol(void *h, void *sm, uint8_t *d, size_t l) { (void)h; (void)sm; (void)d; (void)l; return false; }
 static void s_wpa_ap_get_peer_spp(void *sm, bool *cap, bool *req) { (void)sm; if (cap) *cap = false; if (req) *req = false; }
 static char *s_wpa_config_parse_string(const char *v, size_t *len) { (void)v; if (len) *len = 0; return NULL; }
+
+/* Supplicant cipher bitfield -> wifi_cipher_type_t (ESP-IDF cipher_type_map_supp_to_public) */
+static int wpa_cipher_to_public(uint32_t c)
+{
+    switch (c)
+    {
+        case WPA_CIPHER_NONE:                   return WIFI_CIPHER_TYPE_NONE;
+        case WPA_CIPHER_WEP40:                  return WIFI_CIPHER_TYPE_WEP40;
+        case WPA_CIPHER_WEP104:                 return WIFI_CIPHER_TYPE_WEP104;
+        case WPA_CIPHER_TKIP:                   return WIFI_CIPHER_TYPE_TKIP;
+        case WPA_CIPHER_CCMP:                   return WIFI_CIPHER_TYPE_CCMP;
+        case WPA_CIPHER_CCMP | WPA_CIPHER_TKIP: return WIFI_CIPHER_TYPE_TKIP_CCMP;
+        case WPA_CIPHER_AES_128_CMAC:           return WIFI_CIPHER_TYPE_AES_CMAC128;
+        case WPA_CIPHER_BIP_GMAC_128:           return WIFI_CIPHER_TYPE_AES_GMAC128;
+        case WPA_CIPHER_BIP_GMAC_256:           return WIFI_CIPHER_TYPE_AES_GMAC256;
+        case WPA_CIPHER_SMS4:                   return WIFI_CIPHER_TYPE_SMS4;
+        case WPA_CIPHER_GCMP:                   return WIFI_CIPHER_TYPE_GCMP;
+        case WPA_CIPHER_GCMP_256:               return WIFI_CIPHER_TYPE_GCMP256;
+        default:                                return WIFI_CIPHER_TYPE_UNKNOWN;
+    }
+}
+
+/* ESP-IDF wpa_parse_wpa_ie_to_public(): the blob derives each AP's authmode from this */
+static int wpa_parse_ie_to_public(const uint8_t *ie, size_t len, wifi_wpa_ie_t *data, bool strict)
+{
+    if (data == NULL)
+    {
+        return -1;
+    }
+    wpa_ie_data_t d;
+    int ret = wpa_ie_parse(ie, len, &d, strict);
+    memset(data, 0, sizeof(*data));
+    data->proto = (int)d.proto;
+    data->pairwise_cipher = wpa_cipher_to_public(d.pairwise_cipher);
+    data->group_cipher = wpa_cipher_to_public(d.group_cipher);
+    data->key_mgmt = (int)d.key_mgmt;
+    data->capabilities = (int)d.capabilities;
+    data->num_pmkid = d.num_pmkid;
+    data->pmkid = d.pmkid;
+    data->mgmt_group_cipher = wpa_cipher_to_public(d.mgmt_group_cipher);
+    data->rsnxe_capa = d.rsnxe_capa;
+    return ret;
+}
 static int s_wpa_parse_wpa_ie(const uint8_t *wpa_ie, size_t wpa_ie_len, wifi_wpa_ie_t *data)
 {
-    if (data == NULL) return -1;
-    memset(data, 0, sizeof(wifi_wpa_ie_t));
-    if (wpa_ie != NULL && wpa_ie_len > 0U)
-    {
-        if (wpa_ie[0] == 0x30U) /* RSN IE */
-        {
-            data->proto = 2; /* RSN */
-            data->pairwise_cipher = 4; /* CCMP */
-            data->group_cipher = 4;
-            data->key_mgmt = 2; /* PSK */
-        }
-        else if (wpa_ie[0] == 0xDDU) /* WPA IE */
-        {
-            data->proto = 1; /* WPA */
-            data->pairwise_cipher = 3; /* TKIP */
-            data->group_cipher = 3;
-            data->key_mgmt = 2; /* PSK */
-        }
-        else
-        {
-            data->proto = 2;
-            data->pairwise_cipher = 4;
-            data->group_cipher = 4;
-            data->key_mgmt = 2;
-        }
-    }
-    return 0;
+    return wpa_parse_ie_to_public(wpa_ie, wpa_ie_len, data, true);
 }
-static int s_wpa_config_bss(uint8_t *bssid) { (void)bssid; return 0; }
 static int s_wpa_michael_mic_failure(uint16_t u) { (void)u; return 0; }
 static int s_wpa_sta_rx_mgmt(uint8_t t, uint8_t *f, size_t l, uint8_t *s, int8_t r, uint8_t c, uint64_t tsf)
 {
@@ -1902,7 +1990,7 @@ static void s_wpa_sta_clear_curr_pmksa(void) {}
 static void s_wpa_config_reload(void) {}
 static int s_wpa_parse_wpa_ie_scan_only(const uint8_t *ie, size_t len, wifi_wpa_ie_t *d)
 {
-    return s_wpa_parse_wpa_ie(ie, len, d);
+    return wpa_parse_ie_to_public(ie, len, d, false);
 }
 
 static struct wpa_funcs s_wpa_funcs = {
@@ -1922,7 +2010,7 @@ static struct wpa_funcs s_wpa_funcs = {
     .wpa_ap_get_peer_spp_msg    = s_wpa_ap_get_peer_spp,
     .wpa_config_parse_string    = s_wpa_config_parse_string,
     .wpa_parse_wpa_ie           = s_wpa_parse_wpa_ie,
-    .wpa_config_bss             = s_wpa_config_bss,
+    .wpa_config_bss             = NULL,   /* ESP-IDF leaves it NULL */
     .wpa_michael_mic_failure    = s_wpa_michael_mic_failure,
     .wpa3_build_sae_msg         = NULL,
     .wpa3_parse_sae_msg         = NULL,
@@ -1953,6 +2041,56 @@ void wifi_os_adapter_poll(void) {}
 void wifi_os_adapter_print_timers(void) {}
 void wifi_os_adapter_register_wpa_stubs(void) {}
 static void wifi_timer_invalidate_handle(void *ptr) { (void)ptr; }
+
+/* Supplicant driver shim, recorded for the host tests */
+wpa_drv_host_t g_wpa_drv_host;
+
+void wpa_drv_host_reset(void)
+{
+    memset(&g_wpa_drv_host, 0, sizeof(g_wpa_drv_host));
+    g_wpa_drv_host.profile.is_rsn = true;
+    g_wpa_drv_host.profile.authmode = WPA_DRV_AUTH_WPA2_PSK;
+    g_wpa_drv_host.profile.pairwise_idx = WPA_DRV_CIPHER_IDX_CCMP;
+    g_wpa_drv_host.profile.group_idx = WPA_DRV_CIPHER_IDX_CCMP;
+}
+void wpa_drv_get_profile(wpa_drv_profile_t *out) { *out = g_wpa_drv_host.profile; }
+const uint8_t *wpa_drv_get_ap_rsn_ie(const uint8_t *bssid) { (void)bssid; return g_wpa_drv_host.ap_rsn_ie; }
+int wpa_drv_set_assoc_ie(uint8_t *appie, uint16_t ie_len)
+{
+    g_wpa_drv_host.assoc_ie_calls++;
+    if (ie_len > sizeof(g_wpa_drv_host.assoc_ie)) return -1;
+    appie[0] = (uint8_t)ie_len;     /* the blob writes struct wifi_appie.ie_len */
+    appie[1] = (uint8_t)(ie_len >> 8);
+    memcpy(g_wpa_drv_host.assoc_ie, appie + WPA_DRV_APPIE_HDR_LEN, ie_len);
+    g_wpa_drv_host.assoc_ie_len = ie_len;
+    return 0;
+}
+int wpa_drv_sta_connect(const uint8_t *bssid) { (void)bssid; g_wpa_drv_host.connect_calls++; return 0; }
+int wpa_drv_set_sta_key(int alg, const uint8_t *addr, int key_idx, int set_tx,
+                        const uint8_t *seq, size_t seq_len,
+                        const uint8_t *key, size_t key_len, uint32_t key_flag)
+{
+    (void)alg; (void)addr; (void)set_tx;
+    g_wpa_drv_host.set_key_calls++;
+    g_wpa_drv_host.last_key_flag = key_flag;
+    g_wpa_drv_host.last_key_idx = key_idx;
+    g_wpa_drv_host.last_key_len = key_len;
+    memcpy(g_wpa_drv_host.last_key, key, key_len < sizeof(g_wpa_drv_host.last_key) ? key_len : sizeof(g_wpa_drv_host.last_key));
+    memset(g_wpa_drv_host.last_seq, 0, sizeof(g_wpa_drv_host.last_seq));
+    memcpy(g_wpa_drv_host.last_seq, seq, seq_len < sizeof(g_wpa_drv_host.last_seq) ? seq_len : sizeof(g_wpa_drv_host.last_seq));
+    return 0;
+}
+void wpa_drv_auth_done(void) { g_wpa_drv_host.auth_done_calls++; }
+void wpa_drv_deauthenticate(uint8_t reason) { g_wpa_drv_host.deauth_calls++; g_wpa_drv_host.last_deauth_reason = reason; }
+int wpa_drv_tx_eapol(const uint8_t *eth_frame, uint16_t len)
+{
+    g_wpa_drv_host.tx_calls++;
+    if (len > sizeof(g_wpa_drv_host.last_tx)) return -1;
+    memcpy(g_wpa_drv_host.last_tx, eth_frame, len);
+    g_wpa_drv_host.last_tx_len = len;
+    return 0;
+}
+void wpa_drv_random(uint8_t *buf, size_t len) { memset(buf, g_wpa_drv_host.random_fill, len); }
 
 #endif /* defined(__riscv) */
 

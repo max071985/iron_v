@@ -35,6 +35,7 @@
 #include "provisioning.h"
 #include "dhcp.h"
 #include "wpa2_client.h"
+#include "wpa_ie.h"
 #include "mdns.h"
 
 /* Route all test output to unified dual-console multiplexer */
@@ -3337,8 +3338,8 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     /* Bare-Metal Wi-Fi Station (STA) WPA2-PSK Client & Home LAN Join          */
     /* ------------------------------------------------------------- */
     total_tests++;
-    print_test_header("WPA2 Supplicant Crypto & EAPOL Processing (synthetic frames, no association)",
-                      "PBKDF2-SHA1 and RFC 3394 known answers, PRF-512, supplicant M1/M3 processing on synthetic frames, mDNS responder; does not join a network");
+    print_test_header("WPA2 Supplicant Crypto & RSN IE (known answers, no association)",
+                      "PBKDF2-SHA1 and RFC 3394 known answers, PRF-512, RSN IE build/parse, mDNS responder; the 4-way handshake runs in the host tests, never on the live radio");
 
     wdt_feed();
     lp_wdt_feed();
@@ -3401,64 +3402,18 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     wpa2_ptk_t t43_ptk;
     int prf_ok = (wpa2_crypto_prf512(t43_pmk, t43_sta_mac, t43_ap_bssid, t43_snonce, t43_anonce, &t43_ptk) == WPA2_OK);
 
-    /* 2. Supplicant state machine on synthetic M1/M3. There is no AP: the M2/M4
-     *    replies are handed to the radio and refused because the station is
-     *    not associated (TX errors are expected here). */
-    int wpa_init_ok = (wpa2_client_init() == WPA2_OK) &&
-                      (wpa2_client_configure("IEEE", "password") == WPA2_OK);
-    wpa2_client_on_connected(t43_ap_bssid);
-
-    /* Message 1 */
-    uint8_t t43_m1[sizeof(eapol_ethernet_hdr_t) + sizeof(eapol_key_header_t)];
-    memset(t43_m1, 0, sizeof(t43_m1));
-    eapol_ethernet_hdr_t *m1_eth = (eapol_ethernet_hdr_t *)t43_m1;
-    memcpy(m1_eth->dest_mac, t43_sta_mac, 6);
-    memcpy(m1_eth->src_mac, t43_ap_bssid, 6);
-    m1_eth->ethertype = NET_HTONS(ETHERTYPE_EAPOL);
-    m1_eth->version = EAPOL_VERSION_1;
-    m1_eth->type = EAPOL_TYPE_KEY;
-    m1_eth->length = NET_HTONS(sizeof(eapol_key_header_t));
-
-    eapol_key_header_t *m1_key = (eapol_key_header_t *)(t43_m1 + sizeof(eapol_ethernet_hdr_t));
-    m1_key->descriptor_type = EAPOL_DESC_TYPE_RSN;
-    m1_key->key_info = NET_HTONS(WPA2_MSG1_KEY_INFO_NOMINAL);
-    m1_key->key_length = NET_HTONS(WPA2_TK_LEN);
-    m1_key->replay_counter[7] = 1U;
-    memcpy(m1_key->key_nonce, t43_anonce, WPA2_NONCE_LEN);
-
-    int m1_ok = (wpa2_client_rx_eapol(t43_ap_bssid, t43_m1, sizeof(t43_m1)) == WPA2_OK) &&
-                (wpa2_client_get_state() == WPA2_STATE_4WAY_M2_SENT);
-
-    /* Message 3 */
-    wpa2_ptk_t act_ptk;
-    wpa2_client_get_ptk(&act_ptk);
-    uint8_t t43_wrapped_gtk[24];
-    uint16_t t43_wgtk_len = 0U;
-    wpa2_crypto_aes_wrap(act_ptk.kek, t43_plain, 16, t43_wrapped_gtk, &t43_wgtk_len);
-
-    uint8_t t43_m3[sizeof(eapol_ethernet_hdr_t) + sizeof(eapol_key_header_t) + 24U];
-    memset(t43_m3, 0, sizeof(t43_m3));
-    eapol_ethernet_hdr_t *m3_eth = (eapol_ethernet_hdr_t *)t43_m3;
-    memcpy(m3_eth->dest_mac, t43_sta_mac, 6);
-    memcpy(m3_eth->src_mac, t43_ap_bssid, 6);
-    m3_eth->ethertype = NET_HTONS(ETHERTYPE_EAPOL);
-    m3_eth->version = EAPOL_VERSION_1;
-    m3_eth->type = EAPOL_TYPE_KEY;
-    m3_eth->length = NET_HTONS((uint16_t)(sizeof(eapol_key_header_t) + 24U));
-
-    eapol_key_header_t *m3_key = (eapol_key_header_t *)(t43_m3 + sizeof(eapol_ethernet_hdr_t));
-    m3_key->descriptor_type = EAPOL_DESC_TYPE_RSN;
-    m3_key->key_info = NET_HTONS(WPA2_MSG3_KEY_INFO_NOMINAL);
-    m3_key->key_length = NET_HTONS(WPA2_TK_LEN);
-    m3_key->replay_counter[7] = 2U;
-    memcpy(m3_key->key_nonce, t43_anonce, WPA2_NONCE_LEN);
-    m3_key->key_data_length = NET_HTONS(24U);
-    memcpy(t43_m3 + sizeof(eapol_ethernet_hdr_t) + sizeof(eapol_key_header_t), t43_wrapped_gtk, 24U);
-
-    wpa2_crypto_compute_mic(act_ptk.kck, t43_m3, sizeof(t43_m3), m3_key->key_mic);
-
-    int m3_ok = (wpa2_client_rx_eapol(t43_ap_bssid, t43_m3, sizeof(t43_m3)) == WPA2_OK) &&
-                wpa2_client_is_authenticated();
+    /* 2. RSN IE we would send (WPA2-PSK, CCMP/CCMP, no PMF) round-trips through
+     *    the parser the blob uses for scan results. Driving the 4-way handshake
+     *    here would install keys in the live MAC, so it is host-tested only. */
+    uint8_t t43_ie[WPA_IE_MAX_LEN];
+    wpa_ie_data_t t43_ied;
+    size_t t43_ie_len = wpa_ie_build_rsn(t43_ie, sizeof(t43_ie), WPA_CIPHER_CCMP, WPA_CIPHER_CCMP,
+                                         WPA_KEY_MGMT_PSK, 0U);
+    int rsn_ie_ok = (t43_ie_len > 0U) &&
+                    (wpa_ie_parse(t43_ie, t43_ie_len, &t43_ied, true) == WPA_IE_OK) &&
+                    (t43_ied.proto == WPA_PROTO_RSN) && (t43_ied.pairwise_cipher == WPA_CIPHER_CCMP) &&
+                    (t43_ied.group_cipher == WPA_CIPHER_CCMP) && (t43_ied.key_mgmt == WPA_KEY_MGMT_PSK) &&
+                    ((t43_ied.capabilities & WPA_CAPABILITY_MFPC) == 0U);
 
     /* 3. mDNS Responder (the DHCP client is covered by host tests with synthetic ACKs) */
     mdns_init();
@@ -3489,29 +3444,25 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     wdt_feed();
     lp_wdt_feed();
 
-    int t43_pass = pbkdf2_ok && aes_wrap_ok && prf_ok && wpa_init_ok && m1_ok && m3_ok && mdns_ann_ok && mdns_query_ok;
+    int t43_pass = pbkdf2_ok && aes_wrap_ok && prf_ok && rsn_ie_ok && mdns_ann_ok && mdns_query_ok;
 
-    uart_puts("  Expected:    PBKDF2=1, AESWrap=1, PRF=1, EAPOL_M1=1, EAPOL_M3=1, mDNS=1\r\n");
+    uart_puts("  Expected:    PBKDF2=1, AESWrap=1, PRF=1, RSN_IE=1, mDNS=1\r\n");
     uart_puts("  Actual:      PBKDF2=");
     put_dec(pbkdf2_ok);
     uart_puts(", AESWrap=");
     put_dec(aes_wrap_ok);
     uart_puts(", PRF=");
     put_dec(prf_ok);
-    uart_puts(", EAPOL_M1=");
-    put_dec(m1_ok);
-    uart_puts(", EAPOL_M3=");
-    put_dec(m3_ok);
+    uart_puts(", RSN_IE=");
+    put_dec(rsn_ie_ok);
     uart_puts(", mDNS=");
     put_dec(mdns_ann_ok && mdns_query_ok);
     uart_puts("\r\n");
 
-    wpa2_telemetry_t wtelem;
-    wpa2_client_get_telemetry(&wtelem);
-    uart_puts("  Diag: Supplicant state (synthetic)=");
+    uart_puts("  Diag: RSN IE len=");
+    put_dec((uint32_t)t43_ie_len);
+    uart_puts(", Supplicant state=");
     uart_puts(wpa2_state_to_str(wpa2_client_get_state()));
-    uart_puts(", Handshakes=");
-    put_dec(wtelem.handshakes_completed);
     uart_puts(", mDNSHost='");
     uart_puts(mdns_get_hostname());
     uart_puts("'\r\n");

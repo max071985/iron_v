@@ -53,6 +53,17 @@ static bool s_wifi_cca_enabled = true;
 /* Station Subsystem Tracking (Task 8.2) */
 static bool s_wifi_sta_connected = false;
 static uint8_t s_wifi_sta_bssid[WIFI_MAC_ADDR_LEN] = {0};
+static uint32_t s_wifi_sta_disconnects = 0U;
+static uint16_t s_wifi_sta_last_reason = 0U;
+/* STA join started with the SoftAP kept up: the IP stack stays on the SoftAP */
+static bool s_wifi_sta_keep_ap = false;
+#if defined(__riscv)
+static bool s_wifi_sta_started = false;   /* STA_START seen, no STA_STOP since */
+#endif
+
+/* Last scan results; wifi_scan() fetches them from the blob once (fetching empties its list) */
+static wifi_ap_record_t s_wifi_scan_recs[WIFI_SCAN_CACHE_MAX];
+static uint16_t s_wifi_scan_rec_count = 0U;
 
 /* ========================================================================= */
 /* Static Storage: software RX queue filled by the blob's RX callback       */
@@ -249,11 +260,10 @@ static esp_err_t wifi_vendor_rx_callback(void *buffer, uint16_t len, void *eb)
 }
 #endif
 
-#if defined(__riscv)
 /* A deauth after M2 (reason 15/2) usually means a wrong passphrase, but the
  * supplicant's own verdict is in `sta status` (wpa2_fail_to_str) */
 FLASH_TEXT_ATTR
-static const char *wifi_disconnect_reason_str(uint32_t reason)
+const char *wifi_disconnect_reason_str(uint32_t reason)
 {
     switch (reason)
     {
@@ -280,6 +290,7 @@ static const char *wifi_disconnect_reason_str(uint32_t reason)
     }
 }
 
+#if defined(__riscv)
 static void wifi_print_mac(const uint8_t *mac)
 {
     const char hex_chars[] = "0123456789abcdef";
@@ -295,6 +306,24 @@ static void wifi_print_mac(const uint8_t *mac)
 }
 #endif
 
+#if defined(__riscv)
+/* Points the IP stack at the joined STA: STA MAC, RX path and a fresh DHCP lease */
+static void wifi_sta_attach_ip(void)
+{
+    uint8_t sta_mac[WIFI_MAC_ADDR_LEN];
+    if (wifi_get_mac_addr(sta_mac) == WIFI_OK)
+    {
+        net_set_mac(sta_mac);
+    }
+    /* ESP-IDF registers the STA RX path on every STA_CONNECTED
+     * (wifi_default_action_sta_connected) */
+    esp_wifi_internal_reg_rxcb(WIFI_IF_STA, wifi_vendor_rx_callback);
+    esp_wifi_internal_set_sta_ip();
+    /* The blob posts STA_CONNECTED after the 4-way handshake (wpa_drv_auth_done) */
+    dhcp_client_start();
+}
+#endif
+
 void wifi_handle_vendor_event(int32_t event_id, void *event_data)
 {
 #if defined(__riscv)
@@ -306,12 +335,14 @@ void wifi_handle_vendor_event(int32_t event_id, void *event_data)
     {
         console_puts("[Wi-Fi] Event: STA_START\r\n");
         s_wifi_telemetry.state = WIFI_STATE_ACTIVE;
+        s_wifi_sta_started = true;
     }
     else if (event_id == WIFI_EVENT_STA_STOP)
     {
         console_puts("[Wi-Fi] Event: STA_STOP\r\n");
         s_wifi_telemetry.state = WIFI_STATE_IDLE;
         s_wifi_sta_connected = false;
+        s_wifi_sta_started = false;
     }
     else if (event_id == WIFI_EVENT_SCAN_DONE)
     {
@@ -332,12 +363,15 @@ void wifi_handle_vendor_event(int32_t event_id, void *event_data)
             put_dec((uint32_t)conn->channel);
             console_puts("\r\n");
         }
-        /* ESP-IDF registers the STA RX path on every STA_CONNECTED
-         * (wifi_default_action_sta_connected) */
-        esp_wifi_internal_reg_rxcb(WIFI_IF_STA, wifi_vendor_rx_callback);
-        esp_wifi_internal_set_sta_ip();
-        /* The blob posts STA_CONNECTED after the 4-way handshake (wpa_drv_auth_done) */
-        dhcp_client_start();
+        if (s_wifi_sta_keep_ap && s_wifi_ap_running)
+        {
+            /* Portal join: the phone still talks to the SoftAP; wifi_sta_take_over() moves the IP stack */
+            console_puts("[Wi-Fi] STA joined; IP stack stays on the SoftAP until hand-over\r\n");
+        }
+        else
+        {
+            wifi_sta_attach_ip();
+        }
     }
     else if (event_id == WIFI_EVENT_STA_DISCONNECTED)
     {
@@ -353,7 +387,10 @@ void wifi_handle_vendor_event(int32_t event_id, void *event_data)
             console_puts(")");
         }
         console_puts("\r\n");
-        s_wifi_telemetry.state = WIFI_STATE_ACTIVE;
+        s_wifi_sta_disconnects++;
+        s_wifi_sta_last_reason = (event_data != NULL)
+            ? (uint16_t)((const wifi_event_sta_disconnected_t *)event_data)->reason : 0U;
+        s_wifi_telemetry.state = s_wifi_ap_running ? WIFI_STATE_AP_ACTIVE : WIFI_STATE_ACTIVE;
         s_wifi_rssi = 0;
     }
     else if (event_id == WIFI_EVENT_AP_START)
@@ -559,9 +596,11 @@ wifi_status_t wifi_rx_release(net_packet_t *packet)
     return WIFI_OK;
 }
 
+/* The IP stack sends on the STA once it is joined, except while a portal join keeps the
+ * IP stack on the SoftAP until wifi_sta_take_over() */
 wifi_tx_if_t wifi_get_ip_tx_if(void)
 {
-    return s_wifi_sta_connected ? WIFI_TX_IF_STA : WIFI_TX_IF_AP;
+    return (wifi_is_sta_connected() && !s_wifi_sta_keep_ap) ? WIFI_TX_IF_STA : WIFI_TX_IF_AP;
 }
 
 /* Hands one Ethernet II frame to the blob on the given interface (no copy, no GDMA) */
@@ -884,11 +923,14 @@ wifi_status_t wifi_scan(const char *ssid, uint8_t channel, bool passive, uint32_
     put_dec((uint32_t)ap_num);
     console_puts(" Access Points:\r\n");
 
+    s_wifi_scan_rec_count = 0U;
     if (ap_num > 0U)
     {
-        wifi_ap_record_t recs[16];
-        uint16_t fetch_count = (ap_num > 16U) ? 16U : ap_num;
+        wifi_ap_record_t *recs = s_wifi_scan_recs;
+        uint16_t fetch_count = (ap_num > WIFI_SCAN_CACHE_MAX) ? WIFI_SCAN_CACHE_MAX : ap_num;
+        /* Fetching hands the blob's list over (it is freed), so keep the records here */
         esp_wifi_scan_get_ap_records(&fetch_count, recs);
+        s_wifi_scan_rec_count = fetch_count;
         for (uint16_t i = 0U; i < fetch_count; i++)
         {
             console_puts("  #");
@@ -1290,6 +1332,7 @@ wifi_status_t wifi_start_ap(const char *ssid, const char *password, uint8_t chan
 
     s_wifi_ap_running = true;
     s_wifi_telemetry.state = WIFI_STATE_AP_ACTIVE;
+    s_wifi_sta_keep_ap = false;
 
     uint8_t ap_mac[WIFI_MAC_ADDR_LEN];
     if (wifi_get_ap_mac_addr(ap_mac) == WIFI_OK)
@@ -1311,6 +1354,7 @@ wifi_status_t wifi_stop_ap(void)
 #endif
     s_wifi_ap_running = false;
     s_wifi_telemetry.state = WIFI_STATE_IDLE;
+    s_wifi_sta_keep_ap = false;
 
     uint8_t sta_mac[WIFI_MAC_ADDR_LEN];
     if (wifi_get_mac_addr(sta_mac) == WIFI_OK)
@@ -1388,8 +1432,29 @@ bool wifi_is_cca_enabled(void)
 /* Wi-Fi Station (STA) Subsystem (Task 8.2)                                  */
 /* ========================================================================= */
 
+#if defined(__riscv)
+/* Polls the blob until the STA interface has started (STA_START) or the timeout passes */
 FLASH_TEXT_ATTR
-wifi_status_t wifi_start_sta_chan(const char *ssid, const char *password, uint8_t channel)
+static void wifi_wait_sta_started(void)
+{
+    uint64_t start_wait = systimer_get_us();
+    while (!s_wifi_sta_started && (systimer_get_us() - start_wait) < WIFI_STA_START_TIMEOUT_US)
+    {
+        wdt_feed();
+        lp_wdt_feed();
+        wifi_os_adapter_poll();
+        wdt_supervisor_tick();
+        if (task_get_count() > 1U)
+        {
+            task_yield();
+        }
+    }
+}
+#endif
+
+/* keep_ap: join in APSTA mode and leave the IP stack on the SoftAP (portal hand-over) */
+FLASH_TEXT_ATTR
+static wifi_status_t wifi_sta_begin(const char *ssid, const char *password, uint8_t channel, bool keep_ap)
 {
     if (ssid == NULL || ssid[0] == '\0')
     {
@@ -1401,8 +1466,11 @@ wifi_status_t wifi_start_sta_chan(const char *ssid, const char *password, uint8_
         wifi_init();
     }
 
-    /* 1. Stop SoftAP if active */
-    if (s_wifi_ap_running)
+    keep_ap = keep_ap && s_wifi_ap_running;
+    s_wifi_sta_keep_ap = keep_ap;
+
+    /* 1. Stop SoftAP if active (unless it stays up for the portal) */
+    if (s_wifi_ap_running && !keep_ap)
     {
         wifi_stop_ap();
 #if defined(__riscv)
@@ -1429,7 +1497,7 @@ wifi_status_t wifi_start_sta_chan(const char *ssid, const char *password, uint8_
 #if defined(__riscv)
     if (s_vendor_wifi_inited)
     {
-        esp_wifi_set_mode(WIFI_MODE_STA);
+        esp_wifi_set_mode(keep_ap ? WIFI_MODE_APSTA : WIFI_MODE_STA);
 
         wifi_config_t sta_cfg;
         memset(&sta_cfg, 0, sizeof(sta_cfg));
@@ -1457,26 +1525,23 @@ wifi_status_t wifi_start_sta_chan(const char *ssid, const char *password, uint8_
 
         esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
         esp_wifi_config_11b_rate(WIFI_IF_STA, false);
-        esp_wifi_internal_reg_rxcb(WIFI_IF_STA, wifi_vendor_rx_callback);
-
-        if (s_wifi_telemetry.state != WIFI_STATE_ACTIVE && s_wifi_telemetry.state != WIFI_STATE_CONNECTED)
+        if (keep_ap)
         {
-            esp_wifi_start();
-
-            /* Wait for STA_START event */
-            uint64_t start_wait = systimer_get_us();
-            while (s_wifi_telemetry.state != WIFI_STATE_ACTIVE &&
-                   s_wifi_telemetry.state != WIFI_STATE_CONNECTED &&
-                   (systimer_get_us() - start_wait) < WIFI_STA_START_TIMEOUT_US)
+            /* The blob is already running for the SoftAP; switching to APSTA starts the STA */
+            wifi_wait_sta_started();
+            if (!s_wifi_sta_started)
             {
-                wdt_feed();
-                lp_wdt_feed();
-                wifi_os_adapter_poll();
-                wdt_supervisor_tick();
-                if (task_get_count() > 1U)
-                {
-                    task_yield();
-                }
+                esp_wifi_start();
+                wifi_wait_sta_started();
+            }
+        }
+        else
+        {
+            esp_wifi_internal_reg_rxcb(WIFI_IF_STA, wifi_vendor_rx_callback);
+            if (s_wifi_telemetry.state != WIFI_STATE_ACTIVE && s_wifi_telemetry.state != WIFI_STATE_CONNECTED)
+            {
+                esp_wifi_start();
+                wifi_wait_sta_started();
             }
         }
 
@@ -1515,6 +1580,118 @@ wifi_status_t wifi_start_sta_chan(const char *ssid, const char *password, uint8_
     s_wifi_sta_connected = false;
     return WIFI_OK;
 }
+
+FLASH_TEXT_ATTR
+wifi_status_t wifi_start_sta_chan(const char *ssid, const char *password, uint8_t channel)
+{
+    return wifi_sta_begin(ssid, password, channel, false);
+}
+
+FLASH_TEXT_ATTR
+wifi_status_t wifi_start_sta_keep_ap(const char *ssid, const char *password, uint8_t channel)
+{
+    return wifi_sta_begin(ssid, password, channel, true);
+}
+
+FLASH_TEXT_ATTR
+wifi_status_t wifi_sta_take_over(void)
+{
+    if (!s_wifi_sta_keep_ap)
+    {
+        return WIFI_ERR_INVALID_ARG;
+    }
+    s_wifi_sta_keep_ap = false;
+#if defined(__riscv)
+    if (s_vendor_wifi_inited)
+    {
+        /* APSTA -> STA keeps the association; only the SoftAP goes down */
+        esp_wifi_set_mode(WIFI_MODE_STA);
+    }
+#endif
+    s_wifi_ap_running = false;
+    if (!wifi_is_sta_connected())
+    {
+            return WIFI_ERR_IF_DOWN;
+    }
+    s_wifi_telemetry.state = WIFI_STATE_CONNECTED;
+    /* The SoftAP address goes away with the SoftAP; the DHCP client brings the LAN one */
+    net_set_ip(0U, 0U, 0U);
+#if defined(__riscv)
+    wifi_sta_attach_ip();
+#else
+#endif
+    return WIFI_OK;
+}
+
+FLASH_TEXT_ATTR
+wifi_status_t wifi_sta_abort_keep_ap(void)
+{
+    s_wifi_sta_keep_ap = false;
+    s_wifi_sta_connected = false;
+#if defined(__riscv)
+    if (s_vendor_wifi_inited)
+    {
+        esp_wifi_disconnect();
+        if (s_wifi_ap_running)
+        {
+            esp_wifi_set_mode(WIFI_MODE_AP);
+        }
+    }
+#endif
+    if (s_wifi_ap_running)
+    {
+        s_wifi_telemetry.state = WIFI_STATE_AP_ACTIVE;
+        }
+    return WIFI_OK;
+}
+
+uint32_t wifi_get_sta_disconnect_count(void)
+{
+    return s_wifi_sta_disconnects;
+}
+
+uint16_t wifi_get_sta_last_disconnect_reason(void)
+{
+    return s_wifi_sta_last_reason;
+}
+
+const wifi_ap_record_t *wifi_get_scan_records(uint16_t *out_count)
+{
+    if (out_count != NULL)
+    {
+        *out_count = s_wifi_scan_rec_count;
+    }
+    return s_wifi_scan_recs;
+}
+
+#if !defined(__riscv)
+void wifi_host_set_scan_records(const wifi_ap_record_t *recs, uint16_t count)
+{
+    if (count > WIFI_SCAN_CACHE_MAX)
+    {
+        count = WIFI_SCAN_CACHE_MAX;
+    }
+    if (recs != NULL && count > 0U)
+    {
+        memcpy(s_wifi_scan_recs, recs, (size_t)count * sizeof(wifi_ap_record_t));
+    }
+    s_wifi_scan_rec_count = (recs != NULL) ? count : 0U;
+}
+
+void wifi_host_set_sta_connected(bool connected)
+{
+    s_wifi_sta_connected = connected;
+    s_wifi_telemetry.state = connected ? WIFI_STATE_CONNECTED : WIFI_STATE_ACTIVE;
+}
+
+void wifi_host_post_sta_disconnect(uint16_t reason)
+{
+    s_wifi_sta_connected = false;
+    s_wifi_sta_disconnects++;
+    s_wifi_sta_last_reason = reason;
+    s_wifi_telemetry.state = s_wifi_ap_running ? WIFI_STATE_AP_ACTIVE : WIFI_STATE_ACTIVE;
+}
+#endif
 
 FLASH_TEXT_ATTR
 wifi_status_t wifi_start_sta(const char *ssid, const char *password)

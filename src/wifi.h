@@ -18,6 +18,7 @@
 #include "section.h"
 #include "modem.h"
 #include "regs/wifi_mac.h"
+#include "wifi_vendor_types.h"
 
 /* ========================================================================= */
 /* Software RX Queue Sizing                                                   */
@@ -40,6 +41,7 @@
 #define WIFI_SCAN_ALL_2G_CHANNELS_MASK   0x7FFEU
 #define WIFI_SCAN_BYPASS_5G_MASK         0x0001U
 #define WIFI_DEFAULT_SCAN_RSSI_THRESHOLD (-127)
+#define WIFI_SCAN_CACHE_MAX              16U    /* AP records kept from the last scan */
 
 /* Disconnect reasons (IEEE 802.11 Table 9-49; 200+ are Espressif wifi_err_reason_t) */
 #define WIFI_REASON_UNSPECIFIED          1U
@@ -236,6 +238,25 @@ wifi_status_t wifi_start_sta_chan(const char *ssid, const char *password, uint8_
 wifi_status_t wifi_stop_sta(void) FLASH_TEXT_ATTR;
 bool wifi_is_sta_connected(void) FLASH_TEXT_ATTR;
 wifi_status_t wifi_sta_get_bssid(uint8_t *out_bssid) FLASH_TEXT_ATTR;
+/* Joins while the SoftAP keeps running (APSTA); the IP stack stays on the SoftAP until
+ * wifi_sta_take_over() (REV-29 portal hand-over) */
+wifi_status_t wifi_start_sta_keep_ap(const char *ssid, const char *password, uint8_t channel) FLASH_TEXT_ATTR;
+/* Drops the SoftAP and moves the IP stack (MAC, RX path, DHCP client) to the joined STA */
+wifi_status_t wifi_sta_take_over(void) FLASH_TEXT_ATTR;
+/* Abandons a keep-AP join: disconnects the STA and returns to SoftAP-only mode */
+wifi_status_t wifi_sta_abort_keep_ap(void) FLASH_TEXT_ATTR;
+/* Disconnect events seen so far and the reason of the last one */
+uint32_t wifi_get_sta_disconnect_count(void);
+uint16_t wifi_get_sta_last_disconnect_reason(void);
+const char *wifi_disconnect_reason_str(uint32_t reason);
+
+/* Records of the last scan (kept until the next one; reading does not consume them) */
+const wifi_ap_record_t *wifi_get_scan_records(uint16_t *out_count);
+#if !defined(__riscv)
+void wifi_host_set_scan_records(const wifi_ap_record_t *recs, uint16_t count);
+void wifi_host_set_sta_connected(bool connected);
+void wifi_host_post_sta_disconnect(uint16_t reason);
+#endif
 
 #endif /* IRON_V_WIFI_H */
 

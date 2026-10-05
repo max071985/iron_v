@@ -28,6 +28,14 @@ extern "C" {
 #define PROVISIONING_MAX_PASS_LEN        64U
 #define PROVISIONING_MIN_PASS_LEN        8U
 
+/* Join and hand-over timing (REV-29) */
+#define PROV_JOIN_TIMEOUT_US             30000000ULL   /* one STA join attempt, PBKDF2 included */
+#define PROV_HANDOVER_DELAY_US           15000000ULL   /* portal shows the result before the SoftAP goes */
+#define PROV_RETRY_MIN_US                5000000ULL    /* first retry after a lost or failed boot join */
+#define PROV_RETRY_MAX_US                300000000ULL  /* retry backoff cap */
+#define PROV_US_PER_SECOND               1000000ULL
+#define PROV_SCAN_REFRESH_PARAM          "refresh"     /* GET /api/wifi/scan?refresh=1 rescans */
+
 /* NVS Storage Keys */
 #define PROV_NVS_KEY_SSID                "wifi_ssid"
 #define PROV_NVS_KEY_PASS                "wifi_pass"
@@ -56,6 +64,28 @@ typedef enum {
     PROV_ERR_BUFFER_TOO_SMALL    = -7
 } provisioning_status_t;
 
+/* Station join driven by provisioning (portal save, boot with saved credentials) */
+typedef enum {
+    PROV_JOIN_IDLE = 0,      /* nothing requested */
+    PROV_JOIN_PENDING,       /* requested; starts on the next provisioning_tick() */
+    PROV_JOIN_JOINING,       /* association and 4-way handshake in progress */
+    PROV_JOIN_HANDOVER,      /* joined; SoftAP still up so the portal can show the result */
+    PROV_JOIN_ONLINE,        /* STA owns the IP stack (DHCP lease follows) */
+    PROV_JOIN_RETRY_WAIT,    /* boot join failed or link lost; retry after a backoff */
+    PROV_JOIN_FAILED         /* portal join failed; SoftAP stays, user can try again */
+} prov_join_state_t;
+
+typedef struct {
+    prov_join_state_t state;
+    bool     keep_ap;          /* portal join: SoftAP stays up until the hand-over */
+    bool     unproven;         /* credentials came from the portal and never joined: forget on failure */
+    uint16_t last_reason;      /* last STA disconnect reason (0: timeout or none) */
+    uint8_t  wpa2_fail;        /* supplicant verdict at the failure (wpa2_fail_t) */
+    uint32_t attempts;
+    uint64_t next_event_us;    /* JOINING timeout, HANDOVER time or RETRY_WAIT end */
+    uint64_t retry_delay_us;
+} prov_join_info_t;
+
 typedef enum {
     PROV_AUTH_OPEN               = 0,
     PROV_AUTH_WEP                = 1,
@@ -64,7 +94,8 @@ typedef enum {
     PROV_AUTH_WPA_WPA2_PSK       = 4,
     PROV_AUTH_WPA2_ENTERPRISE    = 5,
     PROV_AUTH_WPA3_PSK           = 6,
-    PROV_AUTH_WPA2_WPA3_PSK      = 7
+    PROV_AUTH_WPA2_WPA3_PSK      = 7,
+    PROV_AUTH_OTHER              = 8    /* OWE, WAPI, WPA3-Enterprise, ... */
 } provisioning_auth_mode_t;
 
 /* ========================================================================= */
@@ -116,6 +147,21 @@ bool                  provisioning_has_credentials(void);
 /* Wi-Fi Network Scanning Integration */
 provisioning_status_t provisioning_start_scan(void);
 provisioning_status_t provisioning_get_scan_results(wifi_scan_item_t *out_items, uint16_t max_items, uint16_t *out_count);
+
+/* Station join (REV-29). keep_ap: portal join with hand-over, else STA only */
+provisioning_status_t provisioning_request_join(bool keep_ap);
+void                  provisioning_cancel_join(void);
+/* do-test: put the join back as it was before the suite (drop test joins; rejoin if it was active) */
+void                  provisioning_restore_join(prov_join_state_t saved_state);
+/* Boot: join with saved credentials, else start the setup SoftAP (CONFIG_WIFI_AUTO_START_AP) */
+void                  provisioning_boot(void);
+void                  provisioning_tick(uint64_t now_us);
+provisioning_status_t provisioning_get_join(prov_join_info_t *out_info);
+const char           *provisioning_join_state_to_str(prov_join_state_t state);
+/* Short user-facing explanation of a disconnect reason */
+const char           *provisioning_reason_hint(uint16_t reason);
+/* Explanation of the last failed join: the supplicant's verdict first, else the reason */
+const char           *provisioning_join_failure_str(const prov_join_info_t *info);
 
 /* Telemetry & Identity */
 provisioning_status_t provisioning_get_telemetry(provisioning_telemetry_t *out_telemetry);

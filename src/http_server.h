@@ -25,8 +25,8 @@
 #define HTTP_MAX_PATH_LEN                64U
 #define HTTP_MAX_QUERY_LEN               256U
 #define HTTP_REQUEST_BUF_SIZE            1024U
-#define HTTP_RESPONSE_BUF_SIZE           2048U
-#define HTTP_BODY_MAX_LEN                1600U
+#define HTTP_RESPONSE_BUF_SIZE           4096U   /* headers + body; from the scratch arena */
+#define HTTP_BODY_MAX_LEN                3584U   /* largest page: /setup (REV-29) */
 
 /* Protocol Version & Header Literals */
 #define HTTP_VERSION_STR                 "HTTP/1.1"

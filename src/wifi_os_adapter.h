@@ -44,4 +44,9 @@ void  wifi_osi_free(void *ptr);
 }
 #endif
 
+/* Blob task stack (the blob asks for its size in task_create) and its high-water fill pattern */
+#define WIFI_TASK_STACK_BUF_SIZE 8192U
+#define WIFI_TASK_STACK_FILL   0xA5U
+uint32_t wifi_os_adapter_task_stack_free(uint32_t *out_size, uint32_t *out_requested);
+
 #endif /* IRON_V_WIFI_OS_ADAPTER_H */

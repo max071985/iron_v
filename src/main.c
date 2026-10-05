@@ -139,9 +139,8 @@ void main(void)
     /* Initialize Interactive Console Shell & 24/7 Health Telemetry */
     shell_init();
 
-#if CONFIG_WIFI_AUTO_START_AP
-    wifi_start_ap(CONFIG_WIFI_SSID, NULL, CONFIG_WIFI_CHANNEL);
-#endif
+    /* Saved credentials: join as a station; none: open the setup SoftAP */
+    provisioning_boot();
 
     console_puts("\r\n");
     shell_print_info();
@@ -156,6 +155,7 @@ void main(void)
         dpc_process_all();
         tcp_tick();
         dhcp_client_tick();
+        provisioning_tick(systimer_get_us());
         wifi_os_adapter_poll();
         wifi_poll_rx_traffic();
         shell_tick();

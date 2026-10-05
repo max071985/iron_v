@@ -222,6 +222,8 @@ void          wpa2_client_eapol_txdone(uint8_t *eapol, size_t len, bool tx_failu
 /* Handover & Home LAN Join Orchestrator */
 wpa2_status_t wpa2_client_handover(const char *ssid, const char *passphrase);
 wpa2_status_t wpa2_client_handover_chan(const char *ssid, const char *passphrase, uint8_t channel);
+/* keep_ap: join while the SoftAP and the IP stack on it stay up (portal; wifi_sta_take_over) */
+wpa2_status_t wpa2_client_join(const char *ssid, const char *passphrase, uint8_t channel, bool keep_ap);
 
 /* Cryptographic Engines & Test Vectors */
 wpa2_status_t wpa2_crypto_pbkdf2_sha1(const char *passphrase, const char *ssid,

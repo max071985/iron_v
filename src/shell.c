@@ -2099,6 +2099,21 @@ void shell_execute(char *input_buffer)
                 console_puts("\r\n");
             }
         }
+        else if (strncmp(subcmd, "stack", 5) == 0)
+        {
+#if defined(__riscv)
+            uint32_t size = 0U;
+            uint32_t requested = 0U;
+            uint32_t untouched = wifi_os_adapter_task_stack_free(&size, &requested);
+            console_puts("Wi-Fi task stack: ");
+            put_dec(size);
+            console_puts(" B (blob asked for ");
+            put_dec(requested);
+            console_puts("), never used: ");
+            put_dec(untouched);
+            console_puts(" B\r\n");
+#endif
+        }
         else if (strncmp(subcmd, "diag", 4) == 0 || strncmp(subcmd, "lmac", 4) == 0)
         {
 #if defined(__riscv)
@@ -2957,9 +2972,21 @@ void shell_execute(char *input_buffer)
             provisioning_clear_credentials();
             console_puts("Provisioning credentials cleared from NVS.\r\n");
         }
+        else if (strncmp(subcmd, "join", 4) == 0)
+        {
+            /* Same path as the portal: keeps the SoftAP up (hand-over) when it is running */
+            if (provisioning_request_join(true) == PROV_OK)
+            {
+                console_puts("Joining the saved network (progress: prov status).\r\n");
+            }
+            else
+            {
+                console_puts("No saved credentials (prov set <ssid> <pass>).\r\n");
+            }
+        }
         else
         {
-            console_puts("Usage: prov [status|scan|set <ssid> [pass]|get|clear]\r\n");
+            console_puts("Usage: prov [status|scan|set <ssid> [pass]|get|clear|join]\r\n");
         }
     }
     else if (strncmp(input_buffer, "sta", 3) == 0 && (input_buffer[3] == ' ' || input_buffer[3] == '\0'))

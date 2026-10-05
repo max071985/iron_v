@@ -2060,7 +2060,7 @@ static void test_http_server_subsystem(void)
     TEST_ASSERT(HTTP_SERVER_DEFAULT_PORT == 80U, "HTTP default port is 80");
     TEST_ASSERT(HTTP_MAX_ROUTES == 24U, "HTTP_MAX_ROUTES is 24");
     TEST_ASSERT(HTTP_REQUEST_BUF_SIZE == 1024U, "HTTP request buffer size is 1024");
-    TEST_ASSERT(HTTP_RESPONSE_BUF_SIZE == 2048U, "HTTP response buffer size is 2048");
+    TEST_ASSERT(HTTP_RESPONSE_BUF_SIZE == 4096U, "HTTP response buffer size is 4096");
 
     /* 2. Lifecycle & Route Registration */
     TEST_ASSERT(http_server_init() == HTTP_OK, "http_server_init succeeds");
@@ -2959,15 +2959,29 @@ static void test_provisioning_subsystem(void)
     TEST_ASSERT(sizeof(wifi_credentials_t) >= 96U, "sizeof(wifi_credentials_t) holds SSID & pass");
     TEST_ASSERT(PROVISIONING_MAX_SCAN_APS == 16U, "PROVISIONING_MAX_SCAN_APS is 16");
 
-    /* 3. Scan Results Query */
+    /* 3. Scan Results: real records only (no made-up list, O-7); hidden SSIDs dropped,
+     *    one entry per SSID with the strongest signal, JSON-escaped */
     wifi_scan_item_t aps[PROVISIONING_MAX_SCAN_APS];
     uint16_t ap_count = 0U;
     TEST_ASSERT(provisioning_get_scan_results(aps, PROVISIONING_MAX_SCAN_APS, &ap_count) == PROV_OK, "get_scan_results succeeds");
-    TEST_ASSERT(ap_count >= 3U, "Scan table contains at least 3 baseline access points");
-    TEST_ASSERT(strcmp(aps[0].ssid, "HomeNetwork-2.4G") == 0, "First AP SSID is HomeNetwork-2.4G");
-    TEST_ASSERT(aps[0].rssi == -45, "First AP RSSI is -45 dBm");
-    TEST_ASSERT(aps[0].channel == 1U, "First AP channel is 1");
-    TEST_ASSERT(aps[0].auth_mode == PROV_AUTH_WPA2_PSK, "First AP auth mode is WPA2-PSK");
+    TEST_ASSERT(ap_count == 0U, "No scan yet: the list is empty (no made-up networks)");
+
+    wifi_ap_record_t recs[5];
+    memset(recs, 0, sizeof(recs));
+    strcpy((char *)recs[0].ssid, "Mesh");      recs[0].rssi = -70; recs[0].primary = 1U;  recs[0].authmode = WIFI_AUTH_WPA2_PSK;
+    strcpy((char *)recs[1].ssid, "Cafe \"Q\"");  recs[1].rssi = -60; recs[1].primary = 6U;  recs[1].authmode = WIFI_AUTH_OPEN;
+    strcpy((char *)recs[2].ssid, "Mesh");      recs[2].rssi = -41; recs[2].primary = 11U; recs[2].authmode = WIFI_AUTH_WPA2_PSK;
+    recs[2].bssid[5] = 0x42U;
+    /* recs[3]: hidden network (empty SSID) */
+    recs[3].rssi = -30; recs[3].primary = 3U; recs[3].authmode = WIFI_AUTH_WPA2_PSK;
+    strcpy((char *)recs[4].ssid, "Modern");    recs[4].rssi = -50; recs[4].primary = 9U;  recs[4].authmode = WIFI_AUTH_WPA3_PSK;
+    wifi_host_set_scan_records(recs, 5U);
+    TEST_ASSERT(provisioning_start_scan() == PROV_OK, "provisioning_start_scan loads the scan records");
+    TEST_ASSERT(provisioning_get_scan_results(aps, PROVISIONING_MAX_SCAN_APS, &ap_count) == PROV_OK && ap_count == 3U,
+                "3 networks: duplicate SSID merged, hidden SSID dropped");
+    TEST_ASSERT(strcmp(aps[0].ssid, "Mesh") == 0 && aps[0].rssi == -41 && aps[0].channel == 11U && aps[0].bssid[5] == 0x42U,
+                "Duplicate SSID keeps the strongest record");
+    TEST_ASSERT(aps[0].auth_mode == PROV_AUTH_WPA2_PSK && aps[2].auth_mode == PROV_AUTH_WPA3_PSK, "Auth modes mapped from the blob");
 
     /* 4. Trigger Wi-Fi Scan */
     TEST_ASSERT(provisioning_start_scan() == PROV_OK, "provisioning_start_scan succeeds");
@@ -3016,13 +3030,34 @@ static void test_provisioning_subsystem(void)
     TEST_ASSERT(strstr(resp_buf, "200 OK") != NULL, "GET /setup returns 200 OK");
     TEST_ASSERT(strstr(resp_buf, "text/html") != NULL, "GET /setup returns text/html");
     TEST_ASSERT(strstr(resp_buf, "Wi-Fi Setup") != NULL, "GET /setup body contains 'Wi-Fi Setup'");
+    TEST_ASSERT(sizeof(g_setup_html) <= HTTP_BODY_MAX_LEN, "Setup page fits the HTTP body buffer (was cut off at 1600 bytes)");
+    TEST_ASSERT(strstr(resp_buf, "sc(0)</script></body></html>") != NULL, "GET /setup delivers the whole page");
 
     /* 7b. GET /api/wifi/scan */
     const char req_scan[] = "GET /api/wifi/scan HTTP/1.1\r\nHost: 192.168.4.1\r\n\r\n";
     TEST_ASSERT(http_process_request(req_scan, strlen(req_scan), resp_buf, sizeof(resp_buf), &resp_len) == HTTP_OK, "GET /api/wifi/scan succeeds");
     TEST_ASSERT(strstr(resp_buf, "200 OK") != NULL, "GET /api/wifi/scan returns 200 OK");
     TEST_ASSERT(strstr(resp_buf, "application/json") != NULL, "GET /api/wifi/scan returns JSON");
-    TEST_ASSERT(strstr(resp_buf, "HomeNetwork-2.4G") != NULL, "GET /api/wifi/scan contains HomeNetwork-2.4G");
+    TEST_ASSERT(strstr(resp_buf, "\"count\":3") != NULL, "GET /api/wifi/scan lists the 3 cached networks");
+    TEST_ASSERT(strstr(resp_buf, "{\"ssid\":\"Mesh\",\"rssi\":-41,\"channel\":11,\"auth\":\"WPA2-PSK\",\"supported\":true}") != NULL,
+                "Scan JSON entry for a WPA2 network (supported)");
+    TEST_ASSERT(strstr(resp_buf, "\"ssid\":\"Cafe \\\"Q\\\"\"") != NULL, "Quotes in an SSID are escaped");
+    TEST_ASSERT(strstr(resp_buf, "\"auth\":\"WPA3-PSK\",\"supported\":false") != NULL, "WPA3-only network marked unsupported");
+    TEST_ASSERT(strstr(resp_buf, "\"scanning\":false") != NULL, "No scan pending");
+
+    /* 7b'. ?refresh=1 only queues the scan; it runs on the next tick, after the reply */
+    const char req_rescan[] = "GET /api/wifi/scan?refresh=1 HTTP/1.1\r\nHost: 192.168.4.1\r\n\r\n";
+    provisioning_telemetry_t before;
+    provisioning_get_telemetry(&before);
+    TEST_ASSERT(http_process_request(req_rescan, strlen(req_rescan), resp_buf, sizeof(resp_buf), &resp_len) == HTTP_OK &&
+                strstr(resp_buf, "\"scanning\":true") != NULL, "Rescan request answers at once with scanning:true");
+    provisioning_get_telemetry(&telem);
+    TEST_ASSERT(telem.scans_completed == before.scans_completed, "Scan not run inside the request");
+    provisioning_tick(1U);
+    provisioning_get_telemetry(&telem);
+    TEST_ASSERT(telem.scans_completed == before.scans_completed + 1U, "Queued scan runs on the next tick");
+    TEST_ASSERT(http_process_request(req_scan, strlen(req_scan), resp_buf, sizeof(resp_buf), &resp_len) == HTTP_OK &&
+                strstr(resp_buf, "\"scanning\":false") != NULL, "Scan done: scanning:false");
 
     /* 7c. POST /api/wifi/configure with JSON payload */
     const char req_cfg_json[] =
@@ -3053,6 +3088,162 @@ static void test_provisioning_subsystem(void)
 
     /* 8. Reset state */
     provisioning_clear_credentials();
+}
+
+/* REV-29: portal join with hand-over, failures with reasons, boot join with backoff */
+static void test_provisioning_join(void)
+{
+    printf("  [TEST] Provisioning station join and portal hand-over (REV-29)...\n");
+
+    nvs_mock_reset();
+    nvs_init();
+    provisioning_mock_reset();
+    http_server_init();
+    TEST_ASSERT(provisioning_init() == PROV_OK, "provisioning_init succeeds");
+
+    prov_join_info_t join;
+    char resp_buf[HTTP_RESPONSE_BUF_SIZE];
+    size_t resp_len = 0U;
+    const char req_status[] = "GET /api/wifi/status HTTP/1.1\r\nHost: 192.168.4.1\r\n\r\n";
+    const uint64_t t0 = 1000000ULL;
+
+    /* No credentials: no join, boot opens the setup SoftAP */
+    TEST_ASSERT(provisioning_request_join(true) == PROV_ERR_NOT_FOUND, "Join refused without saved credentials");
+    wifi_stop_ap();
+    provisioning_boot();
+    TEST_ASSERT(wifi_is_ap_active(), "Unprovisioned boot starts the setup SoftAP");
+    TEST_ASSERT(provisioning_get_join(&join) == PROV_OK && join.state == PROV_JOIN_IDLE, "Unprovisioned boot does not join");
+    wifi_stop_ap();
+    TEST_ASSERT(wifi_get_ip_tx_if() == WIFI_TX_IF_AP, "STA not joined: IP frames do not go to the STA");
+    wifi_start_ap("IronV-AP", NULL, 1U);
+
+    /* 1. Portal join: SoftAP and the IP stack on it stay up until the hand-over */
+    TEST_ASSERT(provisioning_set_credentials("ironhotspot", "12345test") == PROV_OK, "Test credentials saved");
+    TEST_ASSERT(provisioning_request_join(true) == PROV_OK, "Portal join requested");
+    provisioning_get_join(&join);
+    TEST_ASSERT(join.state == PROV_JOIN_PENDING && join.keep_ap, "Join pending, SoftAP kept");
+    provisioning_tick(t0);
+    provisioning_get_join(&join);
+    TEST_ASSERT(join.state == PROV_JOIN_JOINING && join.attempts == 1U, "Tick starts the join");
+    TEST_ASSERT(wifi_is_ap_active() && wifi_get_ip_tx_if() == WIFI_TX_IF_AP, "Joining: IP stack still on the SoftAP");
+
+    wifi_host_set_sta_connected(true);
+    provisioning_tick(t0 + PROV_US_PER_SECOND);
+    provisioning_get_join(&join);
+    TEST_ASSERT(join.state == PROV_JOIN_HANDOVER, "Joined: hand-over pending");
+    TEST_ASSERT(wifi_is_ap_active() && wifi_get_ip_tx_if() == WIFI_TX_IF_AP, "Hand-over pending: phone still reaches the portal");
+    http_process_request(req_status, strlen(req_status), resp_buf, sizeof(resp_buf), &resp_len);
+    TEST_ASSERT(strstr(resp_buf, "\"join\":{\"state\":\"connected\"") != NULL, "Status reports connected");
+    TEST_ASSERT(strstr(resp_buf, "\"hostname\":\"iron-v.local\"") != NULL, "Status names the LAN hostname");
+
+    provisioning_tick(t0 + PROV_US_PER_SECOND + PROV_HANDOVER_DELAY_US - 1U);
+    provisioning_get_join(&join);
+    TEST_ASSERT(join.state == PROV_JOIN_HANDOVER, "SoftAP stays for the whole hand-over delay");
+    provisioning_tick(t0 + PROV_US_PER_SECOND + PROV_HANDOVER_DELAY_US);
+    provisioning_get_join(&join);
+    TEST_ASSERT(join.state == PROV_JOIN_ONLINE, "Hand-over done: online");
+    TEST_ASSERT(!wifi_is_ap_active() && wifi_get_ip_tx_if() == WIFI_TX_IF_STA, "SoftAP gone, IP stack on the STA");
+
+    /* 2. Link lost while online: retry after the minimum backoff, as a STA-only join */
+    uint64_t t1 = t0 + 100U * PROV_US_PER_SECOND;
+    wifi_host_post_sta_disconnect(WIFI_REASON_BEACON_TIMEOUT);
+    provisioning_tick(t1);
+    provisioning_get_join(&join);
+    TEST_ASSERT(join.state == PROV_JOIN_RETRY_WAIT && join.last_reason == WIFI_REASON_BEACON_TIMEOUT, "Link loss: waits to retry");
+    TEST_ASSERT(!wifi_is_ap_active(), "Link loss does not start the SoftAP");
+    provisioning_tick(t1 + PROV_RETRY_MIN_US - 1U);
+    provisioning_get_join(&join);
+    TEST_ASSERT(join.state == PROV_JOIN_RETRY_WAIT, "No retry before the backoff ends");
+    provisioning_tick(t1 + PROV_RETRY_MIN_US);
+    provisioning_tick(t1 + PROV_RETRY_MIN_US);
+    provisioning_get_join(&join);
+    TEST_ASSERT(join.state == PROV_JOIN_JOINING && !join.keep_ap, "Retry rejoins as a station");
+
+    /* 3. Repeated STA-only failures back off exponentially */
+    uint64_t t2 = t1 + 200U * PROV_US_PER_SECOND;
+    wifi_host_post_sta_disconnect(WIFI_REASON_NO_AP_FOUND);
+    provisioning_tick(t2);
+    provisioning_get_join(&join);
+    TEST_ASSERT(join.state == PROV_JOIN_RETRY_WAIT && join.next_event_us == t2 + PROV_RETRY_MIN_US &&
+                join.retry_delay_us == 2U * PROV_RETRY_MIN_US, "Failed retry: next delay doubles");
+    TEST_ASSERT(!wifi_is_ap_active(), "Failed boot join does not start the SoftAP");
+    for (uint32_t i = 0U; i < 10U; i++)
+    {
+        provisioning_tick(join.next_event_us);
+        provisioning_tick(join.next_event_us);
+        wifi_host_post_sta_disconnect(WIFI_REASON_NO_AP_FOUND);
+        provisioning_tick(join.next_event_us + 1U);
+        provisioning_get_join(&join);
+    }
+    TEST_ASSERT(join.retry_delay_us == PROV_RETRY_MAX_US, "Backoff capped");
+
+    /* 4. Portal join with a wrong passphrase: SoftAP stays, reason reported */
+    provisioning_cancel_join();
+    provisioning_get_join(&join);
+    TEST_ASSERT(join.state == PROV_JOIN_IDLE, "cancel_join drops a waiting retry");
+    wifi_start_ap("IronV-AP", NULL, 1U);
+    TEST_ASSERT(provisioning_request_join(true) == PROV_OK, "Second portal join requested");
+    provisioning_tick(t2 + 1000U * PROV_US_PER_SECOND);
+    wifi_host_post_sta_disconnect(WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT);
+    provisioning_tick(t2 + 1001U * PROV_US_PER_SECOND);
+    provisioning_get_join(&join);
+    TEST_ASSERT(join.state == PROV_JOIN_FAILED && join.last_reason == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT, "Portal join failed with the reason");
+    TEST_ASSERT(wifi_is_ap_active() && wifi_get_ip_tx_if() == WIFI_TX_IF_AP, "Failed portal join keeps the SoftAP");
+    TEST_ASSERT(provisioning_has_credentials(), "Failed join keeps credentials that were not saved by the portal");
+    http_process_request(req_status, strlen(req_status), resp_buf, sizeof(resp_buf), &resp_len);
+    TEST_ASSERT(strstr(resp_buf, "\"state\":\"failed\"") != NULL &&
+                strstr(resp_buf, "\"reason\":15,\"message\":\"The network rejected the password\"") != NULL,
+                "Status reports the failure and a readable reason");
+
+    /* 5. Portal join without an answer times out */
+    uint64_t t3 = t2 + 2000U * PROV_US_PER_SECOND;
+    provisioning_set_credentials("ironhotspot", "12345test");
+    provisioning_request_join(true);
+    provisioning_tick(t3);
+    provisioning_tick(t3 + PROV_JOIN_TIMEOUT_US - 1U);
+    provisioning_get_join(&join);
+    TEST_ASSERT(join.state == PROV_JOIN_JOINING, "Still joining before the timeout");
+    provisioning_tick(t3 + PROV_JOIN_TIMEOUT_US);
+    provisioning_get_join(&join);
+    TEST_ASSERT(join.state == PROV_JOIN_FAILED && join.last_reason == 0U, "Join timeout reported as reason 0");
+    TEST_ASSERT(strcmp(provisioning_reason_hint(0U), "No answer from the network (timed out)") == 0, "Timeout hint");
+
+    /* 6. Provisioned boot joins as a station (no SoftAP) */
+    provisioning_set_credentials("ironhotspot", "12345test");
+    wifi_stop_ap();
+    provisioning_boot();
+    provisioning_get_join(&join);
+    TEST_ASSERT(join.state == PROV_JOIN_PENDING && !join.keep_ap && !wifi_is_ap_active(), "Provisioned boot: STA join, no SoftAP");
+
+    TEST_ASSERT(provisioning_init() == PROV_OK && provisioning_get_join(&join) == PROV_OK &&
+                join.state == PROV_JOIN_PENDING, "Re-init (do-test) keeps the pending join");
+
+    /* 7. Portal save with a wrong passphrase: credentials are forgotten again */
+    const char req_cfg[] =
+        "POST /api/wifi/configure HTTP/1.1\r\nHost: 192.168.4.1\r\nContent-Type: application/json\r\n\r\n"
+        "{\"ssid\":\"ironhotspot\",\"password\":\"wrongpass99\"}";
+    wifi_start_ap("IronV-AP", NULL, 1U);
+    http_process_request(req_cfg, strlen(req_cfg), resp_buf, sizeof(resp_buf), &resp_len);
+    provisioning_get_join(&join);
+    TEST_ASSERT(join.state == PROV_JOIN_PENDING && join.keep_ap && join.unproven, "Portal save queues an unproven join");
+    uint64_t t4 = t3 + 1000U * PROV_US_PER_SECOND;
+    provisioning_tick(t4);
+    wifi_host_post_sta_disconnect(WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT);
+    provisioning_tick(t4 + 1U);
+    TEST_ASSERT(!provisioning_has_credentials(), "Failed portal save forgets the unproven credentials");
+
+    /* 8. do-test restore: a join that was active before the suite is restarted, test joins dropped */
+    provisioning_set_credentials("ironhotspot", "12345test");
+    provisioning_restore_join(PROV_JOIN_ONLINE);
+    provisioning_get_join(&join);
+    TEST_ASSERT(join.state == PROV_JOIN_PENDING && !join.keep_ap && !join.unproven, "Restore rejoins as a station");
+    provisioning_restore_join(PROV_JOIN_IDLE);
+    provisioning_get_join(&join);
+    TEST_ASSERT(join.state == PROV_JOIN_IDLE, "Restore drops a join queued by the suite");
+
+    provisioning_cancel_join();
+    provisioning_clear_credentials();
+    wifi_host_set_scan_records(NULL, 0U);
 }
 
 /* Builds a DNS query for <name> (dotted) with qtype into q; returns its length */
@@ -5032,6 +5223,7 @@ int main(void)
     test_nvs_subsystem();
     test_selftest_snapshots();
     test_provisioning_subsystem();
+    test_provisioning_join();
     test_wpa2_client_and_mdns_subsystem();
     test_wpa_ie_parsing();
     test_wpa2_handshake();

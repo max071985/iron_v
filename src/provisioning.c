@@ -15,6 +15,10 @@
 #include "nvs.h"
 #include "wifi.h"
 #include "wifi_vendor_types.h"
+#include "wpa2_client.h"
+#include "dhcp.h"
+#include "net.h"
+#include "config.h"
 #include "string.h"
 
 #if defined(__riscv)
@@ -34,6 +38,9 @@ static wifi_scan_item_t        s_prov_scan_items[PROVISIONING_MAX_SCAN_APS];
 static uint16_t                s_prov_scan_count = 0U;
 static provisioning_telemetry_t s_prov_telemetry;
 static bool                    s_prov_initialized = false;
+static prov_join_info_t        s_prov_join;
+static uint32_t                s_prov_join_disc_base = 0U;  /* STA disconnect count when the phase began */
+static bool                    s_prov_scan_requested = false; /* portal rescan, run from provisioning_tick() */
 
 /* ========================================================================= */
 /* Zero-Libc String & Integer Formatting Utilities                           */
@@ -220,50 +227,89 @@ static bool prov_extract_param(const char *input, const char *key, char *out_val
     return false;
 }
 
-/* ========================================================================= */
-/* Baseline Network Scan Table Initialization                                */
-/* ========================================================================= */
-static void prov_populate_baseline_scan(void)
+/* Appends src as JSON string content: escapes quote and backslash, drops control characters */
+static void prov_json_append_str(char *dest, size_t dest_max, const char *src)
 {
+    char esc[3] = {'\\', '\0', '\0'};
+    char one[2] = {'\0', '\0'};
+    for (const char *p = src; p != NULL && *p != '\0'; p++)
+    {
+        if (*p == '"' || *p == '\\')
+        {
+            esc[1] = *p;
+            prov_str_append(dest, dest_max, esc);
+        }
+        else if ((unsigned char)*p >= (unsigned char)' ')
+        {
+            one[0] = *p;
+            prov_str_append(dest, dest_max, one);
+        }
+    }
+}
+
+static uint8_t prov_auth_from_vendor(wifi_auth_mode_t mode)
+{
+    switch (mode)
+    {
+        case WIFI_AUTH_OPEN:            return PROV_AUTH_OPEN;
+        case WIFI_AUTH_WEP:             return PROV_AUTH_WEP;
+        case WIFI_AUTH_WPA_PSK:         return PROV_AUTH_WPA_PSK;
+        case WIFI_AUTH_WPA2_PSK:        return PROV_AUTH_WPA2_PSK;
+        case WIFI_AUTH_WPA_WPA2_PSK:    return PROV_AUTH_WPA_WPA2_PSK;
+        case WIFI_AUTH_WPA2_ENTERPRISE: return PROV_AUTH_WPA2_ENTERPRISE;
+        case WIFI_AUTH_WPA3_PSK:        return PROV_AUTH_WPA3_PSK;
+        case WIFI_AUTH_WPA2_WPA3_PSK:   return PROV_AUTH_WPA2_WPA3_PSK;
+        default:                        return PROV_AUTH_OTHER;
+    }
+}
+
+/* The station joins WPA2-PSK networks only (wpa2_client.c, review decision 9) */
+static bool prov_auth_is_supported(uint8_t auth_mode)
+{
+    return (auth_mode == PROV_AUTH_WPA2_PSK) || (auth_mode == PROV_AUTH_WPA_WPA2_PSK) ||
+           (auth_mode == PROV_AUTH_WPA2_WPA3_PSK);
+}
+
+/* Fills the portal list from the last scan: hidden networks dropped, one entry per SSID (strongest) */
+static void prov_load_scan_records(void)
+{
+    uint16_t rec_count = 0U;
+    const wifi_ap_record_t *recs = wifi_get_scan_records(&rec_count);
     s_prov_scan_count = 0U;
-
-    /* Entry 0: Nominal 2.4 GHz Primary Network */
-    prov_safe_copy(s_prov_scan_items[0].ssid, sizeof(s_prov_scan_items[0].ssid), "HomeNetwork-2.4G");
-    s_prov_scan_items[0].rssi = -45;
-    s_prov_scan_items[0].channel = 1U;
-    s_prov_scan_items[0].auth_mode = PROV_AUTH_WPA2_PSK;
-    s_prov_scan_items[0].bssid[0] = 0x40; s_prov_scan_items[0].bssid[1] = 0x4C;
-    s_prov_scan_items[0].bssid[2] = 0xCA; s_prov_scan_items[0].bssid[3] = 0x01;
-    s_prov_scan_items[0].bssid[4] = 0x02; s_prov_scan_items[0].bssid[5] = 0x03;
-
-    /* Entry 1: IoT Automation VLAN */
-    prov_safe_copy(s_prov_scan_items[1].ssid, sizeof(s_prov_scan_items[1].ssid), "Office_IoT");
-    s_prov_scan_items[1].rssi = -62;
-    s_prov_scan_items[1].channel = 6U;
-    s_prov_scan_items[1].auth_mode = PROV_AUTH_WPA2_PSK;
-    s_prov_scan_items[1].bssid[0] = 0x40; s_prov_scan_items[1].bssid[1] = 0x4C;
-    s_prov_scan_items[1].bssid[2] = 0xCA; s_prov_scan_items[1].bssid[3] = 0x11;
-    s_prov_scan_items[1].bssid[4] = 0x22; s_prov_scan_items[1].bssid[5] = 0x33;
-
-    /* Entry 2: High-Security WPA3 Network */
-    prov_safe_copy(s_prov_scan_items[2].ssid, sizeof(s_prov_scan_items[2].ssid), "IronV-Mesh");
-    s_prov_scan_items[2].rssi = -52;
-    s_prov_scan_items[2].channel = 6U;
-    s_prov_scan_items[2].auth_mode = PROV_AUTH_WPA3_PSK;
-    s_prov_scan_items[2].bssid[0] = 0x40; s_prov_scan_items[2].bssid[1] = 0x4C;
-    s_prov_scan_items[2].bssid[2] = 0xCA; s_prov_scan_items[2].bssid[3] = 0x44;
-    s_prov_scan_items[2].bssid[4] = 0x55; s_prov_scan_items[2].bssid[5] = 0x66;
-
-    /* Entry 3: Unsecured Guest Network */
-    prov_safe_copy(s_prov_scan_items[3].ssid, sizeof(s_prov_scan_items[3].ssid), "Guest-WiFi");
-    s_prov_scan_items[3].rssi = -78;
-    s_prov_scan_items[3].channel = 11U;
-    s_prov_scan_items[3].auth_mode = PROV_AUTH_OPEN;
-    s_prov_scan_items[3].bssid[0] = 0x40; s_prov_scan_items[3].bssid[1] = 0x4C;
-    s_prov_scan_items[3].bssid[2] = 0xCA; s_prov_scan_items[3].bssid[3] = 0x77;
-    s_prov_scan_items[3].bssid[4] = 0x88; s_prov_scan_items[3].bssid[5] = 0x99;
-
-    s_prov_scan_count = 4U;
+    for (uint16_t i = 0U; i < rec_count; i++)
+    {
+        const char *ssid = (const char *)recs[i].ssid;
+        if (ssid[0] == '\0')
+        {
+            continue;
+        }
+        wifi_scan_item_t *item = NULL;
+        for (uint16_t j = 0U; j < s_prov_scan_count; j++)
+        {
+            if (strcmp(s_prov_scan_items[j].ssid, ssid) == 0)
+            {
+                item = &s_prov_scan_items[j];
+                break;
+            }
+        }
+        if (item != NULL && item->rssi >= recs[i].rssi)
+        {
+            continue;
+        }
+        if (item == NULL)
+        {
+            if (s_prov_scan_count >= PROVISIONING_MAX_SCAN_APS)
+            {
+                continue;
+            }
+            item = &s_prov_scan_items[s_prov_scan_count++];
+            prov_safe_copy(item->ssid, sizeof(item->ssid), ssid);
+        }
+        item->rssi = recs[i].rssi;
+        item->channel = recs[i].primary;
+        item->auth_mode = prov_auth_from_vendor(recs[i].authmode);
+        memcpy(item->bssid, recs[i].bssid, sizeof(item->bssid));
+    }
     s_prov_telemetry.ap_count = s_prov_scan_count;
 }
 
@@ -285,8 +331,13 @@ provisioning_status_t provisioning_init(void)
     http_route_register("/api/wifi/status", HTTP_METHOD_GET, provisioning_http_handler_status);
     http_route_register("/api/wifi/credentials", HTTP_METHOD_GET, provisioning_http_handler_credentials);
 
-    /* Populate baseline scan table */
-    prov_populate_baseline_scan();
+    /* A re-init (do-test) must not drop a join in progress */
+    if (!s_prov_initialized)
+    {
+        memset(&s_prov_join, 0, sizeof(s_prov_join));
+        s_prov_join.state = PROV_JOIN_IDLE;
+        s_prov_join.retry_delay_us = PROV_RETRY_MIN_US;
+    }
 
     s_prov_initialized = true;
     return provisioning_reload_credentials();
@@ -484,6 +535,267 @@ bool provisioning_has_credentials(void)
 }
 
 /* ========================================================================= */
+/* Station Join & Portal Hand-Over (REV-29)                                  */
+/* ========================================================================= */
+
+provisioning_status_t provisioning_request_join(bool keep_ap)
+{
+    if (!s_prov_initialized)
+    {
+        provisioning_init();
+    }
+    if (!s_prov_creds.provisioned)
+    {
+        return PROV_ERR_NOT_FOUND;
+    }
+    s_prov_join.state = PROV_JOIN_PENDING;
+    s_prov_join.keep_ap = keep_ap && wifi_is_ap_active();
+    s_prov_join.unproven = false;
+    s_prov_join.last_reason = 0U;
+    s_prov_join.attempts = 0U;
+    s_prov_join.retry_delay_us = PROV_RETRY_MIN_US;
+    return PROV_OK;
+}
+
+void provisioning_restore_join(prov_join_state_t saved_state)
+{
+    if (saved_state == PROV_JOIN_IDLE || saved_state == PROV_JOIN_FAILED)
+    {
+        s_prov_join.state = saved_state;
+        s_prov_join.keep_ap = false;
+        s_prov_join.unproven = false;
+    }
+    else
+    {
+        /* The suite tore the link down: rejoin with the restored credentials */
+        (void)provisioning_request_join(false);
+    }
+}
+
+/* Drops a join that has not started yet (pending or waiting to retry) */
+void provisioning_cancel_join(void)
+{
+    if (s_prov_join.state == PROV_JOIN_PENDING || s_prov_join.state == PROV_JOIN_RETRY_WAIT)
+    {
+        s_prov_join.state = PROV_JOIN_IDLE;
+    }
+}
+
+void provisioning_boot(void)
+{
+    if (provisioning_has_credentials())
+    {
+        /* Provisioned: never start the SoftAP, also not when the router is away (review 7.2) */
+        (void)provisioning_request_join(false);
+    }
+#if CONFIG_WIFI_AUTO_START_AP
+    else
+    {
+        /* Scan before the SoftAP is up: the portal list is ready and no client is disturbed */
+        (void)provisioning_start_scan();
+        wifi_start_ap(CONFIG_WIFI_SSID, NULL, CONFIG_WIFI_CHANNEL);
+    }
+#endif
+}
+
+/* Ends a failed attempt: a portal join gives up (SoftAP stays), a STA-only join retries with backoff */
+static void prov_join_attempt_failed(uint64_t now_us, uint16_t reason)
+{
+    wpa2_telemetry_t wtel;
+    s_prov_join.last_reason = reason;
+    s_prov_join.wpa2_fail = (wpa2_client_get_telemetry(&wtel) == WPA2_OK) ? (uint8_t)wtel.last_fail
+                                                                          : (uint8_t)WPA2_FAIL_NONE;
+    if (s_prov_join.keep_ap)
+    {
+        (void)wifi_sta_abort_keep_ap();
+        /* Unproven portal credentials must not survive a reboot: the board would retry them
+         * forever without a setup SoftAP (provisioned boots never start it) */
+        if (s_prov_join.unproven)
+        {
+            (void)provisioning_clear_credentials();
+        }
+        s_prov_join.state = PROV_JOIN_FAILED;
+        return;
+    }
+    s_prov_join.state = PROV_JOIN_RETRY_WAIT;
+    s_prov_join.next_event_us = now_us + s_prov_join.retry_delay_us;
+    s_prov_join.retry_delay_us *= 2U;
+    if (s_prov_join.retry_delay_us > PROV_RETRY_MAX_US)
+    {
+        s_prov_join.retry_delay_us = PROV_RETRY_MAX_US;
+    }
+}
+
+/* The supplicant gave up on this attempt (e.g. no message 3: wrong passphrase). The blob keeps
+ * retrying by itself (other nodes of a mesh) without a disconnect event, so check it directly. */
+static bool prov_supplicant_failed(void)
+{
+    wpa2_telemetry_t wtel;
+    return (wpa2_client_get_telemetry(&wtel) == WPA2_OK) && (wtel.last_fail != WPA2_FAIL_NONE);
+}
+
+void provisioning_tick(uint64_t now_us)
+{
+    bool disconnected = (wifi_get_sta_disconnect_count() != s_prov_join_disc_base);
+
+    /* A portal rescan blocks for a few seconds; never while a join is in flight */
+    if (s_prov_scan_requested && s_prov_join.state != PROV_JOIN_PENDING &&
+        s_prov_join.state != PROV_JOIN_JOINING && s_prov_join.state != PROV_JOIN_HANDOVER)
+    {
+        s_prov_scan_requested = false;
+        (void)provisioning_start_scan();
+    }
+
+    switch (s_prov_join.state)
+    {
+        case PROV_JOIN_PENDING:
+        {
+            s_prov_join.attempts++;
+            s_prov_join_disc_base = wifi_get_sta_disconnect_count();
+            s_prov_join.state = PROV_JOIN_JOINING;
+            s_prov_join.next_event_us = now_us + PROV_JOIN_TIMEOUT_US;
+            /* PBKDF2 runs here and takes seconds; it counts against the join timeout */
+            wpa2_status_t wst = wpa2_client_join(s_prov_creds.ssid, s_prov_creds.passphrase, 0U,
+                                                 s_prov_join.keep_ap);
+            if (wst != WPA2_OK)
+            {
+                prov_join_attempt_failed(now_us, 0U);
+            }
+            break;
+        }
+        case PROV_JOIN_JOINING:
+            if (disconnected || prov_supplicant_failed())
+            {
+                prov_join_attempt_failed(now_us, wifi_get_sta_last_disconnect_reason());
+            }
+            else if (wifi_is_sta_connected())
+            {
+                s_prov_join.unproven = false;
+                if (s_prov_join.keep_ap)
+                {
+                    s_prov_join.state = PROV_JOIN_HANDOVER;
+                    s_prov_join.next_event_us = now_us + PROV_HANDOVER_DELAY_US;
+                }
+                else
+                {
+                    s_prov_join.state = PROV_JOIN_ONLINE;
+                    s_prov_join.retry_delay_us = PROV_RETRY_MIN_US;
+                }
+            }
+            else if (now_us >= s_prov_join.next_event_us)
+            {
+                prov_join_attempt_failed(now_us, 0U);
+            }
+            break;
+        case PROV_JOIN_HANDOVER:
+            if (disconnected)
+            {
+                prov_join_attempt_failed(now_us, wifi_get_sta_last_disconnect_reason());
+            }
+            else if (now_us >= s_prov_join.next_event_us)
+            {
+                if (wifi_sta_take_over() == WIFI_OK)
+                {
+                    s_prov_join.state = PROV_JOIN_ONLINE;
+                    s_prov_join.keep_ap = false;
+                    s_prov_join.retry_delay_us = PROV_RETRY_MIN_US;
+                }
+                else
+                {
+                    s_prov_join.keep_ap = false;
+                    prov_join_attempt_failed(now_us, wifi_get_sta_last_disconnect_reason());
+                }
+            }
+            break;
+        case PROV_JOIN_ONLINE:
+            if (disconnected)
+            {
+                /* Link lost: rejoin with backoff (the full link manager is REV-12) */
+                s_prov_join.last_reason = wifi_get_sta_last_disconnect_reason();
+                s_prov_join_disc_base = wifi_get_sta_disconnect_count();
+                s_prov_join.state = PROV_JOIN_RETRY_WAIT;
+                s_prov_join.next_event_us = now_us + s_prov_join.retry_delay_us;
+            }
+            break;
+        case PROV_JOIN_RETRY_WAIT:
+            if (now_us >= s_prov_join.next_event_us)
+            {
+                s_prov_join.state = PROV_JOIN_PENDING;
+            }
+            break;
+        default:
+            break;
+    }
+}
+
+provisioning_status_t provisioning_get_join(prov_join_info_t *out_info)
+{
+    if (out_info == NULL)
+    {
+        return PROV_ERR_INVALID_ARG;
+    }
+    *out_info = s_prov_join;
+    return PROV_OK;
+}
+
+const char *provisioning_join_state_to_str(prov_join_state_t state)
+{
+    switch (state)
+    {
+        case PROV_JOIN_IDLE:       return "idle";
+        case PROV_JOIN_PENDING:    return "pending";
+        case PROV_JOIN_JOINING:    return "joining";
+        case PROV_JOIN_HANDOVER:   return "connected";
+        case PROV_JOIN_ONLINE:     return "online";
+        case PROV_JOIN_RETRY_WAIT: return "retrying";
+        case PROV_JOIN_FAILED:     return "failed";
+        default:                   return "unknown";
+    }
+}
+
+const char *provisioning_join_failure_str(const prov_join_info_t *info)
+{
+    if (info == NULL)
+    {
+        return "";
+    }
+    switch ((wpa2_fail_t)info->wpa2_fail)
+    {
+        case WPA2_FAIL_NO_M3:
+            return "The network rejected the password";
+        case WPA2_FAIL_UNSUPPORTED_SECURITY:
+            return "Network security not supported (WPA2-PSK needed)";
+        case WPA2_FAIL_NONE:
+            return provisioning_reason_hint(info->last_reason);
+        default:
+            return wpa2_fail_to_str((wpa2_fail_t)info->wpa2_fail);
+    }
+}
+
+const char *provisioning_reason_hint(uint16_t reason)
+{
+    switch (reason)
+    {
+        case 0U:
+            return "No answer from the network (timed out)";
+        case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+        case WIFI_REASON_HANDSHAKE_TIMEOUT:
+        case WIFI_REASON_MIC_FAILURE:
+            return "The network rejected the password";
+        case WIFI_REASON_NO_AP_FOUND:
+            return "Network not found (out of range, or 5 GHz only)";
+        case WIFI_REASON_NO_AP_FOUND_SECURITY:
+        case WIFI_REASON_NO_AP_FOUND_AUTHMODE:
+        case WIFI_REASON_AKMP_INVALID:
+            return "Network security not supported (WPA2-PSK needed)";
+        case WIFI_REASON_BEACON_TIMEOUT:
+            return "Signal lost";
+        default:
+            return wifi_disconnect_reason_str(reason);
+    }
+}
+
+/* ========================================================================= */
 /* Wi-Fi Scan Engine Integration                                             */
 /* ========================================================================= */
 
@@ -500,33 +812,8 @@ provisioning_status_t provisioning_start_scan(void)
 
 #if defined(__riscv)
     wifi_scan(NULL, 0U, false, 200U);
-    uint16_t ap_num = 0U;
-    esp_wifi_scan_get_ap_num(&ap_num);
-    if (ap_num > 0U)
-    {
-        wifi_ap_record_t recs[PROVISIONING_MAX_SCAN_APS];
-        uint16_t fetch = (ap_num > PROVISIONING_MAX_SCAN_APS) ? PROVISIONING_MAX_SCAN_APS : ap_num;
-        esp_wifi_scan_get_ap_records(&fetch, recs);
-        s_prov_scan_count = fetch;
-        for (uint16_t i = 0U; i < fetch; i++)
-        {
-            prov_safe_copy(s_prov_scan_items[i].ssid, sizeof(s_prov_scan_items[i].ssid), (const char *)recs[i].ssid);
-            s_prov_scan_items[i].rssi = recs[i].rssi;
-            s_prov_scan_items[i].channel = recs[i].primary;
-            s_prov_scan_items[i].auth_mode = (recs[i].authmode == WIFI_AUTH_WPA3_PSK) ? PROV_AUTH_WPA3_PSK :
-                                             (recs[i].authmode >= WIFI_AUTH_WPA2_PSK) ? PROV_AUTH_WPA2_PSK :
-                                             (recs[i].authmode == WIFI_AUTH_OPEN) ? PROV_AUTH_OPEN : PROV_AUTH_WPA_PSK;
-            memcpy(s_prov_scan_items[i].bssid, recs[i].bssid, 6U);
-        }
-    }
-    else
-    {
-        prov_populate_baseline_scan();
-    }
-#else
-    /* Refresh baseline scan table for host testing */
-    prov_populate_baseline_scan();
 #endif
+    prov_load_scan_records();
 
     s_prov_telemetry.scans_completed++;
     s_prov_state = s_prov_creds.provisioned ? PROV_STATE_PROVISIONED : PROV_STATE_UNPROVISIONED;
@@ -656,6 +943,18 @@ void provisioning_print_status(void)
     prov_u32_to_dec(s_prov_telemetry.configs_rejected, num, sizeof(num));
     console_puts(num);
     console_puts(")\r\n");
+    console_puts(" Join:         ");
+    console_puts(provisioning_join_state_to_str(s_prov_join.state));
+    if (s_prov_join.state == PROV_JOIN_FAILED || s_prov_join.state == PROV_JOIN_RETRY_WAIT)
+    {
+        console_puts(" (");
+        console_puts(provisioning_join_failure_str(&s_prov_join));
+        console_puts(")");
+    }
+    console_puts(", attempts ");
+    prov_u32_to_dec(s_prov_join.attempts, num, sizeof(num));
+    console_puts(num);
+    console_puts("\r\n");
     console_puts(" Scan Cache:   ");
     prov_u32_to_dec(s_prov_scan_count, num, sizeof(num));
     console_puts(num);
@@ -720,19 +1019,26 @@ void provisioning_http_handler_setup(const char *query_params, char *response_bo
     response_body[asset_len] = '\0';
 }
 
-/* GET /api/wifi/scan -> Returns JSON list of available 2.4 GHz SSIDs */
+/* GET /api/wifi/scan -> JSON list of networks from the last scan. ?refresh=1 queues a new
+ * scan that runs from provisioning_tick() after this reply ("scanning":true until it is done);
+ * scanning inside the request would block it for seconds and the client would resend it. */
 void provisioning_http_handler_scan(const char *query_params, char *response_body, size_t max_len)
 {
-    (void)query_params;
     if (response_body == NULL || max_len == 0U) return;
 
     if (!s_prov_initialized)
     {
         provisioning_init();
     }
+    if ((query_params != NULL) && (strstr(query_params, PROV_SCAN_REFRESH_PARAM) != NULL))
+    {
+        s_prov_scan_requested = true;
+    }
 
     response_body[0] = '\0';
-    prov_str_append(response_body, max_len, "{\"status\":\"ok\",\"count\":");
+    prov_str_append(response_body, max_len, "{\"status\":\"ok\",\"scanning\":");
+    prov_str_append(response_body, max_len, s_prov_scan_requested ? "true" : "false");
+    prov_str_append(response_body, max_len, ",\"count\":");
     char num[16];
     prov_u32_to_dec((uint32_t)s_prov_scan_count, num, sizeof(num));
     prov_str_append(response_body, max_len, num);
@@ -742,7 +1048,7 @@ void provisioning_http_handler_scan(const char *query_params, char *response_bod
     {
         if (i > 0U) prov_str_append(response_body, max_len, ",");
         prov_str_append(response_body, max_len, "{\"ssid\":\"");
-        prov_str_append(response_body, max_len, s_prov_scan_items[i].ssid);
+        prov_json_append_str(response_body, max_len, s_prov_scan_items[i].ssid);
         prov_str_append(response_body, max_len, "\",\"rssi\":");
         prov_i32_to_dec((int32_t)s_prov_scan_items[i].rssi, num, sizeof(num));
         prov_str_append(response_body, max_len, num);
@@ -751,7 +1057,10 @@ void provisioning_http_handler_scan(const char *query_params, char *response_bod
         prov_str_append(response_body, max_len, num);
         prov_str_append(response_body, max_len, ",\"auth\":\"");
         prov_str_append(response_body, max_len, provisioning_auth_mode_to_str(s_prov_scan_items[i].auth_mode));
-        prov_str_append(response_body, max_len, "\"}");
+        prov_str_append(response_body, max_len, "\",\"supported\":");
+        prov_str_append(response_body, max_len,
+                        prov_auth_is_supported(s_prov_scan_items[i].auth_mode) ? "true" : "false");
+        prov_str_append(response_body, max_len, "}");
     }
 
     prov_str_append(response_body, max_len, "]}\r\n");
@@ -786,11 +1095,16 @@ void provisioning_http_handler_configure(const char *query_params, char *respons
     provisioning_status_t status = provisioning_set_credentials(ssid, found_pass ? pass : "");
     if (status == PROV_OK)
     {
+        /* Join on the next tick, after this reply went out; from the portal the SoftAP stays up */
+        if (provisioning_request_join(true) == PROV_OK)
+        {
+            s_prov_join.unproven = true;
+        }
         response_body[0] = '\0';
         prov_str_append(response_body, max_len,
-            "{\"status\":\"ok\",\"provisioned\":true,\"ssid\":\"");
-        prov_str_append(response_body, max_len, ssid);
-        prov_str_append(response_body, max_len, "\",\"message\":\"Credentials saved to NVS\"}\r\n");
+            "{\"status\":\"ok\",\"provisioned\":true,\"joining\":true,\"ssid\":\"");
+        prov_json_append_str(response_body, max_len, ssid);
+        prov_str_append(response_body, max_len, "\",\"message\":\"Credentials saved, joining\"}\r\n");
     }
     else
     {
@@ -809,7 +1123,8 @@ void provisioning_http_handler_configure(const char *query_params, char *respons
     }
 }
 
-/* GET /api/wifi/status -> Provisioning & SoftAP status JSON */
+/* GET /api/wifi/status -> provisioning, station join and SoftAP status JSON.
+ * join.state: idle | pending | joining | connected (hand-over pending) | online | retrying | failed */
 void provisioning_http_handler_status(const char *query_params, char *response_body, size_t max_len)
 {
     (void)query_params;
@@ -820,17 +1135,49 @@ void provisioning_http_handler_status(const char *query_params, char *response_b
         provisioning_init();
     }
 
+    char num[16];
     response_body[0] = '\0';
     prov_str_append(response_body, max_len, "{\"status\":\"ok\",\"state\":\"");
     prov_str_append(response_body, max_len, provisioning_state_to_str(s_prov_state));
     prov_str_append(response_body, max_len, "\",\"provisioned\":");
     prov_str_append(response_body, max_len, s_prov_creds.provisioned ? "true" : "false");
     prov_str_append(response_body, max_len, ",\"ssid\":\"");
-    prov_str_append(response_body, max_len, s_prov_creds.provisioned ? s_prov_creds.ssid : "");
-    prov_str_append(response_body, max_len, "\",\"softap\":{\"active\":");
+    prov_json_append_str(response_body, max_len, s_prov_creds.provisioned ? s_prov_creds.ssid : "");
+    prov_str_append(response_body, max_len, "\",\"hostname\":\"" CONFIG_DEVICE_HOSTNAME ".local\"");
+
+    prov_str_append(response_body, max_len, ",\"join\":{\"state\":\"");
+    prov_str_append(response_body, max_len, provisioning_join_state_to_str(s_prov_join.state));
+    prov_str_append(response_body, max_len, "\",\"attempts\":");
+    prov_u32_to_dec(s_prov_join.attempts, num, sizeof(num));
+    prov_str_append(response_body, max_len, num);
+    prov_str_append(response_body, max_len, ",\"handover_delay_s\":");
+    prov_u32_to_dec((uint32_t)(PROV_HANDOVER_DELAY_US / PROV_US_PER_SECOND), num, sizeof(num));
+    prov_str_append(response_body, max_len, num);
+    if (s_prov_join.state == PROV_JOIN_FAILED || s_prov_join.state == PROV_JOIN_RETRY_WAIT)
+    {
+        prov_str_append(response_body, max_len, ",\"reason\":");
+        prov_u32_to_dec((uint32_t)s_prov_join.last_reason, num, sizeof(num));
+        prov_str_append(response_body, max_len, num);
+        prov_str_append(response_body, max_len, ",\"message\":\"");
+        prov_json_append_str(response_body, max_len, provisioning_join_failure_str(&s_prov_join));
+        prov_str_append(response_body, max_len, "\"");
+    }
+    dhcp_client_telemetry_t dcli;
+    if (s_prov_join.state == PROV_JOIN_ONLINE && dhcp_client_get_telemetry(&dcli) == DHCP_OK &&
+        dcli.state == DHCP_CLIENT_STATE_BOUND)
+    {
+        char ip[NET_IP_STR_BUF_LEN];
+        net_ip_to_str(dcli.assigned_ip, ip, sizeof(ip));
+        prov_str_append(response_body, max_len, ",\"ip\":\"");
+        prov_str_append(response_body, max_len, ip);
+        prov_str_append(response_body, max_len, "\"");
+    }
+    prov_str_append(response_body, max_len, "}");
+
+    prov_str_append(response_body, max_len, ",\"softap\":{\"active\":");
     prov_str_append(response_body, max_len, wifi_is_ap_active() ? "true" : "false");
     prov_str_append(response_body, max_len, ",\"ssid\":\"");
-    prov_str_append(response_body, max_len, wifi_get_ap_ssid());
+    prov_json_append_str(response_body, max_len, wifi_get_ap_ssid());
     prov_str_append(response_body, max_len, "\"}}\r\n");
 }
 
@@ -849,7 +1196,7 @@ void provisioning_http_handler_credentials(const char *query_params, char *respo
     prov_str_append(response_body, max_len, "{\"status\":\"ok\",\"provisioned\":");
     prov_str_append(response_body, max_len, s_prov_creds.provisioned ? "true" : "false");
     prov_str_append(response_body, max_len, ",\"ssid\":\"");
-    prov_str_append(response_body, max_len, s_prov_creds.provisioned ? s_prov_creds.ssid : "");
+    prov_json_append_str(response_body, max_len, s_prov_creds.provisioned ? s_prov_creds.ssid : "");
     prov_str_append(response_body, max_len, "\"}\r\n");
 }
 
@@ -865,5 +1212,8 @@ void provisioning_mock_reset(void)
     memset(s_prov_scan_items, 0, sizeof(s_prov_scan_items));
     s_prov_scan_count = 0U;
     s_prov_initialized = false;
+    memset(&s_prov_join, 0, sizeof(s_prov_join));
+    s_prov_join_disc_base = wifi_get_sta_disconnect_count();
+    s_prov_scan_requested = false;
 }
 #endif

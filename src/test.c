@@ -218,6 +218,7 @@ typedef struct {
     bool           ap_running;
     char           ap_ssid[WIFI_MAX_SSID_LEN + 1U];
     uint8_t        ap_channel;
+    prov_join_state_t join_state;
 } selftest_fixture_t;
 
 static selftest_fixture_t s_fixture;
@@ -231,6 +232,14 @@ static void selftest_fixture_save(void)
     memset(s_fixture.ap_ssid, 0, sizeof(s_fixture.ap_ssid));
     strncpy(s_fixture.ap_ssid, wifi_get_ap_ssid(), WIFI_MAX_SSID_LEN);
     s_fixture.ap_channel = wifi_get_ap_channel();
+    prov_join_info_t join;
+    s_fixture.join_state = (provisioning_get_join(&join) == PROV_OK) ? join.state : PROV_JOIN_IDLE;
+    /* A provisioned board that has not joined yet has no address (no SoftAP, no lease); the
+     * network tests need one. The restore puts the saved (empty) config back. */
+    if (s_fixture.net.ip == 0U)
+    {
+        (void)net_set_ip(NET_DEFAULT_IP, NET_DEFAULT_NETMASK, NET_DEFAULT_GATEWAY);
+    }
 }
 
 /* Restores the saved state and reports whether everything matches again */
@@ -241,6 +250,9 @@ static int selftest_fixture_restore(void)
     int nvs_ok = (nvs_snapshot_restore(&s_fixture.nvs, &nvs_rewritten) == NVS_OK) &&
                  nvs_snapshot_matches(&s_fixture.nvs);
     (void)provisioning_reload_credentials();
+    /* The configure-endpoint test queues a join to a made-up network: drop it, and rejoin
+     * if the board was joining or online before the suite */
+    provisioning_restore_join(s_fixture.join_state);
     int ota_ok = (ota_snapshot_restore(&s_fixture.ota, &ota_rewritten) == OTA_OK) &&
                  ota_snapshot_matches(&s_fixture.ota);
 
@@ -2063,7 +2075,8 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
         wifi_stop_ap();
     }
     int wifi_init_ok = (wifi_init() == WIFI_OK);
-    int wifi_state_idle_ok = (wifi_get_state() == WIFI_STATE_IDLE || wifi_get_state() == WIFI_STATE_ACTIVE);
+    int wifi_state_idle_ok = (wifi_get_state() == WIFI_STATE_IDLE || wifi_get_state() == WIFI_STATE_ACTIVE ||
+                              wifi_get_state() == WIFI_STATE_CONNECTED);
 
     /* 2. Retrieve authentic silicon Station MAC from eFuse */
     uint8_t sta_mac[WIFI_MAC_ADDR_LEN] = {0};

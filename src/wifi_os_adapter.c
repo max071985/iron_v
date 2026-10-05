@@ -33,10 +33,10 @@
 #include "wpa_driver.h"
 
 /* ========================================================================= */
-/* 1. Deterministic Static Memory Arena for Wi-Fi Subsystem (54 KB)          */
+/* 1. Deterministic Static Memory Arena for Wi-Fi Subsystem (64 KB)          */
 /* Zero dynamic heap memory calls permitted (AGENTS.md execution standard)   */
 /* ========================================================================= */
-#define WIFI_HEAP_SIZE          (54U * 1024U)
+#define WIFI_HEAP_SIZE          (64U * 1024U)  /* 54 KB ran out switching to APSTA (REV-29) */
 #define WIFI_BLOCK_MAGIC        0xA55AU
 #define WIFI_ALLOC_ALIGN_MASK   7U
 
@@ -1160,8 +1160,22 @@ void wifi_os_adapter_poll(void)
 /* ========================================================================= */
 /* 8. Tasks & Scheduling                                                     */
 /* ========================================================================= */
-static uint8_t s_wifi_task_stack[8192] __attribute__((aligned(16)));
+static uint8_t s_wifi_task_stack[WIFI_TASK_STACK_BUF_SIZE] __attribute__((aligned(16)));
 static bool s_wifi_task_stack_used = false;
+static uint32_t s_wifi_task_stack_req = 0U;
+
+/* Bytes at the bottom of the blob's task stack never written since start (high-water mark) */
+uint32_t wifi_os_adapter_task_stack_free(uint32_t *out_size, uint32_t *out_requested)
+{
+    uint32_t untouched = 0U;
+    while (untouched < sizeof(s_wifi_task_stack) && s_wifi_task_stack[untouched] == WIFI_TASK_STACK_FILL)
+    {
+        untouched++;
+    }
+    if (out_size != NULL) *out_size = (uint32_t)sizeof(s_wifi_task_stack);
+    if (out_requested != NULL) *out_requested = s_wifi_task_stack_req;
+    return untouched;
+}
 
 static int32_t task_create_pinned_to_core_wrapper(void *task_func, const char *name, uint32_t stack_depth, void *param, uint32_t prio, void *task_handle, uint32_t core_id)
 {
@@ -1173,6 +1187,11 @@ static int32_t task_create_pinned_to_core_wrapper(void *task_func, const char *n
     {
         stack = s_wifi_task_stack;
         s_wifi_task_stack_used = true;
+        s_wifi_task_stack_req = stack_sz;
+        /* task_create puts the stack top at stack + size: hand over the whole buffer, or an
+         * overflow of the requested size runs below it into unrelated .bss (seen: DHCP leases) */
+        stack_sz = (uint32_t)sizeof(s_wifi_task_stack);
+        memset(s_wifi_task_stack, WIFI_TASK_STACK_FILL, sizeof(s_wifi_task_stack));
     }
     else
     {

@@ -1261,7 +1261,7 @@ wpa2_status_t wpa2_client_configure(const char *ssid, const char *passphrase)
     return pst;
 }
 
-wpa2_status_t wpa2_client_handover_chan(const char *ssid, const char *passphrase, uint8_t channel)
+wpa2_status_t wpa2_client_join(const char *ssid, const char *passphrase, uint8_t channel, bool keep_ap)
 {
     wpa2_status_t cst = wpa2_client_configure(ssid, passphrase);
     if (cst != WPA2_OK)
@@ -1269,14 +1269,17 @@ wpa2_status_t wpa2_client_handover_chan(const char *ssid, const char *passphrase
         return cst;
     }
 
-    /* 1. Stop SoftAP if active */
-    if (wifi_is_ap_active())
+    if (!keep_ap)
     {
-        wifi_stop_ap();
-    }
+        /* 1. Stop SoftAP if active */
+        if (wifi_is_ap_active())
+        {
+            wifi_stop_ap();
+        }
 
-    /* Reset IP configuration until DHCP client binds */
-    net_set_ip(0U, 0U, 0U);
+        /* Reset IP configuration until DHCP client binds */
+        net_set_ip(0U, 0U, 0U);
+    }
     dhcp_client_init();
 
     /* 2. Configure Station Interface */
@@ -1289,9 +1292,21 @@ wpa2_status_t wpa2_client_handover_chan(const char *ssid, const char *passphrase
     wpa2_set_state(WPA2_STATE_CONNECTING);
 
     /* 4. Trigger Station association; the blob calls back wpa2_client_sta_connect() */
-    wifi_start_sta_chan(ssid, passphrase, channel);
+    if (keep_ap)
+    {
+        wifi_start_sta_keep_ap(ssid, passphrase, channel);
+    }
+    else
+    {
+        wifi_start_sta_chan(ssid, passphrase, channel);
+    }
 
     return WPA2_OK;
+}
+
+wpa2_status_t wpa2_client_handover_chan(const char *ssid, const char *passphrase, uint8_t channel)
+{
+    return wpa2_client_join(ssid, passphrase, channel, false);
 }
 
 wpa2_status_t wpa2_client_handover(const char *ssid, const char *passphrase)

@@ -20,6 +20,12 @@
 /* ========================================================================= */
 #define DHCP_SERVER_PORT                67U
 #define DHCP_CLIENT_PORT                68U
+
+/* Client retransmission (full RFC 2131 backoff: REV-14) */
+#define DHCP_CLIENT_RETRY_US            2000000ULL   /* DISCOVER interval while the burst lasts */
+#define DHCP_CLIENT_DISCOVER_BURST      8U           /* DISCOVERs at that interval, then slow */
+#define DHCP_CLIENT_SLOW_RETRY_US       30000000ULL  /* DISCOVER interval after the burst */
+#define DHCP_CLIENT_REQUEST_TIMEOUT_US  4000000ULL   /* no ACK for the REQUEST: start over */
 #define DNS_SERVER_PORT                 53U
 
 /* ========================================================================= */

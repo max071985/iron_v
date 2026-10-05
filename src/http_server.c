@@ -933,6 +933,112 @@ http_status_t http_process_request(const char *raw_request, size_t req_len,
 /* TCP Socket Integration (RFC 793 Callbacks)                                */
 /* ========================================================================= */
 
+/* A request being assembled from TCP segments; one per connection */
+typedef struct {
+    tcp_pcb_t *pcb;            /* NULL: free */
+    size_t     len;
+    char       buf[HTTP_REQUEST_BUF_SIZE];
+} http_req_slot_t;
+
+static http_req_slot_t s_http_req_slots[HTTP_REQUEST_SLOTS];
+
+static bool http_ascii_prefix_nocase(const char *s, const char *prefix)
+{
+    for (; *prefix != '\0'; s++, prefix++)
+    {
+        char c = *s;
+        if (c >= 'A' && c <= 'Z')
+        {
+            c = (char)(c - 'A' + 'a');
+        }
+        if (c != *prefix)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* Complete once the blank line after the headers and Content-Length body bytes are in */
+http_req_state_t http_request_state(const char *buf, size_t len)
+{
+    if (buf == NULL)
+    {
+        return HTTP_REQ_INCOMPLETE;
+    }
+    const char *hdr_end = strstr(buf, HTTP_HEADER_END);
+    if (hdr_end == NULL)
+    {
+        return (len >= HTTP_REQUEST_BUF_SIZE - 1U) ? HTTP_REQ_TOO_LARGE : HTTP_REQ_INCOMPLETE;
+    }
+    size_t body_start = (size_t)(hdr_end - buf) + strlen(HTTP_HEADER_END);
+    size_t content_len = 0U;
+    for (const char *line = buf; line != NULL && line < hdr_end; )
+    {
+        if (http_ascii_prefix_nocase(line, HTTP_CONTENT_LENGTH_HEADER))
+        {
+            const char *v = line + strlen(HTTP_CONTENT_LENGTH_HEADER);
+            while (*v == ' ' || *v == '\t') v++;
+            while (*v >= '0' && *v <= '9' && content_len < HTTP_REQUEST_BUF_SIZE)
+            {
+                content_len = content_len * 10U + (size_t)(*v - '0');
+                v++;
+            }
+        }
+        line = strstr(line, "\r\n");
+        if (line != NULL)
+        {
+            line += 2;
+        }
+    }
+    if (body_start + content_len >= HTTP_REQUEST_BUF_SIZE)
+    {
+        return HTTP_REQ_TOO_LARGE;
+    }
+    return (len >= body_start + content_len) ? HTTP_REQ_COMPLETE : HTTP_REQ_INCOMPLETE;
+}
+
+/* Slot of this connection, or a free one (slots of closed connections are reclaimed) */
+static http_req_slot_t *http_req_slot_get(tcp_pcb_t *pcb)
+{
+    http_req_slot_t *free_slot = NULL;
+    for (uint32_t i = 0U; i < HTTP_REQUEST_SLOTS; i++)
+    {
+        http_req_slot_t *slot = &s_http_req_slots[i];
+        if (slot->pcb == pcb)
+        {
+            return slot;
+        }
+        if (slot->pcb != NULL && (!slot->pcb->in_use || slot->pcb->state != TCP_STATE_ESTABLISHED))
+        {
+            slot->pcb = NULL;
+        }
+        if (slot->pcb == NULL && free_slot == NULL)
+        {
+            free_slot = slot;
+        }
+    }
+    if (free_slot != NULL)
+    {
+        free_slot->pcb = pcb;
+        free_slot->len = 0U;
+        free_slot->buf[0] = '\0';
+    }
+    return free_slot;
+}
+
+static void http_req_slot_release(tcp_pcb_t *pcb)
+{
+    for (uint32_t i = 0U; i < HTTP_REQUEST_SLOTS; i++)
+    {
+        if (s_http_req_slots[i].pcb == pcb)
+        {
+            s_http_req_slots[i].pcb = NULL;
+            s_http_req_slots[i].len = 0U;
+        }
+    }
+}
+
 static net_status_t http_tcp_recv_cb(void *arg, tcp_pcb_t *pcb, const uint8_t *data, uint16_t len)
 {
     (void)arg;
@@ -941,10 +1047,29 @@ static net_status_t http_tcp_recv_cb(void *arg, tcp_pcb_t *pcb, const uint8_t *d
         return NET_ERR_INVALID_ARG;
     }
 
+    /* Collect segments until the request is complete; parse a NUL-terminated copy */
+    http_req_slot_t *slot = http_req_slot_get(pcb);
+    if (slot == NULL)
+    {
+        tcp_close(pcb);
+        return NET_ERR_BUFFER_TOO_SMALL;
+    }
+    size_t room = HTTP_REQUEST_BUF_SIZE - 1U - slot->len;
+    size_t take = ((size_t)len < room) ? (size_t)len : room;
+    memcpy(&slot->buf[slot->len], data, take);
+    slot->len += take;
+    slot->buf[slot->len] = '\0';
+
+    http_req_state_t rst = http_request_state(slot->buf, slot->len);
+    if (rst == HTTP_REQ_INCOMPLETE && take == (size_t)len)
+    {
+        return NET_OK;
+    }
+
 #if defined(__riscv)
     console_puts("[HTTP] ");
-    for (size_t i = 0U; i < len && data[i] != '\r' && data[i] != '\n' && i < 64U; i++) {
-        console_putc((char)data[i]);
+    for (size_t i = 0U; i < slot->len && slot->buf[i] != '\r' && slot->buf[i] != '\n' && i < 64U; i++) {
+        console_putc(slot->buf[i]);
     }
     console_puts("\r\n");
 #endif
@@ -953,13 +1078,27 @@ static net_status_t http_tcp_recv_cb(void *arg, tcp_pcb_t *pcb, const uint8_t *d
     char *tx_buf = (char *)arena_scratch_alloc(HTTP_RESPONSE_BUF_SIZE);
     if (tx_buf == NULL)
     {
+        http_req_slot_release(pcb);
         return NET_ERR_BUFFER_TOO_SMALL;
     }
 
     size_t out_len = 0U;
-    http_process_request((const char *)data, (size_t)len,
-                         tx_buf, HTTP_RESPONSE_BUF_SIZE,
-                         &out_len);
+    if (rst == HTTP_REQ_COMPLETE)
+    {
+        http_process_request(slot->buf, slot->len, tx_buf, HTTP_RESPONSE_BUF_SIZE, &out_len);
+    }
+    else
+    {
+        const char too_large[] =
+            "HTTP/1.1 413 Payload Too Large\r\n"
+            "Content-Length: 0\r\n"
+            "Connection: close\r\n"
+            HTTP_SERVER_HEADER
+            "\r\n";
+        out_len = strlen(too_large);
+        memcpy(tx_buf, too_large, out_len);
+    }
+    http_req_slot_release(pcb);
 
     if (out_len > 0U)
     {
@@ -990,6 +1129,7 @@ static net_status_t http_tcp_accept_cb(void *arg, tcp_pcb_t *newpcb)
     console_puts("[HTTP] Client connected\r\n");
 #endif
 
+    http_req_slot_release(newpcb);   /* pcb reused for a new connection */
     newpcb->recv_cb = http_tcp_recv_cb;
     return NET_OK;
 }

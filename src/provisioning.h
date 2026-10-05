@@ -31,6 +31,7 @@ extern "C" {
 /* Join and hand-over timing (REV-29) */
 #define PROV_JOIN_TIMEOUT_US             30000000ULL   /* one STA join attempt, PBKDF2 included */
 #define PROV_HANDOVER_DELAY_US           15000000ULL   /* portal shows the result before the SoftAP goes */
+#define PROV_PORTAL_JOIN_DELAY_US        1000000ULL    /* let the save reply out before the radio retunes */
 #define PROV_RETRY_MIN_US                5000000ULL    /* first retry after a lost or failed boot join */
 #define PROV_RETRY_MAX_US                300000000ULL  /* retry backoff cap */
 #define PROV_US_PER_SECOND               1000000ULL

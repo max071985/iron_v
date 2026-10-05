@@ -99,9 +99,11 @@ uint64_t systimer_get_ticks(void)
     return 160000000ULL;
 }
 
+static uint64_t s_host_now_us = 10000000ULL;   /* host clock; tests advance it */
+
 uint64_t systimer_get_us(void)
 {
-    return 10000000ULL;
+    return s_host_now_us;
 }
 
 void systimer_get_telemetry(systimer_telemetry_t *t)
@@ -2059,7 +2061,25 @@ static void test_http_server_subsystem(void)
     /* 1. Protocol & Sizing Constants */
     TEST_ASSERT(HTTP_SERVER_DEFAULT_PORT == 80U, "HTTP default port is 80");
     TEST_ASSERT(HTTP_MAX_ROUTES == 24U, "HTTP_MAX_ROUTES is 24");
-    TEST_ASSERT(HTTP_REQUEST_BUF_SIZE == 1024U, "HTTP request buffer size is 1024");
+    TEST_ASSERT(HTTP_REQUEST_BUF_SIZE == 1536U, "HTTP request buffer size is 1536");
+
+    /* Request assembly: phones send headers and body in separate segments (REV-29 bug) */
+    {
+        const char hdr_only[] = "POST /api/wifi/configure HTTP/1.1\r\nHost: 192.168.1.1\r\nCONTENT-LENGTH: 46\r\n\r\n";
+        const char full[] = "POST /api/wifi/configure HTTP/1.1\r\nHost: 192.168.1.1\r\nCONTENT-LENGTH: 46\r\n\r\n"
+                            "{\"ssid\":\"SplitNet\",\"password\":\"longenough123\"}";
+        const char partial[] = "POST /api/wifi/configure HTTP/1.1\r\nHost: 192.168.1.1\r\nContent-Length: 46\r\n\r\n{\"ssid\":";
+        const char get_req[] = "GET /setup HTTP/1.1\r\nHost: 192.168.1.1\r\n\r\n";
+        const char no_end[] = "GET /setup HTTP/1.1\r\nHost: 192.168.1.1\r\n";
+        TEST_ASSERT(strlen(full) - strlen(hdr_only) == 46U, "Test body is 46 bytes");
+        TEST_ASSERT(http_request_state(hdr_only, strlen(hdr_only)) == HTTP_REQ_INCOMPLETE, "Headers without the body: incomplete");
+        TEST_ASSERT(http_request_state(partial, strlen(partial)) == HTTP_REQ_INCOMPLETE, "Partial body: incomplete");
+        TEST_ASSERT(http_request_state(full, strlen(full)) == HTTP_REQ_COMPLETE, "Headers + Content-Length body: complete");
+        TEST_ASSERT(http_request_state(get_req, strlen(get_req)) == HTTP_REQ_COMPLETE, "GET without body: complete at the blank line");
+        TEST_ASSERT(http_request_state(no_end, strlen(no_end)) == HTTP_REQ_INCOMPLETE, "Headers not finished: incomplete");
+        const char huge[] = "POST /x HTTP/1.1\r\nContent-Length: 9999\r\n\r\n";
+        TEST_ASSERT(http_request_state(huge, strlen(huge)) == HTTP_REQ_TOO_LARGE, "Body larger than the buffer: too large");
+    }
     TEST_ASSERT(HTTP_RESPONSE_BUF_SIZE == 4096U, "HTTP response buffer size is 4096");
 
     /* 2. Lifecycle & Route Registration */
@@ -3122,6 +3142,9 @@ static void test_provisioning_join(void)
     TEST_ASSERT(provisioning_request_join(true) == PROV_OK, "Portal join requested");
     provisioning_get_join(&join);
     TEST_ASSERT(join.state == PROV_JOIN_PENDING && join.keep_ap, "Join pending, SoftAP kept");
+    provisioning_tick(t0 - PROV_PORTAL_JOIN_DELAY_US);
+    provisioning_get_join(&join);
+    TEST_ASSERT(join.state == PROV_JOIN_PENDING && join.attempts == 0U, "Portal join waits for the save reply to go out");
     provisioning_tick(t0);
     provisioning_get_join(&join);
     TEST_ASSERT(join.state == PROV_JOIN_JOINING && join.attempts == 1U, "Tick starts the join");
@@ -3183,6 +3206,7 @@ static void test_provisioning_join(void)
     TEST_ASSERT(join.state == PROV_JOIN_IDLE, "cancel_join drops a waiting retry");
     wifi_start_ap("IronV-AP", NULL, 1U);
     TEST_ASSERT(provisioning_request_join(true) == PROV_OK, "Second portal join requested");
+    provisioning_tick(t2 + 999U * PROV_US_PER_SECOND);
     provisioning_tick(t2 + 1000U * PROV_US_PER_SECOND);
     wifi_host_post_sta_disconnect(WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT);
     provisioning_tick(t2 + 1001U * PROV_US_PER_SECOND);
@@ -3199,6 +3223,7 @@ static void test_provisioning_join(void)
     uint64_t t3 = t2 + 2000U * PROV_US_PER_SECOND;
     provisioning_set_credentials("ironhotspot", "12345test");
     provisioning_request_join(true);
+    provisioning_tick(t3 - PROV_PORTAL_JOIN_DELAY_US);
     provisioning_tick(t3);
     provisioning_tick(t3 + PROV_JOIN_TIMEOUT_US - 1U);
     provisioning_get_join(&join);
@@ -3227,6 +3252,7 @@ static void test_provisioning_join(void)
     provisioning_get_join(&join);
     TEST_ASSERT(join.state == PROV_JOIN_PENDING && join.keep_ap && join.unproven, "Portal save queues an unproven join");
     uint64_t t4 = t3 + 1000U * PROV_US_PER_SECOND;
+    provisioning_tick(t4 - PROV_PORTAL_JOIN_DELAY_US);
     provisioning_tick(t4);
     wifi_host_post_sta_disconnect(WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT);
     provisioning_tick(t4 + 1U);
@@ -3972,6 +3998,21 @@ static void test_wpa2_client_and_mdns_subsystem(void)
     TEST_ASSERT(dhcp_client_process_packet(dummy_eth, (const uint8_t *)&offer_pkt, offer_len) == DHCP_OK,
                 "dhcp_client_process_packet processes DHCPOFFER");
     TEST_ASSERT(dhcp_client_get_state() == DHCP_CLIENT_STATE_REQUESTING, "State transitions to REQUESTING");
+
+    /* 3a'. No ACK for the REQUEST: start over with a DISCOVER after the timeout (REV-29) */
+    dhcp_client_telemetry_t dtel_before;
+    dhcp_client_get_telemetry(&dtel_before);
+    s_host_now_us += DHCP_CLIENT_REQUEST_TIMEOUT_US - 1U;
+    dhcp_client_tick();
+    TEST_ASSERT(dhcp_client_get_state() == DHCP_CLIENT_STATE_REQUESTING, "Waits for the ACK until the timeout");
+    s_host_now_us += 1U;
+    dhcp_client_tick();
+    dhcp_client_telemetry_t dtel_after;
+    dhcp_client_get_telemetry(&dtel_after);
+    TEST_ASSERT(dhcp_client_get_state() == DHCP_CLIENT_STATE_DISCOVERING &&
+                dtel_after.discovers_sent == dtel_before.discovers_sent + 1U, "Lost ACK: back to DISCOVER");
+    TEST_ASSERT(dhcp_client_process_packet(dummy_eth, (const uint8_t *)&offer_pkt, offer_len) == DHCP_OK &&
+                dhcp_client_get_state() == DHCP_CLIENT_STATE_REQUESTING, "Next OFFER: REQUESTING again");
 
     /* 3b. Inbound DHCPACK Simulation */
     dhcp_packet_t ack_pkt;

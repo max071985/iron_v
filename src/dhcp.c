@@ -784,16 +784,22 @@ void dhcp_client_tick(void)
 
     uint64_t now = systimer_get_us();
 
-    if (s_dhcp_client_telem.state == DHCP_CLIENT_STATE_DISCOVERING)
+    if (s_dhcp_client_telem.state == DHCP_CLIENT_STATE_REQUESTING &&
+        (now - s_last_discover_us) >= DHCP_CLIENT_REQUEST_TIMEOUT_US)
     {
-        /* Retransmit DISCOVER every 2 seconds up to 8 attempts */
-        if ((now - s_last_discover_us) >= 2000000ULL)
+        /* REQUEST or ACK lost (seen right after the portal hand-over): start over */
+        s_dhcp_client_telem.state = DHCP_CLIENT_STATE_DISCOVERING;
+        s_last_discover_us = now;
+        dhcp_client_send_discover();
+    }
+    else if (s_dhcp_client_telem.state == DHCP_CLIENT_STATE_DISCOVERING)
+    {
+        uint64_t interval = (s_dhcp_client_telem.discovers_sent < DHCP_CLIENT_DISCOVER_BURST)
+                            ? DHCP_CLIENT_RETRY_US : DHCP_CLIENT_SLOW_RETRY_US;
+        if ((now - s_last_discover_us) >= interval)
         {
             s_last_discover_us = now;
-            if (s_dhcp_client_telem.discovers_sent < 8U)
-            {
-                dhcp_client_send_discover();
-            }
+            dhcp_client_send_discover();
         }
     }
 }
@@ -953,6 +959,7 @@ dhcp_status_t dhcp_client_process_packet(const uint8_t *eth_frame, const uint8_t
 
         s_dhcp_client_telem.requests_sent++;
         s_dhcp_client_telem.state = DHCP_CLIENT_STATE_REQUESTING;
+        s_last_discover_us = systimer_get_us();
 #if defined(__riscv)
         console_puts("[DHCP] DHCPOFFER received: IP=");
         put_dec((offered_ip >> 24U) & 0xFFU); console_puts(".");

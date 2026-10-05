@@ -62,10 +62,11 @@ static const char g_setup_html[] FLASH_RODATA_ATTR =
 "function sv(){n=$('s').value;if(!n){msg('e','Pick a network');return}$('b').disabled=1;msg('i','Saving...');"
 "fetch('/api/wifi/configure',{method:'POST',body:JSON.stringify({ssid:n,password:$('p').value})}).then(function(r){return r.json()})"
 ".then(function(d){if(d.status=='ok'){msg('i','Connecting to '+n+'...');t=setTimeout(po,1500)}else{msg('e',d.error||'Save failed');$('b').disabled=0}})"
-".catch(function(){msg('e','Request failed');$('b').disabled=0})}"
+".catch(function(){msg('i','Connecting to '+n+'...');t=setTimeout(po,3000)})}"
 "function po(){fetch('/api/wifi/status').then(function(r){return r.json()}).then(function(d){var j=d.join||{};"
 "if(j.state=='connected'){msg('k','Connected to '+n+'. This setup network closes in '+j.handover_delay_s+' s. Then join '+n+' with this phone and open http://'+d.hostname);return}"
 "if(j.state=='failed'){msg('e','Could not connect to '+n+': '+j.message+'.');$('b').disabled=0;return}"
+"if(j.state=='idle'&&!d.provisioned){msg('e','Not saved, please try again');$('b').disabled=0;return}"
 "t=setTimeout(po,1500)}).catch(function(){t=setTimeout(po,3000)})}"
 "sc(0)</script></body></html>";
 

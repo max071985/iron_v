@@ -551,6 +551,7 @@ provisioning_status_t provisioning_request_join(bool keep_ap)
     s_prov_join.state = PROV_JOIN_PENDING;
     s_prov_join.keep_ap = keep_ap && wifi_is_ap_active();
     s_prov_join.unproven = false;
+    s_prov_join.next_event_us = 0U;
     s_prov_join.last_reason = 0U;
     s_prov_join.attempts = 0U;
     s_prov_join.retry_delay_us = PROV_RETRY_MIN_US;
@@ -634,6 +635,19 @@ static bool prov_supplicant_failed(void)
     return (wpa2_client_get_telemetry(&wtel) == WPA2_OK) && (wtel.last_fail != WPA2_FAIL_NONE);
 }
 
+/* Channel of the SSID in the last scan (0: unknown, the blob scans all channels) */
+static uint8_t prov_scan_channel_of(const char *ssid)
+{
+    for (uint16_t i = 0U; i < s_prov_scan_count; i++)
+    {
+        if (strcmp(s_prov_scan_items[i].ssid, ssid) == 0)
+        {
+            return s_prov_scan_items[i].channel;
+        }
+    }
+    return 0U;
+}
+
 void provisioning_tick(uint64_t now_us)
 {
     bool disconnected = (wifi_get_sta_disconnect_count() != s_prov_join_disc_base);
@@ -650,12 +664,24 @@ void provisioning_tick(uint64_t now_us)
     {
         case PROV_JOIN_PENDING:
         {
+            /* Portal: the save reply is still on its way (TCP has no retransmission yet, REV-13) */
+            if (s_prov_join.keep_ap && s_prov_join.next_event_us == 0U)
+            {
+                s_prov_join.next_event_us = now_us + PROV_PORTAL_JOIN_DELAY_US;
+                break;
+            }
+            if (now_us < s_prov_join.next_event_us)
+            {
+                break;
+            }
             s_prov_join.attempts++;
             s_prov_join_disc_base = wifi_get_sta_disconnect_count();
             s_prov_join.state = PROV_JOIN_JOINING;
             s_prov_join.next_event_us = now_us + PROV_JOIN_TIMEOUT_US;
             /* PBKDF2 runs here and takes seconds; it counts against the join timeout */
-            wpa2_status_t wst = wpa2_client_join(s_prov_creds.ssid, s_prov_creds.passphrase, 0U,
+            /* Portal joins use the channel from the scan: the SoftAP leaves its channel only briefly */
+            uint8_t channel = s_prov_join.keep_ap ? prov_scan_channel_of(s_prov_creds.ssid) : 0U;
+            wpa2_status_t wst = wpa2_client_join(s_prov_creds.ssid, s_prov_creds.passphrase, channel,
                                                  s_prov_join.keep_ap);
             if (wst != WPA2_OK)
             {

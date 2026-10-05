@@ -24,7 +24,10 @@
 #define HTTP_MAX_ROUTES                  24U
 #define HTTP_MAX_PATH_LEN                64U
 #define HTTP_MAX_QUERY_LEN               256U
-#define HTTP_REQUEST_BUF_SIZE            1024U
+#define HTTP_REQUEST_BUF_SIZE            1536U   /* one assembled request: phone headers + JSON body */
+#define HTTP_REQUEST_SLOTS               2U      /* requests being assembled at the same time */
+#define HTTP_HEADER_END                  "\r\n\r\n"
+#define HTTP_CONTENT_LENGTH_HEADER       "content-length:"
 #define HTTP_RESPONSE_BUF_SIZE           4096U   /* headers + body; from the scratch arena */
 #define HTTP_BODY_MAX_LEN                3584U   /* largest page: /setup (REV-29) */
 
@@ -126,5 +129,13 @@ http_status_t http_server_get_telemetry(http_telemetry_t *out_telemetry);
 uint16_t http_server_get_route_count(void);
 const char *http_method_to_str(http_method_t method);
 const char *http_status_to_str(http_status_code_t code);
+
+/* Request assembly: browsers may send the headers and the body in separate TCP segments */
+typedef enum {
+    HTTP_REQ_INCOMPLETE = 0,   /* headers or Content-Length body bytes still missing */
+    HTTP_REQ_COMPLETE,
+    HTTP_REQ_TOO_LARGE         /* does not fit HTTP_REQUEST_BUF_SIZE */
+} http_req_state_t;
+http_req_state_t http_request_state(const char *buf, size_t len);
 
 #endif /* IRON_V_HTTP_SERVER_H */

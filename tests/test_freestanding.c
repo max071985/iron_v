@@ -4544,6 +4544,366 @@ static void test_mdns_legacy_unicast(void)
     TEST_ASSERT(mdns_process_query(q, qlen, 0x0A000032U, 40000U) == MDNS_ERR_NO_MATCH, "AAAA query: no IPv6 address, no answer");
 }
 
+/* ------------------------------------------------------------------------- */
+/* REV-14: DHCP client retransmission backoff, NAK, INIT-REBOOT, T1/T2/expiry */
+/* ------------------------------------------------------------------------- */
+#define DC_MAX_FRAMES   32U
+#define DC_STEP_US      100000ULL    /* host clock step between ticks */
+#define DC_TOL_US       150000ULL    /* interval tolerance: one step plus margin */
+#define DC_SEC          1000000ULL
+
+typedef struct {
+    uint64_t at_us;
+    uint8_t  dest_mac[ETH_ADDR_LEN];
+    uint32_t src_ip;
+    uint32_t dest_ip;
+    uint32_t xid;
+    uint32_t ciaddr;
+    uint16_t flags;
+    uint8_t  msg_type;
+    bool     has_req_ip;
+    uint32_t req_ip;
+    bool     has_server_id;
+    uint32_t server_id;
+} dc_frame_t;
+
+static dc_frame_t s_dc_frames[DC_MAX_FRAMES];
+static uint32_t s_dc_count;
+
+/* Records every client -> server DHCP frame (mDNS and other traffic ignored) */
+static bool dc_tx_hook(const uint8_t *frame, uint16_t len)
+{
+    size_t hdrs = ETH_HDR_LEN + IPV4_MIN_HDR_LEN + UDP_HDR_LEN;
+    if (len < hdrs + (sizeof(dhcp_packet_t) - DHCP_MIN_OPTIONS_LEN) || s_dc_count >= DC_MAX_FRAMES)
+    {
+        return true;
+    }
+    const ethernet_header_t *eth = (const ethernet_header_t *)frame;
+    const ipv4_header_t *ip = (const ipv4_header_t *)(frame + ETH_HDR_LEN);
+    const udp_header_t *udp = (const udp_header_t *)(frame + ETH_HDR_LEN + IPV4_MIN_HDR_LEN);
+    if (ip->protocol != IPV4_PROTO_UDP || NET_NTOHS(udp->dest_port) != DHCP_SERVER_PORT)
+    {
+        return true;
+    }
+    const dhcp_packet_t *d = (const dhcp_packet_t *)(frame + hdrs);
+    dc_frame_t *f = &s_dc_frames[s_dc_count++];
+    memset(f, 0, sizeof(*f));
+    f->at_us = s_host_now_us;
+    memcpy(f->dest_mac, eth->dest_mac, ETH_ADDR_LEN);
+    f->src_ip = NET_NTOHL(ip->src_ip);
+    f->dest_ip = NET_NTOHL(ip->dest_ip);
+    f->xid = NET_NTOHL(d->xid);
+    f->ciaddr = NET_NTOHL(d->ciaddr);
+    f->flags = NET_NTOHS(d->flags);
+    size_t opts_len = len - hdrs - (sizeof(dhcp_packet_t) - DHCP_MIN_OPTIONS_LEN);
+    size_t i = 0U;
+    while (i + 1U < opts_len && d->options[i] != DHCP_OPT_END)
+    {
+        uint8_t code = d->options[i];
+        uint8_t olen = d->options[i + 1U];
+        const uint8_t *v = &d->options[i + 2U];
+        uint32_t be;
+        if (code == DHCP_OPT_MSG_TYPE) f->msg_type = v[0];
+        if (code == DHCP_OPT_REQUESTED_IP) { memcpy(&be, v, 4U); f->req_ip = NET_NTOHL(be); f->has_req_ip = true; }
+        if (code == DHCP_OPT_SERVER_ID) { memcpy(&be, v, 4U); f->server_id = NET_NTOHL(be); f->has_server_id = true; }
+        i += 2U + olen;
+    }
+    return true;
+}
+
+static void dc_run(uint64_t dur_us)
+{
+    uint64_t end = s_host_now_us + dur_us;
+    while (s_host_now_us < end)
+    {
+        s_host_now_us += DC_STEP_US;
+        dhcp_client_tick();
+    }
+}
+
+static bool dc_near(uint64_t got_us, uint64_t want_us)
+{
+    return (got_us + DC_TOL_US >= want_us) && (got_us <= want_us + DC_TOL_US);
+}
+
+static const uint8_t s_dc_server_mac[ETH_ADDR_LEN] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x55};
+#define DC_SERVER_IP   0xC0A8B201U   /* 192.168.178.1 */
+#define DC_OFFER_IP    0xC0A8B240U   /* 192.168.178.64 */
+
+/* Server reply with the client's current xid; lease/t1/t2 0 = option left out */
+static dhcp_status_t dc_reply(uint8_t msg_type, uint32_t yiaddr, uint32_t lease, uint32_t t1, uint32_t t2)
+{
+    dhcp_client_telemetry_t t;
+    dhcp_client_get_telemetry(&t);
+    uint8_t eth[ETH_HDR_LEN];
+    memset(eth, 0, sizeof(eth));
+    memcpy(((ethernet_header_t *)eth)->src_mac, s_dc_server_mac, ETH_ADDR_LEN);
+
+    dhcp_packet_t p;
+    memset(&p, 0, sizeof(p));
+    p.op = DHCP_OP_BOOTREPLY;
+    p.htype = DHCP_HTYPE_ETHERNET;
+    p.hlen = DHCP_HLEN_ETHERNET;
+    p.xid = NET_HTONL(t.xid);
+    p.yiaddr = NET_HTONL(yiaddr);
+    p.magic_cookie = NET_HTONL(DHCP_MAGIC_COOKIE);
+    size_t i = 0U;
+    uint32_t be;
+    p.options[i++] = DHCP_OPT_MSG_TYPE; p.options[i++] = 1U; p.options[i++] = msg_type;
+    p.options[i++] = DHCP_OPT_SERVER_ID; p.options[i++] = 4U;
+    be = NET_HTONL(DC_SERVER_IP); memcpy(&p.options[i], &be, 4U); i += 4U;
+    if (msg_type != DHCP_MSG_NAK)
+    {
+        p.options[i++] = DHCP_OPT_SUBNET_MASK; p.options[i++] = 4U;
+        be = NET_HTONL(0xFFFFFF00U); memcpy(&p.options[i], &be, 4U); i += 4U;
+        p.options[i++] = DHCP_OPT_ROUTER; p.options[i++] = 4U;
+        be = NET_HTONL(DC_SERVER_IP); memcpy(&p.options[i], &be, 4U); i += 4U;
+    }
+    const uint8_t codes[3] = {DHCP_OPT_LEASE_TIME, DHCP_OPT_RENEWAL_TIME, DHCP_OPT_REBINDING_TIME};
+    const uint32_t vals[3] = {lease, t1, t2};
+    for (uint32_t k = 0U; k < 3U; k++)
+    {
+        if (vals[k] != 0U)
+        {
+            p.options[i++] = codes[k]; p.options[i++] = 4U;
+            be = NET_HTONL(vals[k]); memcpy(&p.options[i], &be, 4U); i += 4U;
+        }
+    }
+    p.options[i++] = DHCP_OPT_END;
+    uint16_t len = (uint16_t)(sizeof(dhcp_packet_t) - DHCP_MIN_OPTIONS_LEN + i);
+    return dhcp_client_process_packet(eth, (const uint8_t *)&p, len);
+}
+
+/* Fresh client, DISCOVER -> OFFER -> REQUEST -> ACK; frames cleared afterwards */
+static void dc_bind(uint32_t lease, uint32_t t1, uint32_t t2)
+{
+    dhcp_client_init();
+    dhcp_client_start();
+    dc_reply(DHCP_MSG_OFFER, DC_OFFER_IP, lease, 0U, 0U);
+    dc_reply(DHCP_MSG_ACK, DC_OFFER_IP, lease, t1, t2);
+    s_dc_count = 0U;
+}
+
+static void test_dhcp_client_rfc2131(void)
+{
+    printf("  [TEST] DHCP client: RFC 2131 backoff, NAK, INIT-REBOOT, T1/T2/expiry (REV-14)...\n");
+
+    net_config_t saved_net;
+    net_get_config(&saved_net);
+    uint8_t saved_fill = g_wpa_drv_host.random_fill;
+    const uint8_t *saved_bytes = g_wpa_drv_host.random_bytes;
+    g_wpa_drv_host.random_bytes = NULL;
+    g_wpa_drv_host.random_fill = 0U;     /* rand 0: every wait is backoff - 1 s */
+    wifi_host_set_tx_hook(dc_tx_hook);
+    dhcp_client_telemetry_t t;
+
+    /* 1. DISCOVER backoff: 4, 8, 16, 32, 64, 64 s, each -1 s with rand 0; same xid; broadcast from 0.0.0.0 */
+    dhcp_client_init();
+    s_dc_count = 0U;
+    dhcp_client_start();
+    dc_run(200ULL * DC_SEC);
+    const uint64_t want_disc[6] = {3, 7, 15, 31, 63, 63};
+    TEST_ASSERT(s_dc_count == 7U, "Unanswered DISCOVER: 7 sends in 200 s (old client: 15+)");
+    bool intervals_ok = (s_dc_count >= 7U);
+    bool shape_ok = true;
+    for (uint32_t k = 0U; k < s_dc_count && k < 7U; k++)
+    {
+        dc_frame_t *f = &s_dc_frames[k];
+        shape_ok = shape_ok && f->msg_type == DHCP_MSG_DISCOVER && f->src_ip == 0U &&
+                   f->dest_ip == DHCP_IP_BROADCAST && (f->flags & DHCP_FLAG_BROADCAST) != 0U &&
+                   f->xid == s_dc_frames[0].xid;
+        if (k > 0U && k < 7U)
+        {
+            intervals_ok = intervals_ok && dc_near(f->at_us - s_dc_frames[k - 1U].at_us, want_disc[k - 1U] * DC_SEC);
+        }
+    }
+    TEST_ASSERT(intervals_ok, "DISCOVER intervals 4/8/16/32/64/64 s minus 1 s jitter (rand 0)");
+    TEST_ASSERT(shape_ok, "DISCOVERs: broadcast, source 0.0.0.0, broadcast flag, one xid");
+    dhcp_client_get_telemetry(&t);
+    TEST_ASSERT(t.retransmits == 6U && t.discovers_sent == 7U, "Retransmits counted");
+
+    /* 1b. Jitter upper end: rand 0xFFFFFFFF gives backoff - 1 s + (0xFFFFFFFF mod 2000001) us */
+    g_wpa_drv_host.random_fill = 0xFFU;
+    dhcp_client_init();
+    s_dc_count = 0U;
+    dhcp_client_start();
+    dc_run(10ULL * DC_SEC);
+    uint64_t span = 2ULL * DHCP_CLIENT_BACKOFF_JITTER_US + 1ULL;
+    uint64_t want = DHCP_CLIENT_BACKOFF_INITIAL_US - DHCP_CLIENT_BACKOFF_JITTER_US + (0xFFFFFFFFULL % span);
+    TEST_ASSERT(s_dc_count >= 2U && dc_near(s_dc_frames[1].at_us - s_dc_frames[0].at_us, want),
+                "Jitter stays within +/- 1 s of the backoff");
+    g_wpa_drv_host.random_fill = 0U;
+
+    /* 2. OFFER -> REQUEST with requested IP + server id; unanswered: 3 sends, then DISCOVER with a new xid */
+    dhcp_client_init();
+    dhcp_client_start();
+    s_dc_count = 0U;
+    dc_reply(DHCP_MSG_OFFER, DC_OFFER_IP, 600U, 0U, 0U);
+    TEST_ASSERT(dhcp_client_get_state() == DHCP_CLIENT_STATE_REQUESTING && s_dc_count == 1U,
+                "OFFER: REQUEST sent at once");
+    TEST_ASSERT(s_dc_frames[0].msg_type == DHCP_MSG_REQUEST && s_dc_frames[0].has_req_ip &&
+                s_dc_frames[0].req_ip == DC_OFFER_IP && s_dc_frames[0].has_server_id &&
+                s_dc_frames[0].server_id == DC_SERVER_IP && s_dc_frames[0].ciaddr == 0U &&
+                s_dc_frames[0].dest_ip == DHCP_IP_BROADCAST, "REQUEST (SELECTING): option 50 + 54, ciaddr 0, broadcast");
+    uint32_t req_xid = s_dc_frames[0].xid;
+    dc_run(16ULL * DC_SEC);
+    TEST_ASSERT(dhcp_client_get_state() == DHCP_CLIENT_STATE_REQUESTING && s_dc_count == 3U,
+                "REQUEST retransmitted at ~3 s and ~10 s");
+    TEST_ASSERT(s_dc_count == 3U && dc_near(s_dc_frames[1].at_us - s_dc_frames[0].at_us, 3ULL * DC_SEC) &&
+                dc_near(s_dc_frames[2].at_us - s_dc_frames[1].at_us, 7ULL * DC_SEC), "REQUEST backoff 4/8 s");
+    dc_run(10ULL * DC_SEC);    /* third wait (16 s - 1) ends at ~25 s */
+    TEST_ASSERT(dhcp_client_get_state() == DHCP_CLIENT_STATE_DISCOVERING && s_dc_count == 4U &&
+                s_dc_frames[3].msg_type == DHCP_MSG_DISCOVER && s_dc_frames[3].xid != req_xid,
+                "No ACK after 3 REQUESTs: back to DISCOVER (new xid)");
+
+    /* 3. NAK: INIT after the DISCOVER backoff, not at once */
+    dhcp_client_init();
+    dhcp_client_start();
+    dc_reply(DHCP_MSG_OFFER, DC_OFFER_IP, 600U, 0U, 0U);
+    s_dc_count = 0U;
+    dc_reply(DHCP_MSG_NAK, 0U, 0U, 0U, 0U);
+    dhcp_client_get_telemetry(&t);
+    TEST_ASSERT(t.state == DHCP_CLIENT_STATE_DISCOVERING && t.naks_received == 1U && s_dc_count == 0U,
+                "NAK: DISCOVERING, nothing sent at once");
+    dc_run(5ULL * DC_SEC);
+    TEST_ASSERT(s_dc_count == 0U, "NAK: no DISCOVER within the first 4 s");
+    dc_run(3ULL * DC_SEC);     /* DISCOVER backoff is 8 s after the first DISCOVER: 7 s with rand 0 */
+    TEST_ASSERT(s_dc_count == 1U && s_dc_frames[0].msg_type == DHCP_MSG_DISCOVER,
+                "NAK: next DISCOVER after the (grown) DISCOVER backoff");
+
+    /* 4. ACK: bound, default T1 = 1/2, T2 = 7/8 lease; stack address set */
+    dc_bind(600U, 0U, 0U);
+    dhcp_client_get_telemetry(&t);
+    net_config_t ncfg;
+    net_get_config(&ncfg);
+    TEST_ASSERT(t.state == DHCP_CLIENT_STATE_BOUND && t.t1_sec == 300U && t.t2_sec == 525U &&
+                t.lease_left_sec == 600U, "ACK: BOUND, T1 300 s, T2 525 s of a 600 s lease");
+    TEST_ASSERT(ncfg.ip == DC_OFFER_IP && ncfg.gateway == DC_SERVER_IP, "ACK: address applied to the stack");
+
+    /* 5. Silent until T1, then one unicast REQUEST to the server (renew) */
+    dc_run(299ULL * DC_SEC);
+    TEST_ASSERT(s_dc_count == 0U, "Bound: no DHCP traffic before T1");
+    dc_run(2ULL * DC_SEC);
+    TEST_ASSERT(dhcp_client_get_state() == DHCP_CLIENT_STATE_RENEWING && s_dc_count == 1U,
+                "T1: RENEWING, one REQUEST");
+    dc_frame_t *rf = &s_dc_frames[0];
+    TEST_ASSERT(rf->msg_type == DHCP_MSG_REQUEST && memcmp(rf->dest_mac, s_dc_server_mac, ETH_ADDR_LEN) == 0 &&
+                rf->dest_ip == DC_SERVER_IP && rf->src_ip == DC_OFFER_IP && rf->ciaddr == DC_OFFER_IP &&
+                !rf->has_req_ip && !rf->has_server_id && (rf->flags & DHCP_FLAG_BROADCAST) == 0U,
+                "RENEWING REQUEST: unicast to the server MAC/IP, ciaddr + source = our address, no 50/54");
+    dc_reply(DHCP_MSG_ACK, DC_OFFER_IP, 600U, 0U, 0U);
+    dhcp_client_get_telemetry(&t);
+    TEST_ASSERT(t.state == DHCP_CLIENT_STATE_BOUND && t.renewals == 1U && t.lease_left_sec >= 598U,
+                "Renew ACK: BOUND again, lease extended");
+
+    /* 6. Renew unanswered: retries at half the time to T2 (min 60 s), REBINDING at T2, expiry drops the address */
+    s_dc_count = 0U;
+    dc_run(301ULL * DC_SEC);   /* T1 of the renewed lease */
+    TEST_ASSERT(dhcp_client_get_state() == DHCP_CLIENT_STATE_RENEWING && s_dc_count == 1U, "Second T1 reached");
+    uint64_t t1_at = s_dc_frames[0].at_us;
+    dc_run(225ULL * DC_SEC);   /* to T2 */
+    bool renew_retry_ok = s_dc_count >= 2U && dc_near(s_dc_frames[1].at_us - t1_at, 112500000ULL);
+    TEST_ASSERT(renew_retry_ok, "RENEWING retransmit at half the time left to T2");
+    TEST_ASSERT(s_dc_count >= 3U && dc_near(s_dc_frames[2].at_us - s_dc_frames[1].at_us,
+                                            DHCP_CLIENT_RENEW_MIN_RETRY_US), "RENEWING retransmit not sooner than 60 s");
+    dc_run(2ULL * DC_SEC);
+    dc_frame_t *bf = &s_dc_frames[(s_dc_count > 0U) ? (s_dc_count - 1U) : 0U];
+    TEST_ASSERT(dhcp_client_get_state() == DHCP_CLIENT_STATE_REBINDING && bf->dest_ip == DHCP_IP_BROADCAST &&
+                bf->ciaddr == DC_OFFER_IP && bf->src_ip == DC_OFFER_IP && !bf->has_req_ip,
+                "T2: REBINDING, broadcast REQUEST with ciaddr");
+    dc_run(80ULL * DC_SEC);    /* past expiry */
+    dhcp_client_get_telemetry(&t);
+    net_get_config(&ncfg);
+    TEST_ASSERT(t.state == DHCP_CLIENT_STATE_DISCOVERING && t.leases_expired == 1U && t.lease_left_sec == 0U &&
+                ncfg.ip == 0U, "Expiry: address dropped, DISCOVER");
+    TEST_ASSERT(s_dc_count > 0U && s_dc_frames[s_dc_count - 1U].msg_type == DHCP_MSG_DISCOVER,
+                "Expiry: DISCOVER sent");
+
+    /* 7. INIT-REBOOT: link loss keeps the lease; rejoin asks for it again */
+    dc_bind(600U, 0U, 0U);
+    dhcp_client_stop();
+    dc_run(10ULL * DC_SEC);
+    TEST_ASSERT(dhcp_client_get_state() == DHCP_CLIENT_STATE_IDLE && s_dc_count == 0U, "Stopped: nothing sent");
+    dhcp_client_start();
+    rf = &s_dc_frames[0];
+    TEST_ASSERT(dhcp_client_get_state() == DHCP_CLIENT_STATE_REBOOTING && s_dc_count == 1U &&
+                rf->msg_type == DHCP_MSG_REQUEST && rf->has_req_ip && rf->req_ip == DC_OFFER_IP &&
+                !rf->has_server_id && rf->ciaddr == 0U && rf->src_ip == 0U && rf->dest_ip == DHCP_IP_BROADCAST,
+                "INIT-REBOOT REQUEST: option 50, no server id, ciaddr 0, broadcast");
+    dc_reply(DHCP_MSG_ACK, DC_OFFER_IP, 600U, 0U, 0U);
+    dhcp_client_get_telemetry(&t);
+    TEST_ASSERT(t.state == DHCP_CLIENT_STATE_BOUND && t.reboots_confirmed == 1U && t.discovers_sent == 1U,
+                "INIT-REBOOT ACK: same address, no new DISCOVER");
+
+    /* 7b. INIT-REBOOT unanswered: 3 REQUESTs, then DISCOVER and the lease is gone */
+    dhcp_client_stop();
+    s_dc_count = 0U;
+    dhcp_client_start();
+    dc_run(26ULL * DC_SEC);
+    dhcp_client_get_telemetry(&t);
+    TEST_ASSERT(t.state == DHCP_CLIENT_STATE_DISCOVERING && s_dc_count == 4U &&
+                s_dc_frames[3].msg_type == DHCP_MSG_DISCOVER && t.lease_left_sec == 0U,
+                "Unanswered INIT-REBOOT: DISCOVER after 3 REQUESTs, lease dropped");
+
+    /* 7c. INIT-REBOOT NAK (other network): DISCOVER, lease dropped */
+    dc_bind(600U, 0U, 0U);
+    dhcp_client_stop();
+    dhcp_client_start();
+    dc_reply(DHCP_MSG_NAK, 0U, 0U, 0U, 0U);
+    dhcp_client_get_telemetry(&t);
+    TEST_ASSERT(t.state == DHCP_CLIENT_STATE_DISCOVERING && t.lease_left_sec == 0U && t.naks_received == 1U,
+                "INIT-REBOOT NAK: DISCOVER, lease dropped");
+
+    /* 7d. New credentials: forget the lease, start with DISCOVER */
+    dc_bind(600U, 0U, 0U);
+    dhcp_client_stop();
+    dhcp_client_forget();
+    dhcp_client_start();
+    TEST_ASSERT(dhcp_client_get_state() == DHCP_CLIENT_STATE_DISCOVERING && s_dc_count == 1U &&
+                s_dc_frames[0].msg_type == DHCP_MSG_DISCOVER, "Forgotten lease: DISCOVER");
+
+    /* 7e. Lease expires while the link is down: next start uses DISCOVER */
+    dc_bind(600U, 0U, 0U);
+    dhcp_client_stop();
+    dc_run(601ULL * DC_SEC);
+    dhcp_client_get_telemetry(&t);
+    TEST_ASSERT(t.state == DHCP_CLIENT_STATE_IDLE && t.leases_expired == 1U && s_dc_count == 0U,
+                "Expiry while stopped: lease dropped, nothing sent");
+    dhcp_client_start();
+    TEST_ASSERT(dhcp_client_get_state() == DHCP_CLIENT_STATE_DISCOVERING, "Expired lease: DISCOVER on start");
+
+    /* 8. Options 58/59 from the server are used */
+    dc_bind(600U, 100U, 200U);
+    dhcp_client_get_telemetry(&t);
+    TEST_ASSERT(t.t1_sec == 100U && t.t2_sec == 200U, "Server T1/T2 (options 58/59) honored");
+    dc_run(101ULL * DC_SEC);
+    TEST_ASSERT(dhcp_client_get_state() == DHCP_CLIENT_STATE_RENEWING, "Renew at server T1");
+    dc_bind(600U, 500U, 400U);
+    dhcp_client_get_telemetry(&t);
+    TEST_ASSERT(t.t1_sec == 300U && t.t2_sec == 400U, "Inconsistent T1 >= T2 from the server: default T1");
+
+    /* 9. Infinite lease: never renews, never expires */
+    dc_bind(DHCP_LEASE_INFINITE, 0U, 0U);
+    dc_run(1000ULL * DC_SEC);
+    dhcp_client_get_telemetry(&t);
+    TEST_ASSERT(t.state == DHCP_CLIENT_STATE_BOUND && s_dc_count == 0U && t.t1_sec == DHCP_LEASE_INFINITE &&
+                t.lease_left_sec == DHCP_LEASE_INFINITE, "Infinite lease: no renew, no expiry");
+
+    /* 10. Lease-less ACK: fallback lease */
+    dc_bind(0U, 0U, 0U);
+    dhcp_client_get_telemetry(&t);
+    TEST_ASSERT(t.lease_time_sec == DHCP_CLIENT_FALLBACK_LEASE_SEC, "ACK without lease time: fallback lease");
+
+    TEST_ASSERT(strcmp(dhcp_client_state_name(DHCP_CLIENT_STATE_REBOOTING), "INIT-REBOOT") == 0,
+                "State names");
+
+    wifi_host_set_tx_hook(NULL);
+    g_wpa_drv_host.random_fill = saved_fill;
+    g_wpa_drv_host.random_bytes = saved_bytes;
+    dhcp_client_init();
+    net_set_ip(saved_net.ip, saved_net.netmask, saved_net.gateway);
+}
+
 static void test_wpa2_client_and_mdns_subsystem(void)
 {
     printf("  [TEST] Bare-Metal Wi-Fi Station (STA) WPA2-PSK Client & Home LAN Join (Task 8.2)...\n");
@@ -4694,20 +5054,7 @@ static void test_wpa2_client_and_mdns_subsystem(void)
                 "dhcp_client_process_packet processes DHCPOFFER");
     TEST_ASSERT(dhcp_client_get_state() == DHCP_CLIENT_STATE_REQUESTING, "State transitions to REQUESTING");
 
-    /* 3a'. No ACK for the REQUEST: start over with a DISCOVER after the timeout (REV-29) */
-    dhcp_client_telemetry_t dtel_before;
-    dhcp_client_get_telemetry(&dtel_before);
-    s_host_now_us += DHCP_CLIENT_REQUEST_TIMEOUT_US - 1U;
-    dhcp_client_tick();
-    TEST_ASSERT(dhcp_client_get_state() == DHCP_CLIENT_STATE_REQUESTING, "Waits for the ACK until the timeout");
-    s_host_now_us += 1U;
-    dhcp_client_tick();
-    dhcp_client_telemetry_t dtel_after;
-    dhcp_client_get_telemetry(&dtel_after);
-    TEST_ASSERT(dhcp_client_get_state() == DHCP_CLIENT_STATE_DISCOVERING &&
-                dtel_after.discovers_sent == dtel_before.discovers_sent + 1U, "Lost ACK: back to DISCOVER");
-    TEST_ASSERT(dhcp_client_process_packet(dummy_eth, (const uint8_t *)&offer_pkt, offer_len) == DHCP_OK &&
-                dhcp_client_get_state() == DHCP_CLIENT_STATE_REQUESTING, "Next OFFER: REQUESTING again");
+    /* Retransmission, NAK, INIT-REBOOT and lease timing: test_dhcp_client_rfc2131() */
 
     /* 3b. Inbound DHCPACK Simulation */
     dhcp_packet_t ack_pkt;
@@ -5965,6 +6312,7 @@ int main(void)
     test_provisioning_seed();
     test_mdns_legacy_unicast();
     test_wpa2_client_and_mdns_subsystem();
+    test_dhcp_client_rfc2131();
     test_wpa_ie_parsing();
     test_wpa2_handshake();
     test_wpa2_replay_capture();

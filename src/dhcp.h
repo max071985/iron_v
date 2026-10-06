@@ -21,11 +21,24 @@
 #define DHCP_SERVER_PORT                67U
 #define DHCP_CLIENT_PORT                68U
 
-/* Client retransmission (full RFC 2131 backoff: REV-14) */
-#define DHCP_CLIENT_RETRY_US            2000000ULL   /* DISCOVER interval while the burst lasts */
-#define DHCP_CLIENT_DISCOVER_BURST      8U           /* DISCOVERs at that interval, then slow */
-#define DHCP_CLIENT_SLOW_RETRY_US       30000000ULL  /* DISCOVER interval after the burst */
-#define DHCP_CLIENT_REQUEST_TIMEOUT_US  4000000ULL   /* no ACK for the REQUEST: start over */
+/* Client retransmission (RFC 2131 4.1): 4 s doubling to 64 s, each wait +/- 1 s */
+#define DHCP_CLIENT_BACKOFF_INITIAL_US  4000000ULL
+#define DHCP_CLIENT_BACKOFF_MAX_US      64000000ULL
+#define DHCP_CLIENT_BACKOFF_JITTER_US   1000000ULL
+/* REQUEST after an OFFER, and the INIT-REBOOT REQUEST: sends before going back to INIT (DISCOVER) */
+#define DHCP_CLIENT_REQUEST_MAX_TRIES   3U
+/* RENEWING/REBINDING retransmit at half the time left to T2/expiry, never sooner than this (RFC 2131 4.4.5) */
+#define DHCP_CLIENT_RENEW_MIN_RETRY_US  60000000ULL
+/* T1 = 1/2 and T2 = 7/8 of the lease when the server sends no options 58/59 */
+#define DHCP_CLIENT_T1_NUM              1U
+#define DHCP_CLIENT_T1_DEN              2U
+#define DHCP_CLIENT_T2_NUM              7U
+#define DHCP_CLIENT_T2_DEN              8U
+#define DHCP_CLIENT_FALLBACK_LEASE_SEC  3600U        /* ACK without a lease time */
+#define DHCP_LEASE_INFINITE             0xFFFFFFFFU  /* RFC 2132 9.2 */
+#define DHCP_US_PER_SEC                 1000000ULL
+#define DHCP_CLIENT_TIME_NEVER          UINT64_MAX   /* T1/T2/expiry of an infinite lease */
+#define DHCP_CLIENT_XID_SEED            0x5A4F0001U  /* fixed until REV-20 (HW RNG) */
 #define DNS_SERVER_PORT                 53U
 
 /* ========================================================================= */
@@ -53,7 +66,13 @@
 #define DHCP_OPT_MSG_TYPE               53U
 #define DHCP_OPT_SERVER_ID              54U
 #define DHCP_OPT_PARAM_REQUEST_LIST     55U
+#define DHCP_OPT_RENEWAL_TIME           58U    /* T1 */
+#define DHCP_OPT_REBINDING_TIME         59U    /* T2 */
 #define DHCP_OPT_END                    255U
+#define DHCP_OPT_HDR_LEN                2U     /* code + length */
+#define DHCP_OPT_U8_LEN                 1U
+#define DHCP_OPT_U32_LEN                4U
+#define DHCP_OPT_IPV4_LEN               4U
 
 #define DHCP_MSG_DISCOVER               1U
 #define DHCP_MSG_OFFER                  2U
@@ -150,12 +169,16 @@ typedef enum {
 /* ========================================================================= */
 /* DHCP Client Data Structures & Telemetry                                   */
 /* ========================================================================= */
+/* RFC 2131 figure 5 states; INIT is DISCOVERING, SELECTING ends with the first OFFER */
 typedef enum {
-    DHCP_CLIENT_STATE_IDLE = 0,
+    DHCP_CLIENT_STATE_IDLE = 0,     /* link down or never started; a lease may still be held */
     DHCP_CLIENT_STATE_DISCOVERING,
     DHCP_CLIENT_STATE_REQUESTING,
     DHCP_CLIENT_STATE_BOUND,
-    DHCP_CLIENT_STATE_STATIC
+    DHCP_CLIENT_STATE_STATIC,
+    DHCP_CLIENT_STATE_REBOOTING,    /* INIT-REBOOT: asking for the previous address after a reconnect */
+    DHCP_CLIENT_STATE_RENEWING,     /* after T1: unicast REQUEST to the leasing server */
+    DHCP_CLIENT_STATE_REBINDING     /* after T2: broadcast REQUEST to any server */
 } dhcp_client_state_t;
 
 typedef struct {
@@ -171,6 +194,16 @@ typedef struct {
     uint32_t offers_received;
     uint32_t requests_sent;
     uint32_t acks_received;
+    /* Lease timing (seconds from the lease start; DHCP_LEASE_INFINITE: never) */
+    uint32_t t1_sec;
+    uint32_t t2_sec;
+    uint32_t lease_left_sec;        /* 0: no lease held */
+    uint32_t next_tx_sec;           /* seconds until the next scheduled send (0: none or due) */
+    uint32_t naks_received;
+    uint32_t retransmits;           /* DISCOVER/REQUEST sends after the first of an exchange */
+    uint32_t reboots_confirmed;     /* INIT-REBOOT got the previous address back */
+    uint32_t renewals;              /* lease extended in RENEWING or REBINDING */
+    uint32_t leases_expired;
 } dhcp_client_telemetry_t;
 
 /* ========================================================================= */
@@ -186,7 +219,11 @@ const dhcp_lease_t *dhcp_get_lease(uint32_t index);
 /* DHCP Client APIs */
 dhcp_status_t dhcp_client_init(void);
 dhcp_status_t dhcp_client_start(void);
+/* Link down: stop sending, keep the lease for INIT-REBOOT on the next start */
 dhcp_status_t dhcp_client_stop(void);
+/* Different network: drop the held lease so the next start uses DISCOVER */
+void dhcp_client_forget(void);
+const char *dhcp_client_state_name(dhcp_client_state_t state);
 dhcp_status_t dhcp_client_process_packet(const uint8_t *eth_frame, const uint8_t *payload, uint16_t len);
 dhcp_client_state_t dhcp_client_get_state(void);
 dhcp_status_t dhcp_client_get_telemetry(dhcp_client_telemetry_t *out_telem);

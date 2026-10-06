@@ -15,6 +15,7 @@
 #include "config.h"
 #include "mdns.h"
 #include "systimer.h"
+#include "wpa_driver.h"
 
 #if defined(__riscv)
 #include "console.h"
@@ -32,9 +33,9 @@ static bool s_dhcp_initialized = false;
 /* ========================================================================= */
 /* Outbound Frame Transmission Helper                                        */
 /* ========================================================================= */
-static dhcp_status_t dhcp_send_udp_frame(wifi_tx_if_t ifx, const uint8_t *dest_mac, uint32_t dest_ip,
-                                         uint16_t src_port, uint16_t dest_port,
-                                         const void *payload, uint16_t payload_len)
+static dhcp_status_t dhcp_send_udp_frame_from(wifi_tx_if_t ifx, const uint8_t *dest_mac, uint32_t dest_ip,
+                                              uint32_t src_ip, uint16_t src_port, uint16_t dest_port,
+                                              const void *payload, uint16_t payload_len)
 {
     if (dest_mac == NULL || payload == NULL || payload_len == 0U)
     {
@@ -80,14 +81,7 @@ static dhcp_status_t dhcp_send_udp_frame(wifi_tx_if_t ifx, const uint8_t *dest_m
     ip->flags_frag_offset = NET_HTONS(IPV4_FLAGS_DF);
     ip->ttl               = IPV4_TTL_DEFAULT;
     ip->protocol          = IPV4_PROTO_UDP;
-    if (src_port == DHCP_CLIENT_PORT)
-    {
-        ip->src_ip = 0U; /* 0.0.0.0 per RFC 2131 Section 4.1 */
-    }
-    else
-    {
-        ip->src_ip = (ncfg.ip != 0U) ? NET_HTONL(ncfg.ip) : NET_HTONL(DHCP_DEFAULT_GATEWAY);
-    }
+    ip->src_ip            = NET_HTONL(src_ip);
     ip->dest_ip           = NET_HTONL(dest_ip);
     ip->checksum          = 0U;
     ip->checksum          = NET_HTONS(net_ipv4_checksum(ip));
@@ -104,6 +98,17 @@ static dhcp_status_t dhcp_send_udp_frame(wifi_tx_if_t ifx, const uint8_t *dest_m
     /* Transmit frame via Wi-Fi subsystem */
     wifi_status_t wst = wifi_tx_packet(ifx, frame_buf, total_len);
     return (wst == WIFI_OK) ? DHCP_OK : DHCP_ERR_TX_FAILED;
+}
+
+/* Server replies come from our address (the SoftAP gateway until one is set) */
+static dhcp_status_t dhcp_send_udp_frame(wifi_tx_if_t ifx, const uint8_t *dest_mac, uint32_t dest_ip,
+                                         uint16_t src_port, uint16_t dest_port,
+                                         const void *payload, uint16_t payload_len)
+{
+    net_config_t ncfg;
+    net_get_config(&ncfg);
+    uint32_t src_ip = (ncfg.ip != 0U) ? ncfg.ip : DHCP_DEFAULT_GATEWAY;
+    return dhcp_send_udp_frame_from(ifx, dest_mac, dest_ip, src_ip, src_port, dest_port, payload, payload_len);
 }
 
 /*
@@ -695,72 +700,262 @@ dhcp_status_t dhcp_get_telemetry(dhcp_telemetry_t *out_telemetry)
 }
 
 /* ========================================================================= */
-/* DHCP Client Subsystem (Task 8.2)                                          */
+/* DHCP Client (RFC 2131 4.4: INIT, INIT-REBOOT, RENEWING, REBINDING)        */
 /* ========================================================================= */
 static dhcp_client_telemetry_t s_dhcp_client_telem;
 static bool s_dhcp_client_initialized = false;
-static uint64_t s_last_discover_us = 0ULL;
 
-static dhcp_status_t dhcp_client_send_discover(void)
+/* Lease held across link loss (RAM only, O-20); times are systimer microseconds */
+static bool     s_lease_valid = false;
+static uint64_t s_lease_t1_us = 0ULL;
+static uint64_t s_lease_t2_us = 0ULL;
+static uint64_t s_lease_end_us = 0ULL;
+static uint8_t  s_server_mac[ETH_ADDR_LEN];   /* Ethernet source of the last ACK: RENEWING unicasts here */
+
+/* Current exchange */
+static uint64_t s_exchange_start_us = 0ULL;  /* first REQUEST of the exchange: the lease counts from here */
+static uint64_t s_next_tx_us = 0ULL;
+static uint64_t s_request_backoff_us = DHCP_CLIENT_BACKOFF_INITIAL_US;
+static uint64_t s_discover_backoff_us = DHCP_CLIENT_BACKOFF_INITIAL_US;  /* reset only on BOUND and start */
+static uint32_t s_tries = 0U;                /* sends in the current exchange */
+
+static const uint8_t s_dhcp_client_bcast_mac[ETH_ADDR_LEN] = {0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU};
+
+/* Options the client asks for in every DISCOVER/REQUEST (RFC 2131 4.4.1: same list each time) */
+static const uint8_t s_dhcp_client_prl[] = {
+    DHCP_OPT_SUBNET_MASK, DHCP_OPT_ROUTER, DHCP_OPT_DNS,
+    DHCP_OPT_LEASE_TIME, DHCP_OPT_RENEWAL_TIME, DHCP_OPT_REBINDING_TIME
+};
+
+const char *dhcp_client_state_name(dhcp_client_state_t state)
 {
-    /* Format DHCPDISCOVER packet */
+    switch (state)
+    {
+        case DHCP_CLIENT_STATE_IDLE:        return "IDLE";
+        case DHCP_CLIENT_STATE_DISCOVERING: return "DISCOVERING";
+        case DHCP_CLIENT_STATE_REQUESTING:  return "REQUESTING";
+        case DHCP_CLIENT_STATE_BOUND:       return "BOUND";
+        case DHCP_CLIENT_STATE_STATIC:      return "STATIC";
+        case DHCP_CLIENT_STATE_REBOOTING:   return "INIT-REBOOT";
+        case DHCP_CLIENT_STATE_RENEWING:    return "RENEWING";
+        case DHCP_CLIENT_STATE_REBINDING:   return "REBINDING";
+        default:                            return "UNKNOWN";
+    }
+}
+
+#if defined(__riscv)
+static void dhcp_client_log_ip(const char *label, uint32_t ip)
+{
+    char s[NET_IP_STR_BUF_LEN];
+    net_ip_to_str(ip, s, sizeof(s));
+    console_puts(label);
+    console_puts(s);
+}
+#endif
+
+/* The wait before a retransmission: delay +/- DHCP_CLIENT_BACKOFF_JITTER_US, uniform (RFC 2131 4.1) */
+static uint64_t dhcp_client_jittered(uint64_t delay_us)
+{
+    uint32_t rand32 = 0U;
+    wpa_drv_random((uint8_t *)&rand32, sizeof(rand32));
+    uint64_t span = (2ULL * DHCP_CLIENT_BACKOFF_JITTER_US) + 1ULL;
+    return delay_us - DHCP_CLIENT_BACKOFF_JITTER_US + ((uint64_t)rand32 % span);
+}
+
+static uint64_t dhcp_client_next_backoff(uint64_t delay_us)
+{
+    uint64_t next = delay_us * 2ULL;
+    return (next > DHCP_CLIENT_BACKOFF_MAX_US) ? DHCP_CLIENT_BACKOFF_MAX_US : next;
+}
+
+/* RENEWING/REBINDING: half the time left to the deadline, at least DHCP_CLIENT_RENEW_MIN_RETRY_US */
+static uint64_t dhcp_client_renew_retry_at(uint64_t now, uint64_t deadline_us)
+{
+    uint64_t half = (deadline_us > now) ? ((deadline_us - now) / 2ULL) : 0ULL;
+    if (half < DHCP_CLIENT_RENEW_MIN_RETRY_US)
+    {
+        half = DHCP_CLIENT_RENEW_MIN_RETRY_US;
+    }
+    return now + half;
+}
+
+static size_t dhcp_client_put_u32_opt(uint8_t *opts, size_t idx, uint8_t code, uint32_t value)
+{
+    opts[idx++] = code;
+    opts[idx++] = DHCP_OPT_U32_LEN;
+    uint32_t be = NET_HTONL(value);
+    memcpy(&opts[idx], &be, DHCP_OPT_U32_LEN);
+    return idx + DHCP_OPT_U32_LEN;
+}
+
+/*
+ * Builds and sends the message the current state calls for (RFC 2131 table 5):
+ *   DISCOVERING  DISCOVER  broadcast, ciaddr 0
+ *   REQUESTING   REQUEST   broadcast, ciaddr 0, requested IP + server id
+ *   REBOOTING    REQUEST   broadcast, ciaddr 0, requested IP, no server id
+ *   RENEWING     REQUEST   unicast to the leasing server, ciaddr = our address
+ *   REBINDING    REQUEST   broadcast, ciaddr = our address
+ */
+static dhcp_status_t dhcp_client_send(void)
+{
+    dhcp_client_state_t state = s_dhcp_client_telem.state;
+    bool discover = (state == DHCP_CLIENT_STATE_DISCOVERING);
+    bool have_ip = (state == DHCP_CLIENT_STATE_RENEWING || state == DHCP_CLIENT_STATE_REBINDING);
+    uint32_t our_ip = s_dhcp_client_telem.assigned_ip;
+
     dhcp_packet_t pkt;
     memset(&pkt, 0, sizeof(pkt));
-
     pkt.op = DHCP_OP_BOOTREQUEST;
     pkt.htype = DHCP_HTYPE_ETHERNET;
     pkt.hlen = DHCP_HLEN_ETHERNET;
     pkt.hops = DHCP_HOPS_DEFAULT;
     pkt.xid = NET_HTONL(s_dhcp_client_telem.xid);
-    pkt.flags = NET_HTONS(0x8000U); /* Broadcast */
+    /* Without an address the reply must be broadcast; with one the server unicasts to ciaddr */
+    pkt.flags = have_ip ? 0U : NET_HTONS(DHCP_FLAG_BROADCAST);
+    pkt.ciaddr = have_ip ? NET_HTONL(our_ip) : 0U;
 
     net_config_t ncfg;
     net_get_config(&ncfg);
     memcpy(pkt.chaddr, ncfg.mac, ETH_ADDR_LEN);
     pkt.magic_cookie = NET_HTONL(DHCP_MAGIC_COOKIE);
 
-    /* Options */
-    size_t opt_idx = 0U;
-    pkt.options[opt_idx++] = DHCP_OPT_MSG_TYPE;
-    pkt.options[opt_idx++] = 1U;
-    pkt.options[opt_idx++] = DHCP_MSG_DISCOVER;
+    size_t idx = 0U;
+    pkt.options[idx++] = DHCP_OPT_MSG_TYPE;
+    pkt.options[idx++] = DHCP_OPT_U8_LEN;
+    pkt.options[idx++] = discover ? DHCP_MSG_DISCOVER : DHCP_MSG_REQUEST;
+    if (state == DHCP_CLIENT_STATE_REQUESTING || state == DHCP_CLIENT_STATE_REBOOTING)
+    {
+        idx = dhcp_client_put_u32_opt(pkt.options, idx, DHCP_OPT_REQUESTED_IP, our_ip);
+    }
+    if (state == DHCP_CLIENT_STATE_REQUESTING && s_dhcp_client_telem.server_ip != 0U)
+    {
+        idx = dhcp_client_put_u32_opt(pkt.options, idx, DHCP_OPT_SERVER_ID, s_dhcp_client_telem.server_ip);
+    }
+    pkt.options[idx++] = DHCP_OPT_PARAM_REQUEST_LIST;
+    pkt.options[idx++] = (uint8_t)sizeof(s_dhcp_client_prl);
+    memcpy(&pkt.options[idx], s_dhcp_client_prl, sizeof(s_dhcp_client_prl));
+    idx += sizeof(s_dhcp_client_prl);
+    pkt.options[idx++] = DHCP_OPT_END;
 
-    pkt.options[opt_idx++] = DHCP_OPT_PARAM_REQUEST_LIST;
-    pkt.options[opt_idx++] = 3U;
-    pkt.options[opt_idx++] = DHCP_OPT_SUBNET_MASK;
-    pkt.options[opt_idx++] = DHCP_OPT_ROUTER;
-    pkt.options[opt_idx++] = DHCP_OPT_DNS;
+    const uint8_t *dest_mac = s_dhcp_client_bcast_mac;
+    uint32_t dest_ip = DHCP_IP_BROADCAST;
+    if (state == DHCP_CLIENT_STATE_RENEWING && s_dhcp_client_telem.server_ip != 0U)
+    {
+        dest_mac = s_server_mac;
+        dest_ip = s_dhcp_client_telem.server_ip;
+    }
 
-    pkt.options[opt_idx++] = DHCP_OPT_END;
-
-    uint16_t pkt_len = (uint16_t)(sizeof(dhcp_packet_t) - DHCP_MIN_OPTIONS_LEN + opt_idx);
-    uint8_t broadcast_mac[ETH_ADDR_LEN] = {0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU};
-
-    dhcp_status_t st = dhcp_send_udp_frame(WIFI_TX_IF_STA, broadcast_mac, 0xFFFFFFFFU,
-                                           DHCP_CLIENT_PORT, DHCP_SERVER_PORT,
-                                           &pkt, pkt_len);
+    uint16_t pkt_len = (uint16_t)(sizeof(dhcp_packet_t) - DHCP_MIN_OPTIONS_LEN + idx);
+    dhcp_status_t st = dhcp_send_udp_frame_from(WIFI_TX_IF_STA, dest_mac, dest_ip, have_ip ? our_ip : 0U,
+                                                DHCP_CLIENT_PORT, DHCP_SERVER_PORT, &pkt, pkt_len);
+    if (s_tries > 0U)
+    {
+        s_dhcp_client_telem.retransmits++;
+    }
+    s_tries++;
     if (st == DHCP_OK)
     {
-        s_dhcp_client_telem.discovers_sent++;
+        if (discover)
+        {
+            s_dhcp_client_telem.discovers_sent++;
+        }
+        else
+        {
+            s_dhcp_client_telem.requests_sent++;
+        }
+    }
 #if defined(__riscv)
-        console_puts("[DHCP] DHCPDISCOVER sent (attempt ");
-        put_dec(s_dhcp_client_telem.discovers_sent);
-        console_puts(")\r\n");
+    console_puts(discover ? "[DHCP] DISCOVER" : "[DHCP] REQUEST");
+    console_puts(" (");
+    console_puts(dhcp_client_state_name(state));
+    console_puts(", try ");
+    put_dec(s_tries);
+    console_puts(st == DHCP_OK ? ")\r\n" : ", TX failed)\r\n");
 #endif
+    return st;
+}
+
+/* Sends for the current state and schedules the retransmission */
+static dhcp_status_t dhcp_client_transmit(uint64_t now)
+{
+    dhcp_status_t st = dhcp_client_send();
+    switch (s_dhcp_client_telem.state)
+    {
+        case DHCP_CLIENT_STATE_DISCOVERING:
+            s_next_tx_us = now + dhcp_client_jittered(s_discover_backoff_us);
+            s_discover_backoff_us = dhcp_client_next_backoff(s_discover_backoff_us);
+            break;
+        case DHCP_CLIENT_STATE_REQUESTING:
+        case DHCP_CLIENT_STATE_REBOOTING:
+            s_next_tx_us = now + dhcp_client_jittered(s_request_backoff_us);
+            s_request_backoff_us = dhcp_client_next_backoff(s_request_backoff_us);
+            break;
+        case DHCP_CLIENT_STATE_RENEWING:
+            s_next_tx_us = dhcp_client_renew_retry_at(now, s_lease_t2_us);
+            break;
+        case DHCP_CLIENT_STATE_REBINDING:
+            s_next_tx_us = dhcp_client_renew_retry_at(now, s_lease_end_us);
+            break;
+        default:
+            break;
     }
     return st;
+}
+
+/* INIT: a new DISCOVER exchange, first DISCOVER after delay_us (0: on the next tick) */
+static void dhcp_client_enter_init(uint64_t now, uint64_t delay_us)
+{
+    s_dhcp_client_telem.state = DHCP_CLIENT_STATE_DISCOVERING;
+    s_dhcp_client_telem.xid++;
+    s_tries = 0U;
+    s_next_tx_us = now + delay_us;
+}
+
+/* A REQUEST exchange (REQUESTING, REBOOTING, RENEWING) starts: first send now */
+static dhcp_status_t dhcp_client_start_request(uint64_t now, dhcp_client_state_t state)
+{
+    s_dhcp_client_telem.state = state;
+    s_tries = 0U;
+    s_request_backoff_us = DHCP_CLIENT_BACKOFF_INITIAL_US;
+    s_exchange_start_us = now;
+    return dhcp_client_transmit(now);
+}
+
+/* The address is gone (expiry or NAK): stop using it */
+static void dhcp_client_drop_lease(void)
+{
+    bool in_use = (s_dhcp_client_telem.state == DHCP_CLIENT_STATE_BOUND ||
+                   s_dhcp_client_telem.state == DHCP_CLIENT_STATE_RENEWING ||
+                   s_dhcp_client_telem.state == DHCP_CLIENT_STATE_REBINDING ||
+                   s_dhcp_client_telem.state == DHCP_CLIENT_STATE_REBOOTING);
+    s_lease_valid = false;
+    s_dhcp_client_telem.assigned_ip = 0U;
+    if (in_use)
+    {
+        net_set_ip(0U, 0U, 0U);
+    }
 }
 
 dhcp_status_t dhcp_client_init(void)
 {
     memset(&s_dhcp_client_telem, 0, sizeof(s_dhcp_client_telem));
     s_dhcp_client_telem.state = DHCP_CLIENT_STATE_IDLE;
-    s_dhcp_client_telem.xid = 0x5A4F0001U;
-    s_last_discover_us = 0ULL;
+    s_dhcp_client_telem.xid = DHCP_CLIENT_XID_SEED;
+    s_lease_valid = false;
+    s_lease_t1_us = 0ULL;
+    s_lease_t2_us = 0ULL;
+    s_lease_end_us = 0ULL;
+    memset(s_server_mac, 0, sizeof(s_server_mac));
+    s_exchange_start_us = 0ULL;
+    s_next_tx_us = 0ULL;
+    s_request_backoff_us = DHCP_CLIENT_BACKOFF_INITIAL_US;
+    s_discover_backoff_us = DHCP_CLIENT_BACKOFF_INITIAL_US;
+    s_tries = 0U;
     s_dhcp_client_initialized = true;
     return DHCP_OK;
 }
 
+/* Link up: ask for the held address again (INIT-REBOOT) or start with DISCOVER */
 dhcp_status_t dhcp_client_start(void)
 {
     if (!s_dhcp_client_initialized)
@@ -768,11 +963,23 @@ dhcp_status_t dhcp_client_start(void)
         dhcp_client_init();
     }
 
-    s_dhcp_client_telem.state = DHCP_CLIENT_STATE_DISCOVERING;
+    uint64_t now = systimer_get_us();
+    s_discover_backoff_us = DHCP_CLIENT_BACKOFF_INITIAL_US;
     s_dhcp_client_telem.xid++;
-    s_last_discover_us = systimer_get_us();
 
-    return dhcp_client_send_discover();
+    if (s_lease_valid && now < s_lease_end_us)
+    {
+#if defined(__riscv)
+        dhcp_client_log_ip("[DHCP] INIT-REBOOT: asking for ", s_dhcp_client_telem.assigned_ip);
+        console_puts(" again\r\n");
+#endif
+        return dhcp_client_start_request(now, DHCP_CLIENT_STATE_REBOOTING);
+    }
+
+    s_lease_valid = false;
+    s_dhcp_client_telem.state = DHCP_CLIENT_STATE_DISCOVERING;
+    s_tries = 0U;
+    return dhcp_client_transmit(now);
 }
 
 void dhcp_client_tick(void)
@@ -784,35 +991,113 @@ void dhcp_client_tick(void)
 
     uint64_t now = systimer_get_us();
 
-    if (s_dhcp_client_telem.state == DHCP_CLIENT_STATE_REQUESTING &&
-        (now - s_last_discover_us) >= DHCP_CLIENT_REQUEST_TIMEOUT_US)
+    if (s_lease_valid && now >= s_lease_end_us)
     {
-        /* REQUEST or ACK lost (seen right after the portal hand-over): start over */
-        s_dhcp_client_telem.state = DHCP_CLIENT_STATE_DISCOVERING;
-        s_last_discover_us = now;
-        dhcp_client_send_discover();
-    }
-    else if (s_dhcp_client_telem.state == DHCP_CLIENT_STATE_DISCOVERING)
-    {
-        uint64_t interval = (s_dhcp_client_telem.discovers_sent < DHCP_CLIENT_DISCOVER_BURST)
-                            ? DHCP_CLIENT_RETRY_US : DHCP_CLIENT_SLOW_RETRY_US;
-        if ((now - s_last_discover_us) >= interval)
+        /* RFC 2131 4.4.5: lease over without an ACK; the address must not be used any more */
+        bool running = (s_dhcp_client_telem.state != DHCP_CLIENT_STATE_IDLE &&
+                        s_dhcp_client_telem.state != DHCP_CLIENT_STATE_STATIC);
+        s_dhcp_client_telem.leases_expired++;
+        dhcp_client_drop_lease();
+#if defined(__riscv)
+        console_puts("[DHCP] Lease expired\r\n");
+#endif
+        if (running)
         {
-            s_last_discover_us = now;
-            dhcp_client_send_discover();
+            dhcp_client_enter_init(now, 0ULL);
         }
+    }
+
+    switch (s_dhcp_client_telem.state)
+    {
+        case DHCP_CLIENT_STATE_DISCOVERING:
+            if (now >= s_next_tx_us)
+            {
+                (void)dhcp_client_transmit(now);
+            }
+            break;
+        case DHCP_CLIENT_STATE_REQUESTING:
+        case DHCP_CLIENT_STATE_REBOOTING:
+            if (now >= s_next_tx_us)
+            {
+                if (s_tries >= DHCP_CLIENT_REQUEST_MAX_TRIES)
+                {
+                    /* No ACK/NAK after the retransmissions: start over (an unanswered INIT-REBOOT
+                     * does not keep the old address) */
+#if defined(__riscv)
+                    console_puts("[DHCP] No answer to REQUEST, back to DISCOVER\r\n");
+#endif
+                    if (s_dhcp_client_telem.state == DHCP_CLIENT_STATE_REBOOTING)
+                    {
+                        dhcp_client_drop_lease();
+                    }
+                    dhcp_client_enter_init(now, 0ULL);
+                    (void)dhcp_client_transmit(now);
+                }
+                else
+                {
+                    (void)dhcp_client_transmit(now);
+                }
+            }
+            break;
+        case DHCP_CLIENT_STATE_BOUND:
+            if (now >= s_lease_t1_us)
+            {
+                /* T1: one unicast REQUEST to the server that leased the address */
+                s_dhcp_client_telem.xid++;
+                (void)dhcp_client_start_request(now, DHCP_CLIENT_STATE_RENEWING);
+            }
+            break;
+        case DHCP_CLIENT_STATE_RENEWING:
+            if (now >= s_lease_t2_us)
+            {
+                /* T2: the leasing server did not answer; ask any server */
+                s_dhcp_client_telem.state = DHCP_CLIENT_STATE_REBINDING;
+                (void)dhcp_client_transmit(now);
+            }
+            else if (now >= s_next_tx_us)
+            {
+                (void)dhcp_client_transmit(now);
+            }
+            break;
+        case DHCP_CLIENT_STATE_REBINDING:
+            if (now >= s_next_tx_us)
+            {
+                (void)dhcp_client_transmit(now);
+            }
+            break;
+        default:
+            break;
     }
 }
 
 dhcp_status_t dhcp_client_stop(void)
 {
+    /* The lease stays for INIT-REBOOT; tick still drops it at expiry */
     s_dhcp_client_telem.state = DHCP_CLIENT_STATE_IDLE;
     return DHCP_OK;
+}
+
+void dhcp_client_forget(void)
+{
+    s_lease_valid = false;
+    if (s_dhcp_client_telem.state == DHCP_CLIENT_STATE_IDLE)
+    {
+        s_dhcp_client_telem.assigned_ip = 0U;
+    }
 }
 
 dhcp_client_state_t dhcp_client_get_state(void)
 {
     return s_dhcp_client_telem.state;
+}
+
+static uint32_t dhcp_client_secs_until(uint64_t now, uint64_t when_us)
+{
+    if (when_us == DHCP_CLIENT_TIME_NEVER)
+    {
+        return DHCP_LEASE_INFINITE;
+    }
+    return (when_us > now) ? (uint32_t)((when_us - now) / DHCP_US_PER_SEC) : 0U;
 }
 
 dhcp_status_t dhcp_client_get_telemetry(dhcp_client_telemetry_t *out_telem)
@@ -822,11 +1107,31 @@ dhcp_status_t dhcp_client_get_telemetry(dhcp_client_telemetry_t *out_telem)
         return DHCP_ERR_INVALID_ARG;
     }
     *out_telem = s_dhcp_client_telem;
+
+    uint64_t now = systimer_get_us();
+    out_telem->lease_left_sec = s_lease_valid ? dhcp_client_secs_until(now, s_lease_end_us) : 0U;
+    switch (s_dhcp_client_telem.state)
+    {
+        case DHCP_CLIENT_STATE_BOUND:
+            out_telem->next_tx_sec = dhcp_client_secs_until(now, s_lease_t1_us);
+            break;
+        case DHCP_CLIENT_STATE_DISCOVERING:
+        case DHCP_CLIENT_STATE_REQUESTING:
+        case DHCP_CLIENT_STATE_REBOOTING:
+        case DHCP_CLIENT_STATE_RENEWING:
+        case DHCP_CLIENT_STATE_REBINDING:
+            out_telem->next_tx_sec = dhcp_client_secs_until(now, s_next_tx_us);
+            break;
+        default:
+            out_telem->next_tx_sec = 0U;
+            break;
+    }
     return DHCP_OK;
 }
 
 void dhcp_client_set_static_fallback(uint32_t ip, uint32_t netmask, uint32_t gateway, uint32_t dns)
 {
+    s_lease_valid = false;
     s_dhcp_client_telem.assigned_ip = ip;
     s_dhcp_client_telem.netmask = netmask;
     s_dhcp_client_telem.gateway = gateway;
@@ -836,9 +1141,157 @@ void dhcp_client_set_static_fallback(uint32_t ip, uint32_t netmask, uint32_t gat
     mdns_announce();
 }
 
+/* Options of one server reply */
+typedef struct {
+    uint8_t  msg_type;
+    uint32_t server_id;
+    uint32_t subnet_mask;
+    uint32_t router;
+    uint32_t dns;
+    uint32_t lease_sec;
+    uint32_t t1_sec;
+    uint32_t t2_sec;
+} dhcp_client_reply_opts_t;
+
+static uint32_t dhcp_client_opt_u32(const uint8_t *p)
+{
+    uint32_t v;
+    memcpy(&v, p, DHCP_OPT_U32_LEN);
+    return NET_NTOHL(v);
+}
+
+static void dhcp_client_parse_options(const dhcp_packet_t *pkt, size_t opts_len, dhcp_client_reply_opts_t *o)
+{
+    memset(o, 0, sizeof(*o));
+    size_t off = 0U;
+    while (off < opts_len)
+    {
+        uint8_t opt = pkt->options[off++];
+        if (opt == DHCP_OPT_END) break;
+        if (opt == DHCP_OPT_PAD) continue;
+        if (off >= opts_len) break;
+        uint8_t opt_len = pkt->options[off++];
+        if (off + opt_len > opts_len) break;
+        const uint8_t *val = &pkt->options[off];
+
+        if (opt == DHCP_OPT_MSG_TYPE && opt_len == DHCP_OPT_U8_LEN)
+        {
+            o->msg_type = val[0];
+        }
+        else if (opt_len == DHCP_OPT_U32_LEN || (opt_len >= DHCP_OPT_IPV4_LEN &&
+                 (opt == DHCP_OPT_ROUTER || opt == DHCP_OPT_DNS)))
+        {
+            /* Router and DNS may list several addresses: the first one is used */
+            uint32_t v = dhcp_client_opt_u32(val);
+            switch (opt)
+            {
+                case DHCP_OPT_SERVER_ID:      o->server_id = v; break;
+                case DHCP_OPT_SUBNET_MASK:    o->subnet_mask = v; break;
+                case DHCP_OPT_ROUTER:         o->router = v; break;
+                case DHCP_OPT_DNS:            o->dns = v; break;
+                case DHCP_OPT_LEASE_TIME:     o->lease_sec = v; break;
+                case DHCP_OPT_RENEWAL_TIME:   o->t1_sec = v; break;
+                case DHCP_OPT_REBINDING_TIME: o->t2_sec = v; break;
+                default: break;
+            }
+        }
+        off += opt_len;
+    }
+}
+
+static uint64_t dhcp_client_lease_point_us(uint32_t secs)
+{
+    return s_exchange_start_us + ((uint64_t)secs * DHCP_US_PER_SEC);
+}
+
+/* DHCPACK: (re)bind, set T1/T2/expiry from the time the exchange's first REQUEST went out */
+static void dhcp_client_bind(const dhcp_packet_t *pkt, const uint8_t *eth_frame, const dhcp_client_reply_opts_t *o)
+{
+    dhcp_client_state_t prev = s_dhcp_client_telem.state;
+    uint32_t prev_ip = s_dhcp_client_telem.assigned_ip;
+    uint32_t ip = NET_NTOHL(pkt->yiaddr);
+
+    s_dhcp_client_telem.acks_received++;
+    s_dhcp_client_telem.assigned_ip = ip;
+    if (o->subnet_mask != 0U) s_dhcp_client_telem.netmask = o->subnet_mask;
+    if (o->router != 0U) s_dhcp_client_telem.gateway = o->router;
+    if (o->dns != 0U) s_dhcp_client_telem.dns_server = o->dns;
+    if (o->server_id != 0U) s_dhcp_client_telem.server_ip = o->server_id;
+    if (eth_frame != NULL)
+    {
+        memcpy(s_server_mac, ((const ethernet_header_t *)eth_frame)->src_mac, ETH_ADDR_LEN);
+    }
+
+    uint32_t lease = (o->lease_sec != 0U) ? o->lease_sec : DHCP_CLIENT_FALLBACK_LEASE_SEC;
+    s_dhcp_client_telem.lease_time_sec = lease;
+    if (lease == DHCP_LEASE_INFINITE)
+    {
+        s_dhcp_client_telem.t1_sec = DHCP_LEASE_INFINITE;
+        s_dhcp_client_telem.t2_sec = DHCP_LEASE_INFINITE;
+        s_lease_t1_us = DHCP_CLIENT_TIME_NEVER;
+        s_lease_t2_us = DHCP_CLIENT_TIME_NEVER;
+        s_lease_end_us = DHCP_CLIENT_TIME_NEVER;
+    }
+    else
+    {
+        /* Server values only when 0 < T1 < T2 < lease holds (RFC 2131 4.4.5) */
+        uint32_t t2 = (uint32_t)(((uint64_t)lease * DHCP_CLIENT_T2_NUM) / DHCP_CLIENT_T2_DEN);
+        if (o->t2_sec != 0U && o->t2_sec < lease)
+        {
+            t2 = o->t2_sec;
+        }
+        uint32_t t1 = (uint32_t)(((uint64_t)lease * DHCP_CLIENT_T1_NUM) / DHCP_CLIENT_T1_DEN);
+        if (o->t1_sec != 0U && o->t1_sec < t2)
+        {
+            t1 = o->t1_sec;
+        }
+        else if (t1 > t2)
+        {
+            t1 = t2;
+        }
+        s_dhcp_client_telem.t1_sec = t1;
+        s_dhcp_client_telem.t2_sec = t2;
+        s_lease_t1_us = dhcp_client_lease_point_us(t1);
+        s_lease_t2_us = dhcp_client_lease_point_us(t2);
+        s_lease_end_us = dhcp_client_lease_point_us(lease);
+    }
+
+    bool renewed = (prev == DHCP_CLIENT_STATE_RENEWING || prev == DHCP_CLIENT_STATE_REBINDING);
+    if (renewed)
+    {
+        s_dhcp_client_telem.renewals++;
+    }
+    if (prev == DHCP_CLIENT_STATE_REBOOTING && ip == prev_ip)
+    {
+        s_dhcp_client_telem.reboots_confirmed++;
+    }
+
+    s_lease_valid = true;
+    s_dhcp_client_telem.state = DHCP_CLIENT_STATE_BOUND;
+    s_discover_backoff_us = DHCP_CLIENT_BACKOFF_INITIAL_US;
+    s_tries = 0U;
+
+    net_set_ip(ip, s_dhcp_client_telem.netmask, s_dhcp_client_telem.gateway);
+
+#if defined(__riscv)
+    dhcp_client_log_ip(renewed ? "[DHCP] ACK: lease renewed, IP " : "[DHCP] ACK: bound, IP ", ip);
+    dhcp_client_log_ip(", GW ", s_dhcp_client_telem.gateway);
+    console_puts(", lease ");
+    put_dec(lease);
+    console_puts(" s, T1 ");
+    put_dec(s_dhcp_client_telem.t1_sec);
+    console_puts(" s\r\n");
+#endif
+
+    /* Announce on a new bind or (re)join, not on a quiet renewal of the same address (review 7.2) */
+    if (!renewed || ip != prev_ip)
+    {
+        mdns_announce();
+    }
+}
+
 dhcp_status_t dhcp_client_process_packet(const uint8_t *eth_frame, const uint8_t *payload, uint16_t len)
 {
-    (void)eth_frame;
     if (payload == NULL || len < (sizeof(dhcp_packet_t) - DHCP_MIN_OPTIONS_LEN))
     {
         return DHCP_ERR_CORRUPT_FRAME;
@@ -855,154 +1308,51 @@ dhcp_status_t dhcp_client_process_packet(const uint8_t *eth_frame, const uint8_t
         return DHCP_ERR_INVALID_ARG;
     }
 
-    /* Parse options */
-    uint8_t msg_type = 0U;
-    uint32_t server_id = 0U;
-    uint32_t subnet_mask = 0U;
-    uint32_t router = 0U;
-    uint32_t dns = 0U;
-    uint32_t lease_time = 0U;
+    dhcp_client_reply_opts_t o;
+    dhcp_client_parse_options(pkt, len - (sizeof(dhcp_packet_t) - DHCP_MIN_OPTIONS_LEN), &o);
 
-    size_t opt_offset = 0U;
-    size_t max_opts = len - (sizeof(dhcp_packet_t) - DHCP_MIN_OPTIONS_LEN);
-    while (opt_offset < max_opts)
+    dhcp_client_state_t state = s_dhcp_client_telem.state;
+    bool requesting = (state == DHCP_CLIENT_STATE_REQUESTING || state == DHCP_CLIENT_STATE_REBOOTING ||
+                       state == DHCP_CLIENT_STATE_RENEWING || state == DHCP_CLIENT_STATE_REBINDING);
+    uint64_t now = systimer_get_us();
+
+    if (o.msg_type == DHCP_MSG_OFFER && state == DHCP_CLIENT_STATE_DISCOVERING && pkt->yiaddr != 0U)
     {
-        uint8_t opt = pkt->options[opt_offset++];
-        if (opt == DHCP_OPT_END) break;
-        if (opt == DHCP_OPT_PAD) continue;
-        if (opt_offset >= max_opts) break;
-        uint8_t opt_len = pkt->options[opt_offset++];
-        if (opt_offset + opt_len > max_opts) break;
-
-        if (opt == DHCP_OPT_MSG_TYPE && opt_len == 1U)
-        {
-            msg_type = pkt->options[opt_offset];
-        }
-        else if (opt == DHCP_OPT_SERVER_ID && opt_len == 4U)
-        {
-            memcpy(&server_id, &pkt->options[opt_offset], 4U);
-            server_id = NET_NTOHL(server_id);
-        }
-        else if (opt == DHCP_OPT_SUBNET_MASK && opt_len == 4U)
-        {
-            memcpy(&subnet_mask, &pkt->options[opt_offset], 4U);
-            subnet_mask = NET_NTOHL(subnet_mask);
-        }
-        else if (opt == DHCP_OPT_ROUTER && opt_len >= 4U)
-        {
-            memcpy(&router, &pkt->options[opt_offset], 4U);
-            router = NET_NTOHL(router);
-        }
-        else if (opt == DHCP_OPT_DNS && opt_len >= 4U)
-        {
-            memcpy(&dns, &pkt->options[opt_offset], 4U);
-            dns = NET_NTOHL(dns);
-        }
-        else if (opt == DHCP_OPT_LEASE_TIME && opt_len == 4U)
-        {
-            memcpy(&lease_time, &pkt->options[opt_offset], 4U);
-            lease_time = NET_NTOHL(lease_time);
-        }
-        opt_offset += opt_len;
-    }
-
-    if (msg_type == DHCP_MSG_OFFER && s_dhcp_client_telem.state == DHCP_CLIENT_STATE_DISCOVERING)
-    {
+        /* First OFFER wins (SELECTING); same xid for the REQUEST */
         s_dhcp_client_telem.offers_received++;
-        uint32_t offered_ip = NET_NTOHL(pkt->yiaddr);
-        s_dhcp_client_telem.assigned_ip = offered_ip;
-        s_dhcp_client_telem.server_ip = server_id;
-        s_dhcp_client_telem.netmask = subnet_mask;
-        s_dhcp_client_telem.gateway = router;
-        s_dhcp_client_telem.dns_server = dns;
-        s_dhcp_client_telem.lease_time_sec = lease_time;
-
-        /* Synthesize DHCPREQUEST */
-        dhcp_packet_t req;
-        memset(&req, 0, sizeof(req));
-        req.op = DHCP_OP_BOOTREQUEST;
-        req.htype = DHCP_HTYPE_ETHERNET;
-        req.hlen = DHCP_HLEN_ETHERNET;
-        req.xid = NET_HTONL(s_dhcp_client_telem.xid);
-        req.flags = NET_HTONS(0x8000U);
-
-        net_config_t ncfg;
-        net_get_config(&ncfg);
-        memcpy(req.chaddr, ncfg.mac, ETH_ADDR_LEN);
-        req.magic_cookie = NET_HTONL(DHCP_MAGIC_COOKIE);
-
-        size_t idx = 0U;
-        req.options[idx++] = DHCP_OPT_MSG_TYPE;
-        req.options[idx++] = 1U;
-        req.options[idx++] = DHCP_MSG_REQUEST;
-
-        req.options[idx++] = DHCP_OPT_REQUESTED_IP;
-        req.options[idx++] = 4U;
-        uint32_t req_ip = NET_HTONL(offered_ip);
-        memcpy(&req.options[idx], &req_ip, 4U);
-        idx += 4U;
-
-        if (server_id != 0U)
-        {
-            req.options[idx++] = DHCP_OPT_SERVER_ID;
-            req.options[idx++] = 4U;
-            uint32_t srv_be = NET_HTONL(server_id);
-            memcpy(&req.options[idx], &srv_be, 4U);
-            idx += 4U;
-        }
-
-        req.options[idx++] = DHCP_OPT_END;
-
-        uint16_t req_len = (uint16_t)(sizeof(dhcp_packet_t) - DHCP_MIN_OPTIONS_LEN + idx);
-        uint8_t bcast_mac[ETH_ADDR_LEN] = {0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU};
-        dhcp_send_udp_frame(WIFI_TX_IF_STA, bcast_mac, 0xFFFFFFFFU, DHCP_CLIENT_PORT, DHCP_SERVER_PORT, &req, req_len);
-
-        s_dhcp_client_telem.requests_sent++;
-        s_dhcp_client_telem.state = DHCP_CLIENT_STATE_REQUESTING;
-        s_last_discover_us = systimer_get_us();
-#if defined(__riscv)
-        console_puts("[DHCP] DHCPOFFER received: IP=");
-        put_dec((offered_ip >> 24U) & 0xFFU); console_puts(".");
-        put_dec((offered_ip >> 16U) & 0xFFU); console_puts(".");
-        put_dec((offered_ip >> 8U) & 0xFFU);  console_puts(".");
-        put_dec(offered_ip & 0xFFU);
-        console_puts(", sent DHCPREQUEST\r\n");
-#endif
-        return DHCP_OK;
-    }
-    else if (msg_type == DHCP_MSG_ACK && s_dhcp_client_telem.state == DHCP_CLIENT_STATE_REQUESTING)
-    {
-        s_dhcp_client_telem.acks_received++;
         s_dhcp_client_telem.assigned_ip = NET_NTOHL(pkt->yiaddr);
-        if (subnet_mask != 0U) s_dhcp_client_telem.netmask = subnet_mask;
-        if (router != 0U) s_dhcp_client_telem.gateway = router;
-        if (dns != 0U) s_dhcp_client_telem.dns_server = dns;
-        if (lease_time != 0U) s_dhcp_client_telem.lease_time_sec = lease_time;
-
-        s_dhcp_client_telem.state = DHCP_CLIENT_STATE_BOUND;
-
-        /* Apply IP configuration to network stack */
-        net_set_ip(s_dhcp_client_telem.assigned_ip, s_dhcp_client_telem.netmask, s_dhcp_client_telem.gateway);
-
+        s_dhcp_client_telem.server_ip = o.server_id;
+        s_dhcp_client_telem.netmask = o.subnet_mask;
+        s_dhcp_client_telem.gateway = o.router;
+        s_dhcp_client_telem.dns_server = o.dns;
+        s_dhcp_client_telem.lease_time_sec = o.lease_sec;
 #if defined(__riscv)
-        console_puts("[DHCP] DHCPACK bound! IP: ");
-        put_dec((s_dhcp_client_telem.assigned_ip >> 24U) & 0xFFU); console_puts(".");
-        put_dec((s_dhcp_client_telem.assigned_ip >> 16U) & 0xFFU); console_puts(".");
-        put_dec((s_dhcp_client_telem.assigned_ip >> 8U) & 0xFFU);  console_puts(".");
-        put_dec(s_dhcp_client_telem.assigned_ip & 0xFFU);
-        console_puts(", GW: ");
-        put_dec((s_dhcp_client_telem.gateway >> 24U) & 0xFFU); console_puts(".");
-        put_dec((s_dhcp_client_telem.gateway >> 16U) & 0xFFU); console_puts(".");
-        put_dec((s_dhcp_client_telem.gateway >> 8U) & 0xFFU);  console_puts(".");
-        put_dec(s_dhcp_client_telem.gateway & 0xFFU);
+        dhcp_client_log_ip("[DHCP] OFFER: ", s_dhcp_client_telem.assigned_ip);
         console_puts("\r\n");
 #endif
-
-        /* Trigger mDNS announcement */
-        mdns_announce();
+        (void)dhcp_client_start_request(now, DHCP_CLIENT_STATE_REQUESTING);
+        return DHCP_OK;
+    }
+    if (o.msg_type == DHCP_MSG_ACK && requesting)
+    {
+        dhcp_client_bind(pkt, eth_frame, &o);
+        return DHCP_OK;
+    }
+    if (o.msg_type == DHCP_MSG_NAK && requesting)
+    {
+        /* Address refused (other network, lease gone): INIT after the DISCOVER backoff, so a server
+         * that keeps refusing does not cause a fast loop */
+        s_dhcp_client_telem.naks_received++;
+#if defined(__riscv)
+        console_puts("[DHCP] NAK in ");
+        console_puts(dhcp_client_state_name(state));
+        console_puts(", back to DISCOVER\r\n");
+#endif
+        dhcp_client_drop_lease();
+        dhcp_client_enter_init(now, dhcp_client_jittered(s_discover_backoff_us));
+        s_discover_backoff_us = dhcp_client_next_backoff(s_discover_backoff_us);
         return DHCP_OK;
     }
 
     return DHCP_OK;
 }
-

@@ -1310,7 +1310,8 @@ wpa2_status_t wpa2_client_join(const char *ssid, const char *passphrase, uint8_t
         /* Reset IP configuration until DHCP client binds */
         net_set_ip(0U, 0U, 0U);
     }
-    dhcp_client_init();
+    /* Keeps the held lease: the next STA_CONNECTED asks for it again (INIT-REBOOT, REV-14) */
+    dhcp_client_stop();
 
     /* 2. Configure Station Interface */
     uint8_t mac[WPA2_MAC_ADDR_LEN];

@@ -558,8 +558,10 @@ provisioning_status_t provisioning_request_join(bool keep_ap)
     s_prov_join.attempts = 0U;
     s_prov_join.retry_delay_us = WIFI_LINK_RETRY_MIN_US;
     s_prov_join.fast_path = false;
-    /* New or re-checked credentials: find the AP by scanning again */
+    /* New or re-checked credentials: find the AP by scanning again, and start DHCP with DISCOVER
+     * (a lease from another network would only be refused) */
     wifi_link_forget();
+    dhcp_client_forget();
     return PROV_OK;
 }
 

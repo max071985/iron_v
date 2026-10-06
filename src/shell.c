@@ -244,7 +244,7 @@ void shell_print_help(void)
     console_puts("  mmu [status|map]    - Show MSPI MMU Flash XIP mapping & cache status\r\n");
     console_puts("  15.4 [status|chan|pan|short|rx|tx|stop] - Show or control IEEE 802.15.4 radio transceiver\r\n");
     console_puts("  net [status|ip|mask|gw|arp|tcp|reset] - Show or control IPv4 network interface & TCP state machine\r\n");
-    console_puts("  dhcp [status]       - Show DHCP server leases and captive portal telemetry\r\n");
+    console_puts("  dhcp [status]       - Show the DHCP client (STA lease) and SoftAP DHCP server\r\n");
     console_puts("  http [status|routes|start|stop] - Show or control zero-allocation local REST/HTTP server\r\n");
     console_puts("  speedtest [run|burst|udp|status|reset] - Run or inspect LAN network & Wi-Fi throughput benchmark\r\n");
     console_puts("  efuse [status|summary|security|mac] - Silicon eFuse controller & security seal state\r\n");
@@ -255,6 +255,75 @@ void shell_print_help(void)
     console_puts("  sta [status|connect|disconnect|mdns|eapol] - WPA2 Station & mDNS Client\r\n");
     console_puts("  seal                - Run Golden Master system-wide integrity seal audit\r\n");
     console_puts("  do-test             - Run full baseline validation test suite\r\n");
+}
+
+/* Seconds as "<n> s", or "never" for DHCP_LEASE_INFINITE */
+static void shell_put_secs(uint32_t secs)
+{
+    if (secs == DHCP_LEASE_INFINITE)
+    {
+        console_puts("never");
+        return;
+    }
+    put_dec(secs);
+    console_puts(" s");
+}
+
+/* DHCP client state, lease timing and counters (`sta status`, `dhcp`) */
+static void shell_print_dhcp_client(void)
+{
+    dhcp_client_telemetry_t dcli;
+    if (dhcp_client_get_telemetry(&dcli) != DHCP_OK)
+    {
+        return;
+    }
+    char s[NET_IP_STR_BUF_LEN];
+    console_puts("  State:               ");
+    console_puts(dhcp_client_state_name(dcli.state));
+    net_ip_to_str(dcli.assigned_ip, s, sizeof(s));
+    console_puts("\r\n  Assigned IP:         ");
+    console_puts(s);
+    net_ip_to_str(dcli.netmask, s, sizeof(s));
+    console_puts("\r\n  Subnet Mask:         ");
+    console_puts(s);
+    net_ip_to_str(dcli.gateway, s, sizeof(s));
+    console_puts("\r\n  Default Gateway:     ");
+    console_puts(s);
+    net_ip_to_str(dcli.dns_server, s, sizeof(s));
+    console_puts("\r\n  DNS Server:          ");
+    console_puts(s);
+    net_ip_to_str(dcli.server_ip, s, sizeof(s));
+    console_puts("\r\n  DHCP Server:         ");
+    console_puts(s);
+    console_puts("\r\n  Lease / T1 / T2:     ");
+    shell_put_secs(dcli.lease_time_sec);
+    console_puts(" / ");
+    shell_put_secs(dcli.t1_sec);
+    console_puts(" / ");
+    shell_put_secs(dcli.t2_sec);
+    console_puts("\r\n  Lease Left:          ");
+    shell_put_secs(dcli.lease_left_sec);
+    console_puts("\r\n  Next Send In:        ");
+    shell_put_secs(dcli.next_tx_sec);
+    console_puts("\r\n  Discovers Sent:      ");
+    put_dec(dcli.discovers_sent);
+    console_puts("\r\n  Offers Received:     ");
+    put_dec(dcli.offers_received);
+    console_puts("\r\n  Requests Sent:       ");
+    put_dec(dcli.requests_sent);
+    console_puts("\r\n  Acks / Naks:         ");
+    put_dec(dcli.acks_received);
+    console_puts(" / ");
+    put_dec(dcli.naks_received);
+    console_puts("\r\n  Retransmits:         ");
+    put_dec(dcli.retransmits);
+    console_puts("\r\n  INIT-REBOOT OK:      ");
+    put_dec(dcli.reboots_confirmed);
+    console_puts("\r\n  Renewals / Expired:  ");
+    put_dec(dcli.renewals);
+    console_puts(" / ");
+    put_dec(dcli.leases_expired);
+    console_puts("\r\n");
 }
 
 void print_info(void) { shell_print_info(); }
@@ -2661,7 +2730,9 @@ void shell_execute(char *input_buffer)
     {
         dhcp_telemetry_t dt;
         dhcp_get_telemetry(&dt);
-        console_puts("Freestanding DHCP & DNS Captive Portal Status:\r\n");
+        console_puts("DHCP client (STA):\r\n");
+        shell_print_dhcp_client();
+        console_puts("\r\nDHCP server & DNS captive portal (SoftAP):\r\n");
         console_puts("  Discover Rx:   "); put_dec(dt.discover_rx); console_puts("\r\n");
         console_puts("  Offer Tx:      "); put_dec(dt.offer_tx); console_puts("\r\n");
         console_puts("  Request Rx:    "); put_dec(dt.request_rx); console_puts("\r\n");
@@ -3047,45 +3118,11 @@ void shell_execute(char *input_buffer)
             wpa2_client_print_status();
             mdns_print_status();
 
-            dhcp_client_telemetry_t dcli;
-            if (dhcp_client_get_telemetry(&dcli) == DHCP_OK)
-            {
-                char s[NET_IP_STR_BUF_LEN];
-                console_puts("\r\n=======================================================\r\n");
-                console_puts("            DHCP CLIENT (IPv4) TELEMETRY               \r\n");
-                console_puts("=======================================================\r\n");
-                console_puts("  State:               ");
-                switch (dcli.state)
-                {
-                    case DHCP_CLIENT_STATE_IDLE:        console_puts("IDLE"); break;
-                    case DHCP_CLIENT_STATE_DISCOVERING: console_puts("DISCOVERING"); break;
-                    case DHCP_CLIENT_STATE_REQUESTING:  console_puts("REQUESTING"); break;
-                    case DHCP_CLIENT_STATE_BOUND:       console_puts("BOUND"); break;
-                    case DHCP_CLIENT_STATE_STATIC:      console_puts("STATIC"); break;
-                    default:                            console_puts("UNKNOWN"); break;
-                }
-                net_ip_to_str(dcli.assigned_ip, s, sizeof(s));
-                console_puts("\r\n  Assigned IP:         ");
-                console_puts(s);
-                net_ip_to_str(dcli.netmask, s, sizeof(s));
-                console_puts("\r\n  Subnet Mask:         ");
-                console_puts(s);
-                net_ip_to_str(dcli.gateway, s, sizeof(s));
-                console_puts("\r\n  Default Gateway:     ");
-                console_puts(s);
-                net_ip_to_str(dcli.dns_server, s, sizeof(s));
-                console_puts("\r\n  DNS Server:          ");
-                console_puts(s);
-                console_puts("\r\n  Discovers Sent:      ");
-                put_dec(dcli.discovers_sent);
-                console_puts("\r\n  Offers Received:     ");
-                put_dec(dcli.offers_received);
-                console_puts("\r\n  Requests Sent:       ");
-                put_dec(dcli.requests_sent);
-                console_puts("\r\n  Acks Received:       ");
-                put_dec(dcli.acks_received);
-                console_puts("\r\n=======================================================\r\n");
-            }
+            console_puts("\r\n=======================================================\r\n");
+            console_puts("            DHCP CLIENT (IPv4) TELEMETRY               \r\n");
+            console_puts("=======================================================\r\n");
+            shell_print_dhcp_client();
+            console_puts("=======================================================\r\n");
         }
         else if (strncmp(subcmd, "connect", 7) == 0)
         {

@@ -258,7 +258,8 @@ static int selftest_fixture_restore(void)
 
     /* Runtime state the network tests change */
     (void)wpa2_client_init();
-    (void)dhcp_client_init();
+    /* The DHCP client is left alone: the suite does not drive it, and re-initializing it would drop a
+     * live lease (no renewal at T1 afterwards) */
     (void)net_set_ip(s_fixture.net.ip, s_fixture.net.netmask, s_fixture.net.gateway);
     net_config_t net_now;
     (void)net_get_config(&net_now);
@@ -3488,7 +3489,7 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     /* ------------------------------------------------------------- */
     total_tests++;
     print_test_header("Self-Test Leaves Persistent & Network State Unchanged",
-                      "Restore NVS, OTA records, IP config, DHCP/WPA2 clients and SoftAP saved before the suite; verify they match");
+                      "Restore NVS, OTA records, IP config, WPA2 client and SoftAP saved before the suite; verify they match");
     int fixture_pass = selftest_fixture_restore();
     if (fixture_pass) passed_tests++;
     print_result(fixture_pass);

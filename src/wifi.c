@@ -401,6 +401,8 @@ void wifi_handle_vendor_event(int32_t event_id, void *event_data)
             ? (uint16_t)((const wifi_event_sta_disconnected_t *)event_data)->reason : 0U;
         s_wifi_telemetry.state = s_wifi_ap_running ? WIFI_STATE_AP_ACTIVE : WIFI_STATE_ACTIVE;
         s_wifi_rssi = 0;
+        /* Nothing to send DHCP over; the lease is kept for INIT-REBOOT on the next join */
+        dhcp_client_stop();
     }
     else if (event_id == WIFI_EVENT_AP_START)
     {

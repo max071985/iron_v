@@ -14,24 +14,22 @@
 #include "section.h"
 #include <stddef.h>
 
+/* Dashboard: refreshed by the button only, no timer (REV-15: no traffic the user did not ask
+ * for). The whole response must fit one TCP segment (host test, O-44). */
 static const char g_index_html[] FLASH_RODATA_ATTR =
 "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Iron V</title>"
 "<style>body{background:#0f172a;color:#f8fafc;font-family:sans-serif;padding:15px}"
 "h1{color:#38bdf8;font-size:18px}.g{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin:10px 0}"
 ".c{background:#1e293b;padding:8px;border-radius:4px}.c b{display:block;font-size:11px;color:#94a3b8;text-transform:uppercase}"
-"button{background:#38bdf8;border:0;padding:6px 12px;border-radius:4px;font-weight:bold;cursor:pointer}</style></head>"
-"<body><h1>Iron V Bare-Metal RISC-V</h1><div class=\"g\">"
-"<div class=\"c\"><b>CPU</b><span id=\"c\">160 MHz</span></div>"
-"<div class=\"c\"><b>Uptime</b><span id=\"u\">--</span></div>"
-"<div class=\"c\"><b>Network</b><span>Port 80</span></div>"
-"<div class=\"c\"><b>Wireless</b><span>Wi-Fi 6</span></div>"
-"<div class=\"c\"><b>Arenas</b><span>Static</span></div>"
-"<div class=\"c\"><b>WDT</b><span>5000 ms</span></div></div>"
-"<button onclick=\"f()\">Refresh</button>"
+"button{background:#38bdf8;border:0;padding:6px 12px;border-radius:4px;font-weight:bold}</style></head>"
+"<body><h1>Iron V</h1><div class=\"g\">"
+"<div class=\"c\"><b>CPU</b><span id=\"c\">--</span></div>"
+"<div class=\"c\"><b>Uptime</b><span id=\"u\">--</span></div></div>"
+"<button onclick=\"f()\">Refresh</button> <a href=\"/setup\" style=\"color:#38bdf8\">Wi-Fi setup</a>"
 "<script>function f(){fetch('/api/status').then(r=>r.json()).then(d=>{"
 "if(d.uptime_ms)document.getElementById('u').innerText=Math.floor(d.uptime_ms/1000)+'s';"
 "if(d.cpu_mhz)document.getElementById('c').innerText=d.cpu_mhz+' MHz';"
-"}).catch(e=>{});}setInterval(f,5000);f();</script></body></html>";
+"}).catch(e=>{});}f();</script></body></html>";
 
 /* Wi-Fi setup portal (REV-29): real scan, save, then polls /api/wifi/status for the join result.
  * Must fit HTTP_BODY_MAX_LEN (checked by a host test). */

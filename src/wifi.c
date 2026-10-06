@@ -65,6 +65,8 @@ static uint32_t s_wifi_sta_disconnects = 0U;
 static uint16_t s_wifi_sta_last_reason = 0U;
 /* STA join started with the SoftAP kept up: the IP stack stays on the SoftAP */
 static bool s_wifi_sta_keep_ap = false;
+/* Stations associated with the SoftAP (AP_STACONNECTED/AP_STADISCONNECTED events) */
+static uint8_t s_wifi_ap_stations = 0U;
 #if defined(__riscv)
 static bool s_wifi_sta_started = false;   /* STA_START seen, no STA_STOP since */
 #endif
@@ -440,6 +442,7 @@ void wifi_handle_vendor_event(int32_t event_id, void *event_data)
             put_dec((uint32_t)staconn->aid);
         }
         console_puts("\r\n");
+        s_wifi_ap_stations++;
     }
     else if (event_id == WIFI_EVENT_AP_STADISCONNECTED)
     {
@@ -456,6 +459,10 @@ void wifi_handle_vendor_event(int32_t event_id, void *event_data)
             dhcp_release_lease(stadisconn->mac);
         }
         console_puts("\r\n");
+        if (s_wifi_ap_stations > 0U)
+        {
+            s_wifi_ap_stations--;
+        }
     }
 #else
     if (event_id == WIFI_VENDOR_EVENT_AP_START)
@@ -467,6 +474,14 @@ void wifi_handle_vendor_event(int32_t event_id, void *event_data)
     {
         s_wifi_telemetry.state = WIFI_STATE_IDLE;
         s_wifi_ap_running = false;
+    }
+    else if (event_id == WIFI_VENDOR_EVENT_AP_STACONNECTED)
+    {
+        s_wifi_ap_stations++;
+    }
+    else if (event_id == WIFI_VENDOR_EVENT_AP_STADISCONNECTED && s_wifi_ap_stations > 0U)
+    {
+        s_wifi_ap_stations--;
     }
     (void)event_data;
 #endif
@@ -1366,6 +1381,7 @@ wifi_status_t wifi_start_ap(const char *ssid, const char *password, uint8_t chan
     s_wifi_ap_running = true;
     s_wifi_telemetry.state = WIFI_STATE_AP_ACTIVE;
     s_wifi_sta_keep_ap = false;
+    s_wifi_ap_stations = 0U;
 
     uint8_t ap_mac[WIFI_MAC_ADDR_LEN];
     if (wifi_get_ap_mac_addr(ap_mac) == WIFI_OK)
@@ -1388,6 +1404,7 @@ wifi_status_t wifi_stop_ap(void)
     s_wifi_ap_running = false;
     s_wifi_telemetry.state = WIFI_STATE_IDLE;
     s_wifi_sta_keep_ap = false;
+    s_wifi_ap_stations = 0U;
 
     uint8_t sta_mac[WIFI_MAC_ADDR_LEN];
     if (wifi_get_mac_addr(sta_mac) == WIFI_OK)
@@ -1395,6 +1412,11 @@ wifi_status_t wifi_stop_ap(void)
         net_set_mac(sta_mac);
     }
     return WIFI_OK;
+}
+
+uint8_t wifi_get_ap_station_count(void)
+{
+    return s_wifi_ap_running ? s_wifi_ap_stations : 0U;
 }
 
 bool wifi_is_ap_active(void)

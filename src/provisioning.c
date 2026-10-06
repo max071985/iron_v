@@ -22,6 +22,7 @@
 #include "net.h"
 #include "config.h"
 #include "string.h"
+#include "systimer.h"
 
 #if defined(__riscv)
 #include "console.h"
@@ -43,6 +44,13 @@ static bool                    s_prov_initialized = false;
 static prov_join_info_t        s_prov_join;
 static uint32_t                s_prov_join_disc_base = 0U;  /* STA disconnect count when the phase began */
 static bool                    s_prov_scan_requested = false; /* portal rescan, run from provisioning_tick() */
+static prov_setup_info_t       s_prov_setup;                 /* button setup mode (REV-15) */
+static wifi_credentials_t      s_prov_setup_prev;            /* credentials before setup mode */
+
+static inline uint64_t prov_now_us(void)
+{
+    return systimer_get_us();
+}
 
 /* ========================================================================= */
 /* Zero-Libc String & Integer Formatting Utilities                           */
@@ -540,7 +548,8 @@ bool provisioning_has_credentials(void)
 /* Station Join & Portal Hand-Over (REV-29)                                  */
 /* ========================================================================= */
 
-provisioning_status_t provisioning_request_join(bool keep_ap)
+/* Queues a join with the current credentials; the link cache and DHCP lease are kept */
+static provisioning_status_t prov_join_begin(bool keep_ap)
 {
     if (!s_prov_initialized)
     {
@@ -558,6 +567,16 @@ provisioning_status_t provisioning_request_join(bool keep_ap)
     s_prov_join.attempts = 0U;
     s_prov_join.retry_delay_us = WIFI_LINK_RETRY_MIN_US;
     s_prov_join.fast_path = false;
+    return PROV_OK;
+}
+
+provisioning_status_t provisioning_request_join(bool keep_ap)
+{
+    provisioning_status_t st = prov_join_begin(keep_ap);
+    if (st != PROV_OK)
+    {
+        return st;
+    }
     /* New or re-checked credentials: find the AP by scanning again, and start DHCP with DISCOVER
      * (a lease from another network would only be refused) */
     wifi_link_forget();
@@ -668,9 +687,21 @@ static void prov_join_attempt_failed(uint64_t now_us, uint16_t reason)
          * forever without a setup SoftAP (provisioned boots never start it) */
         if (s_prov_join.unproven)
         {
-            (void)provisioning_clear_credentials();
+            if (s_prov_setup.active && s_prov_setup_prev.provisioned)
+            {
+                /* Setup mode on a provisioned board: the old network worked, keep it */
+                (void)provisioning_set_credentials(s_prov_setup_prev.ssid, s_prov_setup_prev.passphrase);
+                s_prov_setup.restored++;
+            }
+            else
+            {
+                (void)provisioning_clear_credentials();
+            }
+            s_prov_join.unproven = false;
         }
         s_prov_join.state = PROV_JOIN_FAILED;
+        /* Setup mode: the idle time to try again starts now */
+        s_prov_setup.idle_since_us = now_us;
         return;
     }
     wifi_link_on_attempt_failed(s_prov_join.fast_path);
@@ -699,6 +730,158 @@ static uint8_t prov_scan_channel_of(const char *ssid)
         }
     }
     return 0U;
+}
+
+/* ========================================================================= */
+/* Setup Mode: Button-Started SoftAP (REV-15)                                */
+/* ========================================================================= */
+
+static bool prov_portal_join_in_flight(void)
+{
+    return s_prov_join.keep_ap && (s_prov_join.state == PROV_JOIN_PENDING ||
+                                   s_prov_join.state == PROV_JOIN_JOINING ||
+                                   s_prov_join.state == PROV_JOIN_HANDOVER);
+}
+
+static void prov_setup_end(prov_setup_end_t why)
+{
+    s_prov_setup.active = false;
+    s_prov_setup.last_end = why;
+    memset(&s_prov_setup_prev, 0, sizeof(s_prov_setup_prev));
+}
+
+provisioning_status_t provisioning_setup_open(uint64_t now_us)
+{
+    if (!s_prov_initialized)
+    {
+        provisioning_init();
+    }
+    if (s_prov_setup.active || wifi_is_ap_active())
+    {
+        return PROV_OK;
+    }
+    console_puts("[PROV] Setup mode: station paused, setup SoftAP on\r\n");
+    s_prov_setup.active = true;
+    s_prov_setup.started_us = now_us;
+    s_prov_setup.idle_since_us = now_us;
+    s_prov_setup.opened++;
+    s_prov_setup.last_end = PROV_SETUP_END_NONE;
+    s_prov_setup_prev = s_prov_creds;
+    /* No STA retries while the SoftAP is up: their scans would take the radio off its channel.
+     * The lease and the cached AP stay for the rejoin afterwards (INIT-REBOOT, fast path). */
+    s_prov_join.state = PROV_JOIN_IDLE;
+    s_prov_join.keep_ap = false;
+    s_prov_join.unproven = false;
+    dhcp_client_stop();
+    /* Scan before the SoftAP is up, like the unprovisioned boot: the portal list is ready */
+    (void)provisioning_start_scan();
+    (void)wifi_start_ap(CONFIG_WIFI_AP_SSID, NULL, CONFIG_WIFI_AP_CHANNEL);
+    (void)net_set_ip(NET_DEFAULT_IP, NET_DEFAULT_NETMASK, NET_DEFAULT_GATEWAY);
+    return PROV_OK;
+}
+
+provisioning_status_t provisioning_setup_close(prov_setup_end_t why)
+{
+    if (!s_prov_setup.active)
+    {
+        return PROV_ERR_NOT_FOUND;
+    }
+    prov_setup_end(why);
+    console_puts("[PROV] Setup mode closed (");
+    console_puts(provisioning_setup_end_str(why));
+    console_puts("): setup SoftAP off\r\n");
+    if (wifi_is_ap_active())
+    {
+        (void)wifi_stop_ap();
+        (void)net_set_ip(0U, 0U, 0U);
+    }
+    /* Back to the saved network; a board without credentials stays off the air (no SoftAP),
+     * the next long press opens setup again */
+    (void)prov_join_begin(false);
+    return PROV_OK;
+}
+
+void provisioning_on_setup_button(uint64_t now_us)
+{
+    if (s_prov_setup.active)
+    {
+        (void)provisioning_setup_close(PROV_SETUP_END_REQUEST);
+    }
+    else if (wifi_is_ap_active())
+    {
+        console_puts("[PROV] Setup button: the setup SoftAP is already on\r\n");
+    }
+    else
+    {
+        (void)provisioning_setup_open(now_us);
+    }
+}
+
+static void prov_setup_tick(uint64_t now_us)
+{
+    if (!s_prov_setup.active)
+    {
+        return;
+    }
+    if (s_prov_join.state == PROV_JOIN_ONLINE && !wifi_is_ap_active())
+    {
+        /* Portal join done: the hand-over already took the SoftAP down */
+        prov_setup_end(PROV_SETUP_END_JOINED);
+        console_puts("[PROV] Setup mode closed (joined)\r\n");
+        return;
+    }
+    /* A connected client or a portal join counts as use: after a failed join the user gets the
+     * whole idle time to try again */
+    if (wifi_get_ap_station_count() > 0U || prov_portal_join_in_flight())
+    {
+        s_prov_setup.idle_since_us = now_us;
+    }
+    if (prov_portal_join_in_flight())
+    {
+        return;
+    }
+    if ((now_us - s_prov_setup.started_us) >= PROV_SETUP_MAX_US)
+    {
+        (void)provisioning_setup_close(PROV_SETUP_END_MAX);
+    }
+    else if ((now_us - s_prov_setup.idle_since_us) >= PROV_SETUP_IDLE_TIMEOUT_US)
+    {
+        (void)provisioning_setup_close(PROV_SETUP_END_IDLE);
+    }
+}
+
+provisioning_status_t provisioning_get_setup(prov_setup_info_t *out_info)
+{
+    if (out_info == NULL)
+    {
+        return PROV_ERR_INVALID_ARG;
+    }
+    *out_info = s_prov_setup;
+    return PROV_OK;
+}
+
+uint32_t provisioning_setup_secs_left(uint64_t now_us)
+{
+    if (!s_prov_setup.active)
+    {
+        return 0U;
+    }
+    uint64_t idle_end = s_prov_setup.idle_since_us + PROV_SETUP_IDLE_TIMEOUT_US;
+    uint64_t max_end = s_prov_setup.started_us + PROV_SETUP_MAX_US;
+    uint64_t end = (idle_end < max_end) ? idle_end : max_end;
+    return (end > now_us) ? (uint32_t)((end - now_us) / PROV_US_PER_SECOND) : 0U;
+}
+
+const char *provisioning_setup_end_str(prov_setup_end_t why)
+{
+    switch (why)
+    {
+        case PROV_SETUP_END_IDLE:    return "idle timeout";
+        case PROV_SETUP_END_MAX:     return "maximum time";
+        case PROV_SETUP_END_REQUEST: return "requested";
+        case PROV_SETUP_END_JOINED:  return "joined";
+        default:                     return "-";
+    }
 }
 
 void provisioning_tick(uint64_t now_us)
@@ -819,6 +1002,8 @@ void provisioning_tick(uint64_t now_us)
         default:
             break;
     }
+
+    prov_setup_tick(now_us);
 }
 
 provisioning_status_t provisioning_get_join(prov_join_info_t *out_info)
@@ -1021,8 +1206,32 @@ void provisioning_print_status(void)
     console_puts(" SoftAP State: ");
     console_puts(wifi_is_ap_active() ? "BROADCASTING" : "STANDBY");
     console_puts("\r\n");
-    console_puts(" Scans Run:    ");
     char num[16];
+    /* Setup mode (REV-15) */
+    console_puts(" Setup Mode:   ");
+    if (s_prov_setup.active)
+    {
+        console_puts("ON, closes in ");
+        prov_u32_to_dec(provisioning_setup_secs_left(prov_now_us()), num, sizeof(num));
+        console_puts(num);
+        console_puts(" s, clients ");
+        prov_u32_to_dec(wifi_get_ap_station_count(), num, sizeof(num));
+        console_puts(num);
+    }
+    else
+    {
+        console_puts("off (last end: ");
+        console_puts(provisioning_setup_end_str(s_prov_setup.last_end));
+        console_puts(")");
+    }
+    console_puts(", opened ");
+    prov_u32_to_dec(s_prov_setup.opened, num, sizeof(num));
+    console_puts(num);
+    console_puts(", restored ");
+    prov_u32_to_dec(s_prov_setup.restored, num, sizeof(num));
+    console_puts(num);
+    console_puts("\r\n");
+    console_puts(" Scans Run:    ");
     prov_u32_to_dec(s_prov_telemetry.scans_completed, num, sizeof(num));
     console_puts(num);
     console_puts("\r\n");
@@ -1297,7 +1506,9 @@ void provisioning_http_handler_status(const char *query_params, char *response_b
     prov_str_append(response_body, max_len, wifi_is_ap_active() ? "true" : "false");
     prov_str_append(response_body, max_len, ",\"ssid\":\"");
     prov_json_append_str(response_body, max_len, wifi_get_ap_ssid());
-    prov_str_append(response_body, max_len, "\"}}\r\n");
+    prov_str_append(response_body, max_len, "\",\"setup\":");
+    prov_str_append(response_body, max_len, s_prov_setup.active ? "true" : "false");
+    prov_str_append(response_body, max_len, "}}\r\n");
 }
 
 /* GET /api/wifi/credentials -> Returns configured Wi-Fi SSID JSON */
@@ -1334,5 +1545,7 @@ void provisioning_mock_reset(void)
     memset(&s_prov_join, 0, sizeof(s_prov_join));
     s_prov_join_disc_base = wifi_get_sta_disconnect_count();
     s_prov_scan_requested = false;
+    memset(&s_prov_setup, 0, sizeof(s_prov_setup));
+    memset(&s_prov_setup_prev, 0, sizeof(s_prov_setup_prev));
 }
 #endif

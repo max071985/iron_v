@@ -9,7 +9,9 @@
 # Lowercase letters, digits and inner hyphens, up to 32 characters. Default: iron-v
 #HOSTNAME=iron-v
 
-# Setup access point (open network, started at boot only while no Wi-Fi is saved).
+# Setup access point (open network). Started at boot only while no Wi-Fi is saved; on a board
+# with saved Wi-Fi, hold the BOOT button for 3 s to open it (it closes after 10 min unused,
+# 30 min at most, or on the next long press, and the board rejoins its network).
 # Default: IronV-AP on channel 1, started automatically.
 #AP_SSID=IronV-AP
 #AP_CHANNEL=1

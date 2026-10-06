@@ -251,7 +251,7 @@ void shell_print_help(void)
     console_puts("  soak [status|audit|cycles] - 24/7 stability soak, memory leak audit & anti-starvation telemetry\r\n");
     console_puts("  ota [status|partitions|switch|rollback|mark-valid|verify] - Dual-slot Flash OTA upgrade & rollback\r\n");
     console_puts("  nvs [status|list|get|set|erase|format] - Non-Volatile Flash Key-Value storage\r\n");
-    console_puts("  prov [status|scan|set|get|clear] - SoftAP Captive Portal Wi-Fi Provisioning Engine\r\n");
+    console_puts("  prov [status|scan|set|get|clear|setup [on|off]] - Wi-Fi provisioning; setup = setup SoftAP (BOOT long press)\r\n");
     console_puts("  sta [status|connect|disconnect|mdns|eapol] - WPA2 Station & mDNS Client\r\n");
     console_puts("  seal                - Run Golden Master system-wide integrity seal audit\r\n");
     console_puts("  do-test             - Run full baseline validation test suite\r\n");
@@ -3036,6 +3036,27 @@ void shell_execute(char *input_buffer)
             console_puts("Triggering Wi-Fi scan...\r\n");
             provisioning_start_scan();
             provisioning_print_scan();
+        }
+        else if (strncmp(subcmd, "setup", 5) == 0)
+        {
+            /* Same as a long press of the setup button (REV-15), or explicit on/off */
+            char *arg = subcmd + 5;
+            while (*arg == ' ') arg++;
+            if (strcmp(arg, "on") == 0)
+            {
+                (void)provisioning_setup_open(systimer_get_us());
+            }
+            else if (strcmp(arg, "off") == 0)
+            {
+                if (provisioning_setup_close(PROV_SETUP_END_REQUEST) != PROV_OK)
+                {
+                    console_puts("Setup mode is not on.\r\n");
+                }
+            }
+            else
+            {
+                provisioning_on_setup_button(systimer_get_us());
+            }
         }
         else if (strncmp(subcmd, "set", 3) == 0)
         {

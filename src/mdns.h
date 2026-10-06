@@ -36,6 +36,19 @@ extern "C" {
 #define MDNS_MAX_HOSTNAME_LEN               32U
 #define MDNS_MAX_PACKET_LEN                 512U
 
+/* Traffic rules (REV-15, RFC 6762) */
+#define MDNS_ANNOUNCE_INTERVAL_US           1000000ULL /* 8.3: second announcement 1 s after the first */
+#define MDNS_MULTICAST_MIN_INTERVAL_US      1000000ULL /* 6: a record is multicast at most once per second */
+#define MDNS_QU_MULTICAST_FRESH_DIV         4U         /* 5.4: QU gets unicast if multicast within TTL/4 */
+#define MDNS_KNOWN_ANSWER_TTL_DIV           2U         /* 7.1: known answer with >= TTL/2 left suppresses */
+#define MDNS_US_PER_SEC                     1000000ULL
+#define MDNS_FLAGS_QR_BIT                   0x8000U    /* header: response */
+#define MDNS_LABEL_PTR_MASK                 0xC0U      /* name compression pointer (2 bytes) */
+#define MDNS_LABEL_PTR_LEN                  2U
+#define MDNS_RR_FIXED_LEN                   10U        /* type, class, TTL, rdlength */
+#define MDNS_QUESTION_FIXED_LEN             4U         /* type, class */
+#define MDNS_IPV4_LEN                       4U
+
 /* Multicast MAC Address (RFC 1112: 01:00:5E:00:00:FB for 224.0.0.251) */
 #define MDNS_MULTICAST_MAC_0                0x01U
 #define MDNS_MULTICAST_MAC_1                0x00U
@@ -79,6 +92,9 @@ typedef struct {
     uint32_t announcements_sent;
     uint32_t host_queries_matched;
     uint32_t invalid_packets;
+    uint32_t rate_limited;           /* multicast answers skipped: same record multicast < 1 s ago */
+    uint32_t known_answer_suppressed; /* querier already had our record */
+    uint32_t unicast_qu_replies;     /* QU questions answered by unicast */
 } mdns_telemetry_t;
 
 /* ========================================================================= */
@@ -98,7 +114,10 @@ mdns_status_t mdns_process_packet(const uint8_t *eth_frame, const uint8_t *paylo
 /* Query from src_ip:src_port. A source port other than 5353 is a one-shot (legacy) querier,
  * e.g. a phone's system resolver: it gets a unicast reply with its ID and question (RFC 6762 6.7) */
 mdns_status_t mdns_process_query(const uint8_t *payload, uint16_t len, uint32_t src_ip, uint16_t src_port);
+/* Announces the A record now and once more MDNS_ANNOUNCE_INTERVAL_US later (from mdns_tick) */
 mdns_status_t mdns_announce(void);
+/* Main loop: sends the scheduled second announcement */
+void          mdns_tick(uint64_t now_us);
 mdns_status_t mdns_get_telemetry(mdns_telemetry_t *out_telem);
 
 /* Diagnostic Visualizer (Flash XIP) */

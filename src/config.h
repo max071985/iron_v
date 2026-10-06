@@ -163,7 +163,8 @@
 /* 4. Wi-Fi 6 (802.11ax) MAC & Station Defaults                              */
 /* ========================================================================= */
 
-/* Setup SoftAP (open; started at boot only while no station credentials are saved) */
+/* Setup SoftAP (open; started at boot only while no station credentials are saved,
+ * otherwise only by the setup button) */
 #ifndef CONFIG_WIFI_AP_SSID
 #define CONFIG_WIFI_AP_SSID                 "IronV-AP"
 #endif
@@ -196,6 +197,20 @@
 
 #ifndef CONFIG_WIFI_AUTO_START_AP
 #define CONFIG_WIFI_AUTO_START_AP           1U
+#endif
+
+/* Setup button (REV-15): holding it opens the setup SoftAP on a provisioned board (BOOT = GPIO9).
+ * The SoftAP closes once no client has been connected for the idle timeout, or at the maximum. */
+#ifndef CONFIG_SETUP_BUTTON_GPIO
+#define CONFIG_SETUP_BUTTON_GPIO            9U
+#endif
+
+#ifndef CONFIG_SETUP_AP_IDLE_TIMEOUT_S
+#define CONFIG_SETUP_AP_IDLE_TIMEOUT_S      600U
+#endif
+
+#ifndef CONFIG_SETUP_AP_MAX_S
+#define CONFIG_SETUP_AP_MAX_S               1800U
 #endif
 
 /* Setup SoftAP captive portal. DHCP always advertises the board as gateway + DNS,

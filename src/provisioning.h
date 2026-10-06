@@ -15,6 +15,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include "config.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -34,6 +35,12 @@ extern "C" {
 #define PROV_PORTAL_JOIN_DELAY_US        1000000ULL    /* let the save reply out before the radio retunes */
 #define PROV_US_PER_SECOND               1000000ULL
 #define PROV_SCAN_REFRESH_PARAM          "refresh"     /* GET /api/wifi/scan?refresh=1 rescans */
+
+/* Setup mode (REV-15): setup SoftAP opened by the button on a provisioned board. It closes once
+ * it has been unused (no client connected, no portal join) for the idle timeout, at the latest
+ * after the maximum, never while a portal join is in flight. */
+#define PROV_SETUP_IDLE_TIMEOUT_US       ((uint64_t)CONFIG_SETUP_AP_IDLE_TIMEOUT_S * PROV_US_PER_SECOND)
+#define PROV_SETUP_MAX_US                ((uint64_t)CONFIG_SETUP_AP_MAX_S * PROV_US_PER_SECOND)
 
 /* NVS Storage Keys */
 #define PROV_NVS_KEY_SSID                "wifi_ssid"
@@ -87,6 +94,24 @@ typedef struct {
     uint64_t next_event_us;    /* JOINING timeout, HANDOVER time or RETRY_WAIT end */
     uint64_t retry_delay_us;   /* backoff for the next failure (before jitter, wifi_link.h) */
 } prov_join_info_t;
+
+/* Why setup mode last ended */
+typedef enum {
+    PROV_SETUP_END_NONE = 0,
+    PROV_SETUP_END_IDLE,         /* no client for the idle timeout */
+    PROV_SETUP_END_MAX,          /* maximum time reached */
+    PROV_SETUP_END_REQUEST,      /* second long press or `prov setup off` */
+    PROV_SETUP_END_JOINED        /* portal join handed the IP stack to the STA */
+} prov_setup_end_t;
+
+typedef struct {
+    bool     active;
+    uint64_t started_us;
+    uint64_t idle_since_us;      /* start, or the last time a client was connected */
+    uint32_t opened;             /* times setup mode was opened since boot */
+    uint32_t restored;           /* failed portal joins that put the previous credentials back */
+    prov_setup_end_t last_end;
+} prov_setup_info_t;
 
 typedef enum {
     PROV_AUTH_OPEN               = 0,
@@ -161,6 +186,16 @@ void                  provisioning_boot(void);
  * for an SSID not seeded before (a later `prov clear` is respected). True when it seeded. */
 bool                  provisioning_seed_from_config(const char *ssid, const char *passphrase);
 void                  provisioning_tick(uint64_t now_us);
+/* Setup mode (REV-15). open: STA paused, setup SoftAP up (nothing to do if a SoftAP is already
+ * up, e.g. the boot SoftAP of an unprovisioned board). close: SoftAP off, rejoin with the saved
+ * credentials. The button toggles it. */
+provisioning_status_t provisioning_setup_open(uint64_t now_us);
+provisioning_status_t provisioning_setup_close(prov_setup_end_t why);
+void                  provisioning_on_setup_button(uint64_t now_us);
+provisioning_status_t provisioning_get_setup(prov_setup_info_t *out_info);
+/* Seconds until setup mode closes by itself (0: not active or no timeout) */
+uint32_t              provisioning_setup_secs_left(uint64_t now_us);
+const char           *provisioning_setup_end_str(prov_setup_end_t why);
 provisioning_status_t provisioning_get_join(prov_join_info_t *out_info);
 const char           *provisioning_join_state_to_str(prov_join_state_t state);
 /* Short user-facing explanation of a disconnect reason */

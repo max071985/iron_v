@@ -52,6 +52,7 @@
 #include "wpa_ie.h"
 #include "wpa_driver.h"
 #include "mdns.h"
+#include "button.h"
 
 /* Host test stubs for hardware-specific functions */
 void wdt_feed(void)
@@ -4563,6 +4564,327 @@ static void test_mdns_legacy_unicast(void)
 }
 
 /* ------------------------------------------------------------------------- */
+/* REV-15: traffic diet - setup button, setup mode, mDNS rules, dashboard     */
+/* ------------------------------------------------------------------------- */
+static uint32_t s_td_mdns_frames;
+static bool td_tx_hook(const uint8_t *frame, uint16_t len)
+{
+    if (len >= ETH_HDR_LEN + IPV4_MIN_HDR_LEN + UDP_HDR_LEN)
+    {
+        const uint8_t *udp = frame + ETH_HDR_LEN + IPV4_MIN_HDR_LEN;
+        if (((udp[2] << 8) | udp[3]) == MDNS_PORT)
+        {
+            s_td_mdns_frames++;
+        }
+    }
+    return true;
+}
+
+static void test_setup_button(void)
+{
+    printf("  [TEST] Setup button debounce and long press (REV-15)...\n");
+    button_t b;
+    button_reset(&b);
+    const uint64_t t0 = 5000000ULL;
+    TEST_ASSERT(button_update(&b, false, t0) == BUTTON_EVENT_NONE && !b.pressed, "Released: nothing");
+    /* Bounce shorter than the debounce time is ignored */
+    button_update(&b, true, t0 + 1000U);
+    button_update(&b, false, t0 + 2000U);
+    button_update(&b, false, t0 + 2000U + BUTTON_DEBOUNCE_US);
+    TEST_ASSERT(!b.pressed && b.presses == 0U, "Contact bounce is not a press");
+    /* Real press */
+    const uint64_t p0 = t0 + 1000000ULL;
+    button_update(&b, true, p0);
+    button_update(&b, true, p0 + BUTTON_DEBOUNCE_US - 1U);
+    TEST_ASSERT(!b.pressed, "Not pressed before the debounce time");
+    button_update(&b, true, p0 + BUTTON_DEBOUNCE_US);
+    TEST_ASSERT(b.pressed && b.presses == 1U, "Pressed after the debounce time");
+    TEST_ASSERT(button_update(&b, true, p0 + BUTTON_LONG_PRESS_US - 1U) == BUTTON_EVENT_NONE, "No long press before the hold time");
+    TEST_ASSERT(button_update(&b, true, p0 + BUTTON_LONG_PRESS_US) == BUTTON_EVENT_LONG_PRESS, "Long press at the hold time");
+    TEST_ASSERT(button_update(&b, true, p0 + 3U * BUTTON_LONG_PRESS_US) == BUTTON_EVENT_NONE, "Held on: reported once");
+    /* Short press after release: no long press */
+    uint64_t p1 = p0 + 10U * BUTTON_LONG_PRESS_US;
+    button_update(&b, false, p1);
+    button_update(&b, false, p1 + BUTTON_DEBOUNCE_US);
+    TEST_ASSERT(!b.pressed, "Released");
+    button_update(&b, true, p1 + 1000000ULL);
+    button_update(&b, true, p1 + 1000000ULL + BUTTON_DEBOUNCE_US);
+    button_update(&b, false, p1 + 2000000ULL);
+    TEST_ASSERT(button_update(&b, false, p1 + 2000000ULL + BUTTON_DEBOUNCE_US) == BUTTON_EVENT_NONE &&
+                b.presses == 2U && b.long_presses == 1U, "Short press: counted, no long press");
+    /* A second long press is reported again */
+    uint64_t p2 = p1 + 5000000ULL;
+    button_update(&b, true, p2);
+    button_update(&b, true, p2 + BUTTON_DEBOUNCE_US);
+    TEST_ASSERT(button_update(&b, true, p2 + BUTTON_LONG_PRESS_US) == BUTTON_EVENT_LONG_PRESS && b.long_presses == 2U,
+                "Next long press reported");
+}
+
+static void test_setup_mode(void)
+{
+    printf("  [TEST] Setup mode: button SoftAP with timeout on a provisioned board (REV-15)...\n");
+    nvs_mock_reset();
+    nvs_init();
+    provisioning_mock_reset();
+    http_server_init();
+    TEST_ASSERT(provisioning_init() == PROV_OK, "provisioning_init succeeds");
+    prov_join_info_t join;
+    prov_setup_info_t setup;
+    wifi_credentials_t creds;
+    char resp_buf[HTTP_RESPONSE_BUF_SIZE];
+    size_t resp_len = 0U;
+    const uint8_t bssid[WIFI_LINK_BSSID_LEN] = {0x02U, 0x11U, 0x22U, 0x33U, 0x44U, 0x55U};
+
+    /* Provisioned and online, no SoftAP */
+    wifi_stop_ap();
+    TEST_ASSERT(provisioning_set_credentials("homenet", "homepass1") == PROV_OK, "Credentials saved");
+    provisioning_boot();
+    uint64_t t = 100000000ULL;
+    provisioning_tick(t);
+    wifi_host_set_sta_link(bssid, 6U);
+    wifi_host_set_sta_connected(true);
+    provisioning_tick(t + 1U);
+    provisioning_get_join(&join);
+    TEST_ASSERT(join.state == PROV_JOIN_ONLINE && !wifi_is_ap_active(), "Online, SoftAP off");
+    TEST_ASSERT(provisioning_setup_secs_left(t) == 0U, "No setup timer while setup mode is off");
+
+    /* 1. Long press: setup mode */
+    t += PROV_US_PER_SECOND;
+    provisioning_on_setup_button(t);
+    provisioning_get_setup(&setup);
+    provisioning_get_join(&join);
+    net_config_t ncfg;
+    net_get_config(&ncfg);
+    TEST_ASSERT(setup.active && setup.opened == 1U && wifi_is_ap_active(), "Long press opens the setup SoftAP");
+    TEST_ASSERT(join.state == PROV_JOIN_IDLE, "Station join paused");
+    TEST_ASSERT(ncfg.ip == NET_DEFAULT_IP, "IP stack on the SoftAP address");
+    TEST_ASSERT(provisioning_setup_secs_left(t) == CONFIG_SETUP_AP_IDLE_TIMEOUT_S, "Closes after the idle timeout");
+    wifi_host_set_sta_connected(false);
+    wifi_host_post_sta_disconnect(WIFI_REASON_ASSOC_LEAVE);
+    provisioning_tick(t + 1U);
+    provisioning_get_join(&join);
+    TEST_ASSERT(join.state == PROV_JOIN_IDLE, "The STA going down for the SoftAP does not start retries");
+    const char req_status[] = "GET /api/wifi/status HTTP/1.1\r\nHost: 192.168.1.1\r\n\r\n";
+    http_process_request(req_status, strlen(req_status), resp_buf, sizeof(resp_buf), &resp_len);
+    TEST_ASSERT(strstr(resp_buf, "\"setup\":true") != NULL, "Status reports setup mode");
+
+    /* 2. A connected client holds it open; idle timeout counts from the client leaving */
+    wifi_handle_vendor_event(WIFI_VENDOR_EVENT_AP_STACONNECTED, NULL);
+    TEST_ASSERT(wifi_get_ap_station_count() == 1U, "Client counted");
+    provisioning_tick(t + 5U * 60U * PROV_US_PER_SECOND);
+    provisioning_tick(t + PROV_SETUP_IDLE_TIMEOUT_US + PROV_US_PER_SECOND);
+    provisioning_get_setup(&setup);
+    TEST_ASSERT(setup.active, "Not closed while a client is connected");
+    uint64_t left_at = t + 12U * 60U * PROV_US_PER_SECOND;
+    provisioning_tick(left_at);
+    wifi_handle_vendor_event(WIFI_VENDOR_EVENT_AP_STADISCONNECTED, NULL);
+    TEST_ASSERT(wifi_get_ap_station_count() == 0U, "Client left");
+    provisioning_tick(left_at + PROV_SETUP_IDLE_TIMEOUT_US - 1U);
+    provisioning_get_setup(&setup);
+    TEST_ASSERT(setup.active, "Open until the idle timeout after the last client");
+    provisioning_tick(left_at + PROV_SETUP_IDLE_TIMEOUT_US);
+    provisioning_get_setup(&setup);
+    provisioning_get_join(&join);
+    TEST_ASSERT(!setup.active && setup.last_end == PROV_SETUP_END_IDLE, "Idle timeout closes setup mode");
+    TEST_ASSERT(!wifi_is_ap_active(), "SoftAP off");
+    TEST_ASSERT(join.state == PROV_JOIN_PENDING && !join.keep_ap, "Rejoins the saved network");
+    TEST_ASSERT(wifi_link_get_cache()->valid, "Cached AP kept for the fast-path rejoin");
+
+    /* 3. A client that never leaves: closed at the maximum */
+    t = left_at + 2U * PROV_SETUP_MAX_US;
+    provisioning_on_setup_button(t);
+    wifi_handle_vendor_event(WIFI_VENDOR_EVENT_AP_STACONNECTED, NULL);
+    provisioning_tick(t + PROV_SETUP_MAX_US - 1U);
+    provisioning_get_setup(&setup);
+    TEST_ASSERT(setup.active && setup.opened == 2U, "Second session open with a client");
+    provisioning_tick(t + PROV_SETUP_MAX_US);
+    provisioning_get_setup(&setup);
+    TEST_ASSERT(!setup.active && setup.last_end == PROV_SETUP_END_MAX && !wifi_is_ap_active(), "Closed at the maximum");
+
+    /* 4. Second long press closes it */
+    t += 2U * PROV_SETUP_MAX_US;
+    provisioning_on_setup_button(t);
+    provisioning_on_setup_button(t + 10U * PROV_US_PER_SECOND);
+    provisioning_get_setup(&setup);
+    TEST_ASSERT(!setup.active && setup.last_end == PROV_SETUP_END_REQUEST && !wifi_is_ap_active(), "Second long press closes it");
+
+    /* 5. Portal save of a wrong network in setup mode: the working credentials come back */
+    t += 2U * PROV_SETUP_MAX_US;
+    provisioning_on_setup_button(t);
+    /* Saved just before the idle timeout: the join (up to PROV_JOIN_TIMEOUT_US) runs past it */
+    uint64_t ts = t + PROV_SETUP_IDLE_TIMEOUT_US - 10U * PROV_US_PER_SECOND;
+    const char req_cfg[] =
+        "POST /api/wifi/configure HTTP/1.1\r\nHost: 192.168.1.1\r\nContent-Type: application/json\r\n\r\n"
+        "{\"ssid\":\"othernet\",\"password\":\"wrongpass99\"}";
+    http_process_request(req_cfg, strlen(req_cfg), resp_buf, sizeof(resp_buf), &resp_len);
+    provisioning_get_join(&join);
+    TEST_ASSERT(join.state == PROV_JOIN_PENDING && join.keep_ap && join.unproven, "Portal save queues a keep-AP join");
+    provisioning_tick(ts);
+    provisioning_tick(ts + PROV_US_PER_SECOND);
+    provisioning_get_join(&join);
+    TEST_ASSERT(join.state == PROV_JOIN_JOINING, "Portal join running");
+    provisioning_tick(t + PROV_SETUP_IDLE_TIMEOUT_US + PROV_US_PER_SECOND);
+    provisioning_get_setup(&setup);
+    provisioning_get_join(&join);
+    TEST_ASSERT(setup.active && join.state == PROV_JOIN_JOINING, "Not closed while a portal join is in flight");
+    wifi_host_post_sta_disconnect(WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT);
+    provisioning_tick(t + PROV_SETUP_IDLE_TIMEOUT_US + 2U * PROV_US_PER_SECOND);
+    provisioning_get_join(&join);
+    provisioning_get_setup(&setup);
+    TEST_ASSERT(join.state == PROV_JOIN_FAILED && setup.restored == 1U, "Portal join failed");
+    TEST_ASSERT(provisioning_get_credentials(&creds) == PROV_OK && strcmp(creds.ssid, "homenet") == 0 &&
+                strcmp(creds.passphrase, "homepass1") == 0, "Previous credentials restored, not erased");
+    uint64_t tf = t + PROV_SETUP_IDLE_TIMEOUT_US + 2U * PROV_US_PER_SECOND;   /* join failed */
+    provisioning_tick(tf + PROV_SETUP_IDLE_TIMEOUT_US - PROV_US_PER_SECOND);
+    provisioning_get_setup(&setup);
+    TEST_ASSERT(setup.active, "Whole idle time to retry after a failed portal join");
+    provisioning_tick(tf + PROV_SETUP_IDLE_TIMEOUT_US + PROV_US_PER_SECOND);
+    provisioning_get_setup(&setup);
+    TEST_ASSERT(!setup.active && setup.last_end == PROV_SETUP_END_IDLE, "Timeout applies again after the failed join");
+    provisioning_get_join(&join);
+    TEST_ASSERT(join.state == PROV_JOIN_PENDING && !join.keep_ap, "Rejoins the restored network");
+
+    /* 6. Portal save that works: hand-over ends setup mode */
+    t += 2U * PROV_SETUP_MAX_US;
+    provisioning_on_setup_button(t);
+    const char req_cfg_ok[] =
+        "POST /api/wifi/configure HTTP/1.1\r\nHost: 192.168.1.1\r\nContent-Type: application/json\r\n\r\n"
+        "{\"ssid\":\"newnet\",\"password\":\"newpass12\"}";
+    http_process_request(req_cfg_ok, strlen(req_cfg_ok), resp_buf, sizeof(resp_buf), &resp_len);
+    provisioning_tick(t + PROV_US_PER_SECOND);
+    provisioning_tick(t + 2U * PROV_US_PER_SECOND);
+    wifi_host_set_sta_connected(true);
+    provisioning_tick(t + 3U * PROV_US_PER_SECOND);
+    provisioning_tick(t + 3U * PROV_US_PER_SECOND + PROV_HANDOVER_DELAY_US);
+    provisioning_tick(t + 4U * PROV_US_PER_SECOND + PROV_HANDOVER_DELAY_US);
+    provisioning_get_setup(&setup);
+    provisioning_get_join(&join);
+    TEST_ASSERT(join.state == PROV_JOIN_ONLINE && !wifi_is_ap_active(), "Joined the new network, SoftAP off");
+    TEST_ASSERT(!setup.active && setup.last_end == PROV_SETUP_END_JOINED, "Setup mode ended by the join");
+    TEST_ASSERT(provisioning_get_credentials(&creds) == PROV_OK && strcmp(creds.ssid, "newnet") == 0, "New credentials kept");
+    TEST_ASSERT(provisioning_setup_close(PROV_SETUP_END_REQUEST) == PROV_ERR_NOT_FOUND, "Close when not open is refused");
+
+    /* 7. Unprovisioned board: the boot SoftAP is already the way in, the button changes nothing */
+    wifi_host_set_sta_connected(false);
+    provisioning_cancel_join();
+    provisioning_clear_credentials();
+    wifi_stop_ap();
+    provisioning_boot();
+    TEST_ASSERT(wifi_is_ap_active(), "Unprovisioned boot SoftAP");
+    provisioning_on_setup_button(t + 1000U * PROV_US_PER_SECOND);
+    provisioning_tick(t + 1000U * PROV_US_PER_SECOND + PROV_SETUP_MAX_US);
+    provisioning_get_setup(&setup);
+    TEST_ASSERT(!setup.active && setup.opened == 5U && wifi_is_ap_active(), "Button ignored, boot SoftAP has no timeout");
+
+    provisioning_cancel_join();
+    wifi_stop_ap();
+    wifi_host_set_scan_records(NULL, 0U);
+}
+
+static void test_mdns_traffic_rules(void)
+{
+    printf("  [TEST] mDNS respond-only rules: announcements, rate limit, known answers, QU (REV-15)...\n");
+    mdns_init();
+    mdns_set_hostname("iron-v");
+    net_set_ip(0x0A000029U, 0xFFFFFF00U, 0x0A000001U);   /* 10.0.0.41 */
+    arp_insert(0x0A000032U, (const uint8_t *)"\x02\x11\x22\x33\x44\x55");
+    wifi_host_set_tx_hook(td_tx_hook);
+    s_td_mdns_frames = 0U;
+    mdns_telemetry_t mt;
+
+    /* Two announcements, one second apart (RFC 6762 8.3), then silence */
+    uint64_t t = s_host_now_us;
+    TEST_ASSERT(mdns_announce() == MDNS_OK && s_td_mdns_frames == 1U, "First announcement sent");
+    mdns_tick(t + MDNS_ANNOUNCE_INTERVAL_US - 1U);
+    TEST_ASSERT(s_td_mdns_frames == 1U, "Second waits one second");
+    mdns_tick(t + MDNS_ANNOUNCE_INTERVAL_US);
+    TEST_ASSERT(s_td_mdns_frames == 2U, "Second announcement after one second");
+    for (uint32_t i = 2U; i < 100U; i++)
+    {
+        mdns_tick(t + i * MDNS_ANNOUNCE_INTERVAL_US);
+    }
+    TEST_ASSERT(s_td_mdns_frames == 2U, "No further unsolicited traffic");
+    mdns_announce();
+    net_set_ip(0x0A00002AU, 0xFFFFFF00U, 0x0A000001U);
+    mdns_tick(t + 200U * MDNS_ANNOUNCE_INTERVAL_US);
+    TEST_ASSERT(s_td_mdns_frames == 3U, "No second announcement for an address that changed");
+    net_set_ip(0x0A000029U, 0xFFFFFF00U, 0x0A000001U);
+
+    /* Multicast answers at most once per second (RFC 6762 6) */
+    s_host_now_us += 10U * MDNS_US_PER_SEC;
+    uint8_t q[128];
+    uint16_t qlen = build_mdns_a_query(q, 0U);
+    s_td_mdns_frames = 0U;
+    mdns_process_query(q, qlen, 0x0A000032U, MDNS_PORT);
+    mdns_process_query(q, qlen, 0x0A000033U, MDNS_PORT);
+    mdns_get_telemetry(&mt);
+    TEST_ASSERT(s_td_mdns_frames == 1U && mt.rate_limited == 1U, "Second multicast answer within 1 s skipped");
+    s_host_now_us += MDNS_MULTICAST_MIN_INTERVAL_US;
+    mdns_process_query(q, qlen, 0x0A000033U, MDNS_PORT);
+    TEST_ASSERT(s_td_mdns_frames == 2U, "Answered again after one second");
+    mdns_get_telemetry(&mt);
+    uint32_t sent_before = mt.responses_sent;
+    TEST_ASSERT(mdns_process_query(q, qlen, 0x0A000032U, 40000U) == MDNS_OK, "One-shot query handled");
+    mdns_get_telemetry(&mt);
+    TEST_ASSERT(mt.responses_sent == sent_before + 1U, "One-shot (legacy) queries are always answered (unicast)");
+
+    /* Known-answer suppression (RFC 6762 7.1): querier already holds our record */
+    s_host_now_us += 10U * MDNS_US_PER_SEC;
+    uint8_t ka[128];
+    memcpy(ka, q, qlen);
+    uint16_t n = qlen;
+    ka[7] = 1U;                                   /* ancount = 1 */
+    ka[n++] = 0xC0U; ka[n++] = 12U;               /* name: pointer to the question */
+    ka[n++] = 0U; ka[n++] = MDNS_TYPE_A;
+    ka[n++] = 0U; ka[n++] = MDNS_CLASS_IN;
+    ka[n++] = 0U; ka[n++] = 0U; ka[n++] = 0U; ka[n++] = (uint8_t)MDNS_DEFAULT_TTL_SEC; /* full TTL */
+    ka[n++] = 0U; ka[n++] = 4U;
+    ka[n++] = 10U; ka[n++] = 0U; ka[n++] = 0U; ka[n++] = 41U;
+    s_td_mdns_frames = 0U;
+    mdns_process_query(ka, n, 0x0A000032U, MDNS_PORT);
+    mdns_get_telemetry(&mt);
+    TEST_ASSERT(s_td_mdns_frames == 0U && mt.known_answer_suppressed == 1U, "Known answer with full TTL: no reply");
+    ka[n - 7U] = (uint8_t)(MDNS_DEFAULT_TTL_SEC / MDNS_KNOWN_ANSWER_TTL_DIV - 1U); /* less than half the TTL */
+    mdns_process_query(ka, n, 0x0A000032U, MDNS_PORT);
+    TEST_ASSERT(s_td_mdns_frames == 1U, "Known answer about to expire: reply");
+    s_host_now_us += 10U * MDNS_US_PER_SEC;
+    ka[n - 7U] = (uint8_t)MDNS_DEFAULT_TTL_SEC;
+    ka[n - 1U] = 42U;                             /* stale address */
+    mdns_process_query(ka, n, 0x0A000032U, MDNS_PORT);
+    TEST_ASSERT(s_td_mdns_frames == 2U, "Known answer with another address: reply");
+
+    /* QU question (RFC 6762 5.4): unicast while our multicast is fresh, multicast after TTL/4 */
+    s_host_now_us += 2U * MDNS_US_PER_SEC;
+    uint16_t f0 = 0U;
+    q[qlen - 2U] = 0x80U;                         /* QU bit */
+    mdns_process_query(q, qlen, 0x0A000032U, MDNS_PORT);
+    const uint8_t *f = wifi_host_last_tx(&f0, NULL);
+    mdns_get_telemetry(&mt);
+    TEST_ASSERT(f[0] == 0x02U && f[5] == 0x55U && mt.unicast_qu_replies == 1U, "QU answered by unicast to the querier");
+    s_host_now_us += (uint64_t)MDNS_DEFAULT_TTL_SEC * MDNS_US_PER_SEC / MDNS_QU_MULTICAST_FRESH_DIV;
+    mdns_process_query(q, qlen, 0x0A000032U, MDNS_PORT);
+    f = wifi_host_last_tx(&f0, NULL);
+    TEST_ASSERT(f[0] == MDNS_MULTICAST_MAC_0 && f[5] == MDNS_MULTICAST_MAC_5, "QU after TTL/4 without multicast: multicast refresh");
+
+    wifi_host_set_tx_hook(NULL);
+}
+
+static void test_dashboard_page(void)
+{
+    printf("  [TEST] Dashboard: no polling, one TCP segment (REV-15, O-44)...\n");
+    http_server_init();
+    TEST_ASSERT(strstr(g_index_html, "setInterval") == NULL && strstr(g_index_html, "setTimeout") == NULL,
+                "Dashboard has no timer (refresh on demand only)");
+    char resp_buf[HTTP_RESPONSE_BUF_SIZE];
+    size_t resp_len = 0U;
+    const char req[] = "GET / HTTP/1.1\r\nHost: iron-v.local\r\n\r\n";
+    http_process_request(req, strlen(req), resp_buf, sizeof(resp_buf), &resp_len);
+    TEST_ASSERT(strstr(resp_buf, "200 OK") != NULL && strstr(resp_buf, "</html>") != NULL, "Dashboard served whole");
+    printf("    / response: %u bytes\n", (unsigned)resp_len);
+    TEST_ASSERT(resp_len <= TCP_DEFAULT_MSS, "Dashboard response fits one segment");
+}
+
+/* ------------------------------------------------------------------------- */
 /* REV-14: DHCP client retransmission backoff, NAK, INIT-REBOOT, T1/T2/expiry */
 /* ------------------------------------------------------------------------- */
 #define DC_MAX_FRAMES   32U
@@ -6329,6 +6651,10 @@ int main(void)
     test_provisioning_join();
     test_provisioning_seed();
     test_mdns_legacy_unicast();
+    test_setup_button();
+    test_setup_mode();
+    test_mdns_traffic_rules();
+    test_dashboard_page();
     test_wpa2_client_and_mdns_subsystem();
     test_dhcp_client_rfc2131();
     test_wpa_ie_parsing();

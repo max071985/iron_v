@@ -40,6 +40,7 @@
 #include "provisioning.h"
 #include "wpa2_client.h"
 #include "mdns.h"
+#include "button.h"
 
 void main(void)
 {
@@ -139,6 +140,9 @@ void main(void)
     /* Initialize Interactive Console Shell & 24/7 Health Telemetry */
     shell_init();
 
+    /* Setup button (BOOT, GPIO9): long press opens the setup SoftAP (REV-15) */
+    button_setup_init();
+
     /* Saved credentials: join as a station; none: open the setup SoftAP */
     provisioning_boot();
 
@@ -151,11 +155,17 @@ void main(void)
 
     while (1)
     {
+        uint64_t now_us = systimer_get_us();
         wdt_supervisor_tick();
         dpc_process_all();
         tcp_tick();
         dhcp_client_tick();
-        provisioning_tick(systimer_get_us());
+        if (button_setup_poll(now_us) == BUTTON_EVENT_LONG_PRESS)
+        {
+            provisioning_on_setup_button(now_us);
+        }
+        provisioning_tick(now_us);
+        mdns_tick(now_us);
         wifi_os_adapter_poll();
         wifi_poll_rx_traffic();
         shell_tick();

@@ -12,6 +12,7 @@
  */
 
 #include "mdns.h"
+#include "systimer.h"
 #include "net.h"
 #include "string.h"
 
@@ -26,6 +27,9 @@
 static mdns_telemetry_t s_mdns_telem;
 static bool             s_mdns_active = false;
 static bool             s_mdns_initialized = false;
+static uint64_t         s_mdns_last_multicast_us = 0U;   /* 0: never */
+static uint64_t         s_mdns_second_announce_us = 0U;  /* 0: none scheduled */
+static uint32_t         s_mdns_announced_ip = 0U;
 
 /* Standard DNS Header Structure */
 typedef struct {
@@ -153,7 +157,8 @@ static bool mdns_parse_query_name(const uint8_t *packet, size_t packet_len,
 /* ========================================================================= */
 /* mDNS Announcement & Packet Processing (.flash.text)                       */
 /* ========================================================================= */
-mdns_status_t mdns_announce(void)
+/* One unsolicited multicast answer with our A record */
+static mdns_status_t mdns_send_announcement(void)
 {
     if (!s_mdns_active)
     {
@@ -207,10 +212,106 @@ mdns_status_t mdns_announce(void)
     {
         s_mdns_telem.announcements_sent++;
         s_mdns_telem.responses_sent++;
+        s_mdns_last_multicast_us = systimer_get_us();
+        s_mdns_announced_ip = ip;
         return MDNS_OK;
     }
 
     return MDNS_ERR_TX_FAIL;
+}
+
+mdns_status_t mdns_announce(void)
+{
+    mdns_status_t st = mdns_send_announcement();
+    s_mdns_second_announce_us = (st == MDNS_OK) ? (systimer_get_us() + MDNS_ANNOUNCE_INTERVAL_US) : 0U;
+    return st;
+}
+
+void mdns_tick(uint64_t now_us)
+{
+    if (s_mdns_second_announce_us == 0U || now_us < s_mdns_second_announce_us)
+    {
+        return;
+    }
+    s_mdns_second_announce_us = 0U;
+    /* Only for the address the first announcement carried (no second one after losing it) */
+    net_config_t ncfg;
+    net_get_config(&ncfg);
+    if (ncfg.ip != 0U && ncfg.ip == s_mdns_announced_ip)
+    {
+        (void)mdns_send_announcement();
+    }
+}
+
+/* Skips one (possibly compressed) name */
+static bool mdns_skip_name(const uint8_t *packet, size_t packet_len, size_t *inout_offset)
+{
+    size_t offset = *inout_offset;
+    while (offset < packet_len)
+    {
+        uint8_t len = packet[offset];
+        if ((len & MDNS_LABEL_PTR_MASK) == MDNS_LABEL_PTR_MASK)
+        {
+            offset += MDNS_LABEL_PTR_LEN;
+            break;
+        }
+        offset += 1U + (size_t)len;
+        if (len == 0U)
+        {
+            break;
+        }
+    }
+    if (offset > packet_len)
+    {
+        return false;
+    }
+    *inout_offset = offset;
+    return true;
+}
+
+static uint16_t mdns_rd16(const uint8_t *p)
+{
+    return (uint16_t)(((uint16_t)p[0] << 8U) | (uint16_t)p[1]);
+}
+
+static uint32_t mdns_rd32(const uint8_t *p)
+{
+    return ((uint32_t)p[0] << 24U) | ((uint32_t)p[1] << 16U) | ((uint32_t)p[2] << 8U) | (uint32_t)p[3];
+}
+
+/* RFC 6762 7.1: true when the query's known-answer section already holds our A record
+ * (same address) with at least half its TTL left */
+static bool mdns_known_answer_present(const uint8_t *payload, size_t len, size_t offset,
+                                      uint16_t ancount, const char *fqdn, uint32_t ip)
+{
+    for (uint16_t a = 0U; a < ancount; a++)
+    {
+        char name[64];
+        size_t name_off = offset;
+        bool named = mdns_parse_query_name(payload, len, &name_off, name, sizeof(name));
+        if (!mdns_skip_name(payload, len, &offset) || (offset + MDNS_RR_FIXED_LEN) > len)
+        {
+            return false;
+        }
+        uint16_t type = mdns_rd16(&payload[offset]);
+        uint16_t rclass = mdns_rd16(&payload[offset + 2U]);
+        uint32_t ttl = mdns_rd32(&payload[offset + 4U]);
+        uint16_t rdlen = mdns_rd16(&payload[offset + 8U]);
+        offset += MDNS_RR_FIXED_LEN;
+        if ((offset + rdlen) > len)
+        {
+            return false;
+        }
+        if (named && mdns_strcasecmp(name, fqdn) && type == MDNS_TYPE_A &&
+            (rclass & MDNS_QCLASS_MASK) == MDNS_CLASS_IN && rdlen == MDNS_IPV4_LEN &&
+            mdns_rd32(&payload[offset]) == ip &&
+            ttl >= (MDNS_DEFAULT_TTL_SEC / MDNS_KNOWN_ANSWER_TTL_DIV))
+        {
+            return true;
+        }
+        offset += rdlen;
+    }
+    return false;
 }
 
 mdns_status_t mdns_process_packet(const uint8_t *eth_frame, const uint8_t *payload, uint16_t len)
@@ -231,8 +332,8 @@ mdns_status_t mdns_process_query(const uint8_t *payload, uint16_t len, uint32_t 
     const dns_hdr_t *hdr = (const dns_hdr_t *)payload;
     uint16_t flags = NET_NTOHS(hdr->flags);
 
-    /* If QR bit (bit 15) is 1, this is a response, not a query */
-    if ((flags & 0x8000U) != 0U)
+    /* QR bit set: a response, not a query */
+    if ((flags & MDNS_FLAGS_QR_BIT) != 0U)
     {
         return MDNS_ERR_NOT_QUERY;
     }
@@ -246,6 +347,13 @@ mdns_status_t mdns_process_query(const uint8_t *payload, uint16_t len, uint32_t 
     size_t offset = sizeof(dns_hdr_t);
     char query_name[64];
     bool matched = false;
+    bool unicast_requested = false;
+
+    /* Target match: "<hostname>.local" */
+    char target_fqdn[48];
+    size_t hlen = strlen(s_mdns_telem.hostname);
+    memcpy(target_fqdn, s_mdns_telem.hostname, hlen);
+    memcpy(target_fqdn + hlen, ".local", 7);
 
     for (uint16_t q = 0; q < qdcount; q++)
     {
@@ -255,28 +363,23 @@ mdns_status_t mdns_process_query(const uint8_t *payload, uint16_t len, uint32_t 
             return MDNS_ERR_CORRUPT_FRAME;
         }
 
-        if ((offset + 4U) > len)
+        if ((offset + MDNS_QUESTION_FIXED_LEN) > len)
         {
             return MDNS_ERR_CORRUPT_FRAME;
         }
 
-        uint16_t qtype  = (uint16_t)(((uint16_t)payload[offset] << 8U) | (uint16_t)payload[offset + 1U]);
-        uint16_t qclass = (uint16_t)(((uint16_t)payload[offset + 2U] << 8U) | (uint16_t)payload[offset + 3U]);
-        offset += 4U; /* Skip QTYPE and QCLASS */
+        uint16_t qtype  = mdns_rd16(&payload[offset]);
+        uint16_t qclass = mdns_rd16(&payload[offset + 2U]);
+        offset += MDNS_QUESTION_FIXED_LEN;
 
-        /* Target match: "<hostname>.local" */
-        char target_fqdn[48];
-        size_t hlen = strlen(s_mdns_telem.hostname);
-        memcpy(target_fqdn, s_mdns_telem.hostname, hlen);
-        memcpy(target_fqdn + hlen, ".local", 7);
-
-        if (mdns_strcasecmp(query_name, target_fqdn) &&
+        /* All questions are parsed: the known answers follow them */
+        if (!matched && mdns_strcasecmp(query_name, target_fqdn) &&
             (qtype == MDNS_TYPE_A || qtype == MDNS_TYPE_ANY) &&
             ((qclass & MDNS_QCLASS_MASK) == MDNS_CLASS_IN))
         {
             matched = true;
+            unicast_requested = ((qclass & ~MDNS_QCLASS_MASK) != 0U);
             s_mdns_telem.host_queries_matched++;
-            break;
         }
     }
 
@@ -294,7 +397,27 @@ mdns_status_t mdns_process_query(const uint8_t *payload, uint16_t len, uint32_t 
     uint32_t ip = ncfg.ip;
     s_mdns_telem.advertised_ip = ip;
 
+    if (mdns_known_answer_present(payload, len, offset, NET_NTOHS(hdr->ancount), target_fqdn, ip))
+    {
+        s_mdns_telem.known_answer_suppressed++;
+        return MDNS_OK;
+    }
+
     bool legacy = (src_port != MDNS_PORT) && (src_ip != 0U);
+    uint64_t now_us = systimer_get_us();
+    bool multicast_recent = (s_mdns_last_multicast_us != 0U);
+    uint64_t since_multicast_us = now_us - s_mdns_last_multicast_us;
+    /* QU question (RFC 6762 5.4): unicast, unless our record has not been multicast for a
+     * quarter of its TTL (then everyone's cache gets the refresh) */
+    bool unicast = legacy ||
+                   (unicast_requested && src_ip != 0U && multicast_recent &&
+                    since_multicast_us < ((uint64_t)MDNS_DEFAULT_TTL_SEC * MDNS_US_PER_SEC / MDNS_QU_MULTICAST_FRESH_DIV));
+    if (!unicast && multicast_recent && since_multicast_us < MDNS_MULTICAST_MIN_INTERVAL_US)
+    {
+        /* Multicast less than a second ago already answered everyone (RFC 6762 6) */
+        s_mdns_telem.rate_limited++;
+        return MDNS_OK;
+    }
 
     /* Synthesize Response Packet */
     uint8_t response[MDNS_MAX_PACKET_LEN];
@@ -344,9 +467,15 @@ mdns_status_t mdns_process_query(const uint8_t *payload, uint16_t len, uint32_t 
     {
         net_send_udp(src_ip, MDNS_PORT, src_port, response, (uint16_t)pos);
     }
+    else if (unicast)
+    {
+        net_send_udp(src_ip, MDNS_PORT, MDNS_PORT, response, (uint16_t)pos);
+        s_mdns_telem.unicast_qu_replies++;
+    }
     else
     {
         net_send_udp(MDNS_MULTICAST_IPV4, MDNS_PORT, MDNS_PORT, response, (uint16_t)pos);
+        s_mdns_last_multicast_us = now_us;
     }
     s_mdns_telem.responses_sent++;
 
@@ -386,6 +515,12 @@ void mdns_print_status(void)
     put_dec(s_mdns_telem.responses_sent);
     console_puts("\r\n  Announcements Sent:  ");
     put_dec(s_mdns_telem.announcements_sent);
+    console_puts("\r\n  Unicast QU Replies:  ");
+    put_dec(s_mdns_telem.unicast_qu_replies);
+    console_puts("\r\n  Rate Limited:        ");
+    put_dec(s_mdns_telem.rate_limited);
+    console_puts("\r\n  Known-Answer Quiet:  ");
+    put_dec(s_mdns_telem.known_answer_suppressed);
     console_puts("\r\n=======================================================\r\n");
 #endif
 }
@@ -396,6 +531,9 @@ void mdns_print_status(void)
 mdns_status_t mdns_init(void)
 {
     memset(&s_mdns_telem, 0, sizeof(s_mdns_telem));
+    s_mdns_last_multicast_us = 0U;
+    s_mdns_second_announce_us = 0U;
+    s_mdns_announced_ip = 0U;
     strncpy(s_mdns_telem.hostname, MDNS_DEFAULT_HOSTNAME, MDNS_MAX_HOSTNAME_LEN);
     s_mdns_active = true;
     s_mdns_telem.active = true;

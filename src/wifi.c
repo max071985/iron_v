@@ -23,6 +23,7 @@
 #include "wifi_vendor_types.h"
 #include "wifi_regulatory.h"
 #include "wifi_os_adapter.h"
+#include "wifi_link.h"
 #include "systimer.h"
 #include "task.h"
 #include "wdt.h"
@@ -34,10 +35,10 @@
 static bool s_vendor_wifi_inited = false;
 static int32_t s_vendor_init_err = -999;
 static volatile bool s_wifi_scan_done = false;
-static uint8_t s_wifi_channel = 1U;
 static int8_t s_wifi_rssi = 0;
 extern uint8_t *g_wifi_nvs;
 #endif
+static uint8_t s_wifi_channel = 1U;   /* channel of the last STA association */
 
 /* RF timing telemetry tracking (Task 3) */
 static uint32_t s_bb_tx_on_delay = 0U;
@@ -53,6 +54,13 @@ static bool s_wifi_cca_enabled = true;
 /* Station Subsystem Tracking (Task 8.2) */
 static bool s_wifi_sta_connected = false;
 static uint8_t s_wifi_sta_bssid[WIFI_MAC_ADDR_LEN] = {0};
+#if !defined(__riscv)
+/* Host tests: what the last STA join was aimed at */
+static uint8_t  s_host_sta_target_bssid[WIFI_MAC_ADDR_LEN];
+static bool     s_host_sta_target_bssid_set = false;
+static uint8_t  s_host_sta_target_channel = 0U;
+static uint32_t s_host_sta_disconnect_calls = 0U;
+#endif
 static uint32_t s_wifi_sta_disconnects = 0U;
 static uint16_t s_wifi_sta_last_reason = 0U;
 /* STA join started with the SoftAP kept up: the IP stack stays on the SoftAP */
@@ -1450,11 +1458,36 @@ static void wifi_wait_sta_started(void)
         }
     }
 }
+
+/* Leaves the current association before joining another AP: the blob refuses esp_wifi_connect
+ * while associated ("disconnect before connecting to new ap"). Waits for the disconnect event so
+ * it is not mistaken for a failure of the new join. */
+FLASH_TEXT_ATTR
+static void wifi_sta_leave_current(void)
+{
+    uint32_t disc_before = s_wifi_sta_disconnects;
+    esp_wifi_disconnect();
+    uint64_t start_wait = systimer_get_us();
+    while (s_wifi_sta_disconnects == disc_before && (systimer_get_us() - start_wait) < WIFI_STA_LEAVE_TIMEOUT_US)
+    {
+        wdt_feed();
+        lp_wdt_feed();
+        wifi_os_adapter_poll();
+        wdt_supervisor_tick();
+        if (task_get_count() > 1U)
+        {
+            task_yield();
+        }
+    }
+    s_wifi_sta_connected = false;
+    s_wifi_telemetry.state = s_wifi_ap_running ? WIFI_STATE_AP_ACTIVE : WIFI_STATE_ACTIVE;
+}
 #endif
 
 /* keep_ap: join in APSTA mode and leave the IP stack on the SoftAP (portal hand-over) */
 FLASH_TEXT_ATTR
-static wifi_status_t wifi_sta_begin(const char *ssid, const char *password, uint8_t channel, bool keep_ap)
+static wifi_status_t wifi_sta_begin(const char *ssid, const char *password, uint8_t channel,
+                                    const uint8_t *bssid, bool keep_ap)
 {
     if (ssid == NULL || ssid[0] == '\0')
     {
@@ -1491,12 +1524,21 @@ static wifi_status_t wifi_sta_begin(const char *ssid, const char *password, uint
 
 #if !defined(__riscv)
     (void)password;
-    (void)channel;
+    s_host_sta_target_channel = channel;
+    s_host_sta_target_bssid_set = (bssid != NULL);
+    if (bssid != NULL)
+    {
+        memcpy(s_host_sta_target_bssid, bssid, WIFI_MAC_ADDR_LEN);
+    }
 #endif
 
 #if defined(__riscv)
     if (s_vendor_wifi_inited)
     {
+        if (!keep_ap && wifi_is_sta_connected())
+        {
+            wifi_sta_leave_current();
+        }
         esp_wifi_set_mode(keep_ap ? WIFI_MODE_APSTA : WIFI_MODE_STA);
 
         wifi_config_t sta_cfg;
@@ -1515,6 +1557,12 @@ static wifi_status_t wifi_sta_begin(const char *ssid, const char *password, uint
         {
             sta_cfg.sta.channel = 0U;
             sta_cfg.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+        }
+        if (bssid != NULL)
+        {
+            /* Link manager fast path: rejoin the AP we were on (REV-12) */
+            sta_cfg.sta.bssid_set = true;
+            memcpy(sta_cfg.sta.bssid, bssid, WIFI_MAC_ADDR_LEN);
         }
         sta_cfg.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
         sta_cfg.sta.threshold.rssi = WIFI_DEFAULT_SCAN_RSSI_THRESHOLD;
@@ -1551,6 +1599,10 @@ static wifi_status_t wifi_sta_begin(const char *ssid, const char *password, uint
         modem_rf_analog_init();
         wifi_set_cca_enabled(true);
         esp_wifi_set_max_tx_power(WIFI_DEFAULT_MAX_TX_POWER_INDEX);
+        if (esp_wifi_set_inactive_time(WIFI_IF_STA, WIFI_LINK_STA_BEACON_TIMEOUT_S) != 0)
+        {
+            console_puts("[Wi-Fi] WARNING: STA beacon timeout not set\r\n");
+        }
         wifi_fence();
 
         console_puts("[Wi-Fi] Connecting to '");
@@ -1559,6 +1611,11 @@ static wifi_status_t wifi_sta_begin(const char *ssid, const char *password, uint
         {
             console_puts("' on channel ");
             put_dec((uint32_t)channel);
+            if (bssid != NULL)
+            {
+                console_puts(", BSSID ");
+                wifi_print_mac(bssid);
+            }
             console_puts("...\r\n");
         }
         else
@@ -1584,13 +1641,45 @@ static wifi_status_t wifi_sta_begin(const char *ssid, const char *password, uint
 FLASH_TEXT_ATTR
 wifi_status_t wifi_start_sta_chan(const char *ssid, const char *password, uint8_t channel)
 {
-    return wifi_sta_begin(ssid, password, channel, false);
+    return wifi_sta_begin(ssid, password, channel, NULL, false);
+}
+
+FLASH_TEXT_ATTR
+wifi_status_t wifi_start_sta_bssid(const char *ssid, const char *password, uint8_t channel, const uint8_t *bssid)
+{
+    return wifi_sta_begin(ssid, password, channel, bssid, false);
 }
 
 FLASH_TEXT_ATTR
 wifi_status_t wifi_start_sta_keep_ap(const char *ssid, const char *password, uint8_t channel)
 {
-    return wifi_sta_begin(ssid, password, channel, true);
+    return wifi_sta_begin(ssid, password, channel, NULL, true);
+}
+
+/* Ends the current association or join attempt; the STA stays started (no mode change) */
+FLASH_TEXT_ATTR
+wifi_status_t wifi_sta_end_attempt(void)
+{
+#if defined(__riscv)
+    if (s_vendor_wifi_inited)
+    {
+        esp_wifi_disconnect();
+    }
+#endif
+    s_wifi_sta_connected = false;
+    if (s_wifi_telemetry.state == WIFI_STATE_CONNECTED)
+    {
+        s_wifi_telemetry.state = s_wifi_ap_running ? WIFI_STATE_AP_ACTIVE : WIFI_STATE_ACTIVE;
+    }
+#if !defined(__riscv)
+    s_host_sta_disconnect_calls++;
+#endif
+    return WIFI_OK;
+}
+
+uint8_t wifi_sta_get_channel(void)
+{
+    return s_wifi_channel;
 }
 
 FLASH_TEXT_ATTR
@@ -1682,6 +1771,24 @@ void wifi_host_set_sta_connected(bool connected)
 {
     s_wifi_sta_connected = connected;
     s_wifi_telemetry.state = connected ? WIFI_STATE_CONNECTED : WIFI_STATE_ACTIVE;
+}
+
+void wifi_host_set_sta_link(const uint8_t *bssid, uint8_t channel)
+{
+    memcpy(s_wifi_sta_bssid, bssid, WIFI_MAC_ADDR_LEN);
+    s_wifi_channel = channel;
+}
+
+bool wifi_host_last_sta_target(uint8_t *out_bssid, uint8_t *out_channel)
+{
+    memcpy(out_bssid, s_host_sta_target_bssid, WIFI_MAC_ADDR_LEN);
+    *out_channel = s_host_sta_target_channel;
+    return s_host_sta_target_bssid_set;
+}
+
+uint32_t wifi_host_sta_disconnect_calls(void)
+{
+    return s_host_sta_disconnect_calls;
 }
 
 void wifi_host_post_sta_disconnect(uint16_t reason)

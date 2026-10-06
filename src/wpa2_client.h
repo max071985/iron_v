@@ -48,6 +48,7 @@ extern "C" {
 #define WPA2_MAX_PASS_LEN                   64U
 #define WPA2_MIN_PASS_LEN                   8U
 #define WPA2_PBKDF2_ITERATIONS              4096U
+#define WPA2_SHA1_DIGEST_LEN                20U
 #define WPA2_AES_KEYWRAP_BLOCK              8U
 #define WPA2_AES_KEYWRAP_MIN_LEN            24U     /* IV + two 64-bit blocks */
 #define WPA2_KEY_DATA_MAX_LEN               256U
@@ -196,6 +197,8 @@ typedef struct {
     uint32_t     m3_rx_count;
     uint32_t     m4_tx_count;
     uint64_t     last_handshake_duration_us;
+    uint32_t     pmk_derivations;   /* PBKDF2 runs since init (REV-12: once per network) */
+    uint32_t     pmk_cache_hits;    /* joins that reused the cached PMK */
 } wpa2_telemetry_t;
 
 /* ========================================================================= */
@@ -222,8 +225,10 @@ void          wpa2_client_eapol_txdone(uint8_t *eapol, size_t len, bool tx_failu
 /* Handover & Home LAN Join Orchestrator */
 wpa2_status_t wpa2_client_handover(const char *ssid, const char *passphrase);
 wpa2_status_t wpa2_client_handover_chan(const char *ssid, const char *passphrase, uint8_t channel);
-/* keep_ap: join while the SoftAP and the IP stack on it stay up (portal; wifi_sta_take_over) */
-wpa2_status_t wpa2_client_join(const char *ssid, const char *passphrase, uint8_t channel, bool keep_ap);
+/* keep_ap: join while the SoftAP and the IP stack on it stay up (portal; wifi_sta_take_over).
+ * bssid (with a channel, STA only): join that AP only (link manager fast path), else any AP of the SSID */
+wpa2_status_t wpa2_client_join(const char *ssid, const char *passphrase, uint8_t channel,
+                               const uint8_t *bssid, bool keep_ap);
 
 /* Cryptographic Engines & Test Vectors */
 wpa2_status_t wpa2_crypto_pbkdf2_sha1(const char *passphrase, const char *ssid,

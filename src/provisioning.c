@@ -16,6 +16,8 @@
 #include "wifi.h"
 #include "wifi_vendor_types.h"
 #include "wpa2_client.h"
+#include "wpa_driver.h"
+#include "wifi_link.h"
 #include "dhcp.h"
 #include "net.h"
 #include "config.h"
@@ -336,7 +338,7 @@ provisioning_status_t provisioning_init(void)
     {
         memset(&s_prov_join, 0, sizeof(s_prov_join));
         s_prov_join.state = PROV_JOIN_IDLE;
-        s_prov_join.retry_delay_us = PROV_RETRY_MIN_US;
+        s_prov_join.retry_delay_us = WIFI_LINK_RETRY_MIN_US;
     }
 
     s_prov_initialized = true;
@@ -554,7 +556,10 @@ provisioning_status_t provisioning_request_join(bool keep_ap)
     s_prov_join.next_event_us = 0U;
     s_prov_join.last_reason = 0U;
     s_prov_join.attempts = 0U;
-    s_prov_join.retry_delay_us = PROV_RETRY_MIN_US;
+    s_prov_join.retry_delay_us = WIFI_LINK_RETRY_MIN_US;
+    s_prov_join.fast_path = false;
+    /* New or re-checked credentials: find the AP by scanning again */
+    wifi_link_forget();
     return PROV_OK;
 }
 
@@ -626,6 +631,27 @@ void provisioning_boot(void)
 #endif
 }
 
+/* Waits the current backoff (with jitter, HW RNG) before the next STA-only attempt */
+static void prov_join_schedule_retry(uint64_t now_us)
+{
+    uint32_t rand32 = 0U;
+    wpa_drv_random((uint8_t *)&rand32, sizeof(rand32));
+    s_prov_join.state = PROV_JOIN_RETRY_WAIT;
+    s_prov_join.next_event_us = now_us + wifi_link_jitter_us(s_prov_join.retry_delay_us, rand32);
+}
+
+/* The STA joined: remember the AP for fast reconnects, reset the backoff */
+static void prov_join_succeeded(void)
+{
+    uint8_t bssid[WIFI_LINK_BSSID_LEN];
+    if (wifi_sta_get_bssid(bssid) == WIFI_OK)
+    {
+        wifi_link_on_connected(bssid, wifi_sta_get_channel());
+    }
+    s_prov_join.unproven = false;
+    s_prov_join.retry_delay_us = WIFI_LINK_RETRY_MIN_US;
+}
+
 /* Ends a failed attempt: a portal join gives up (SoftAP stays), a STA-only join retries with backoff */
 static void prov_join_attempt_failed(uint64_t now_us, uint16_t reason)
 {
@@ -645,13 +671,11 @@ static void prov_join_attempt_failed(uint64_t now_us, uint16_t reason)
         s_prov_join.state = PROV_JOIN_FAILED;
         return;
     }
-    s_prov_join.state = PROV_JOIN_RETRY_WAIT;
-    s_prov_join.next_event_us = now_us + s_prov_join.retry_delay_us;
-    s_prov_join.retry_delay_us *= 2U;
-    if (s_prov_join.retry_delay_us > PROV_RETRY_MAX_US)
-    {
-        s_prov_join.retry_delay_us = PROV_RETRY_MAX_US;
-    }
+    wifi_link_on_attempt_failed(s_prov_join.fast_path);
+    /* We own the retries: stop the blob's own (re)association attempts until the backoff ends (O-31) */
+    (void)wifi_sta_end_attempt();
+    prov_join_schedule_retry(now_us);
+    s_prov_join.retry_delay_us = wifi_link_next_backoff_us(s_prov_join.retry_delay_us);
 }
 
 /* The supplicant gave up on this attempt (e.g. no message 3: wrong passphrase). The blob keeps
@@ -702,14 +726,27 @@ void provisioning_tick(uint64_t now_us)
                 break;
             }
             s_prov_join.attempts++;
-            s_prov_join_disc_base = wifi_get_sta_disconnect_count();
             s_prov_join.state = PROV_JOIN_JOINING;
             s_prov_join.next_event_us = now_us + PROV_JOIN_TIMEOUT_US;
-            /* PBKDF2 runs here and takes seconds; it counts against the join timeout */
-            /* Portal joins use the channel from the scan: the SoftAP leaves its channel only briefly */
-            uint8_t channel = s_prov_join.keep_ap ? prov_scan_channel_of(s_prov_creds.ssid) : 0U;
+            /* PBKDF2 runs here on the first join with these credentials (seconds; counts against the
+             * join timeout); reconnects reuse the cached PMK */
+            /* Portal joins use the channel from the scan: the SoftAP leaves its channel only briefly.
+             * STA-only joins try the AP we were last on first, then scan all channels (REV-12) */
+            uint8_t channel = 0U;
+            uint8_t bssid[WIFI_LINK_BSSID_LEN];
+            s_prov_join.fast_path = false;
+            if (s_prov_join.keep_ap)
+            {
+                channel = prov_scan_channel_of(s_prov_creds.ssid);
+            }
+            else
+            {
+                s_prov_join.fast_path = wifi_link_next_target(bssid, &channel);
+            }
             wpa2_status_t wst = wpa2_client_join(s_prov_creds.ssid, s_prov_creds.passphrase, channel,
-                                                 s_prov_join.keep_ap);
+                                                 s_prov_join.fast_path ? bssid : NULL, s_prov_join.keep_ap);
+            /* Counted after the join call: leaving a previous association posts a disconnect */
+            s_prov_join_disc_base = wifi_get_sta_disconnect_count();
             if (wst != WPA2_OK)
             {
                 prov_join_attempt_failed(now_us, 0U);
@@ -723,7 +760,7 @@ void provisioning_tick(uint64_t now_us)
             }
             else if (wifi_is_sta_connected())
             {
-                s_prov_join.unproven = false;
+                prov_join_succeeded();
                 if (s_prov_join.keep_ap)
                 {
                     s_prov_join.state = PROV_JOIN_HANDOVER;
@@ -732,7 +769,6 @@ void provisioning_tick(uint64_t now_us)
                 else
                 {
                     s_prov_join.state = PROV_JOIN_ONLINE;
-                    s_prov_join.retry_delay_us = PROV_RETRY_MIN_US;
                 }
             }
             else if (now_us >= s_prov_join.next_event_us)
@@ -751,7 +787,6 @@ void provisioning_tick(uint64_t now_us)
                 {
                     s_prov_join.state = PROV_JOIN_ONLINE;
                     s_prov_join.keep_ap = false;
-                    s_prov_join.retry_delay_us = PROV_RETRY_MIN_US;
                 }
                 else
                 {
@@ -763,11 +798,14 @@ void provisioning_tick(uint64_t now_us)
         case PROV_JOIN_ONLINE:
             if (disconnected)
             {
-                /* Link lost: rejoin with backoff (the full link manager is REV-12) */
+                /* Link lost: rejoin after the shortest backoff, cached AP first (REV-12).
+                 * Never a reboot and never the SoftAP (review 7.1) */
                 s_prov_join.last_reason = wifi_get_sta_last_disconnect_reason();
                 s_prov_join_disc_base = wifi_get_sta_disconnect_count();
-                s_prov_join.state = PROV_JOIN_RETRY_WAIT;
-                s_prov_join.next_event_us = now_us + s_prov_join.retry_delay_us;
+                s_prov_join.wpa2_fail = (uint8_t)WPA2_FAIL_NONE;
+                s_prov_join.link_losses++;
+                prov_join_schedule_retry(now_us);
+                s_prov_join.retry_delay_us = wifi_link_next_backoff_us(s_prov_join.retry_delay_us);
             }
             break;
         case PROV_JOIN_RETRY_WAIT:
@@ -1008,6 +1046,32 @@ void provisioning_print_status(void)
     prov_u32_to_dec(s_prov_join.attempts, num, sizeof(num));
     console_puts(num);
     console_puts("\r\n");
+    /* Link manager (REV-12): link losses, cached AP, attempts per path, next backoff */
+    const wifi_link_cache_t *link = wifi_link_get_cache();
+    console_puts(" Link:         losses ");
+    prov_u32_to_dec(s_prov_join.link_losses, num, sizeof(num));
+    console_puts(num);
+    console_puts(", cached AP ");
+    if (link->valid)
+    {
+        console_puts("ch ");
+        prov_u32_to_dec(link->channel, num, sizeof(num));
+        console_puts(num);
+    }
+    else
+    {
+        console_puts("none");
+    }
+    console_puts(", fast/full attempts ");
+    prov_u32_to_dec(link->fast_attempts, num, sizeof(num));
+    console_puts(num);
+    console_puts("/");
+    prov_u32_to_dec(link->full_attempts, num, sizeof(num));
+    console_puts(num);
+    console_puts(", backoff ");
+    prov_u32_to_dec((uint32_t)(s_prov_join.retry_delay_us / PROV_US_PER_SECOND), num, sizeof(num));
+    console_puts(num);
+    console_puts(" s\r\n");
     console_puts(" Scan Cache:   ");
     prov_u32_to_dec(s_prov_scan_count, num, sizeof(num));
     console_puts(num);

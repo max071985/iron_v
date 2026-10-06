@@ -48,6 +48,7 @@
 #include "nvs.h"
 #include "provisioning.h"
 #include "wpa2_client.h"
+#include "wifi_link.h"
 #include "wpa_ie.h"
 #include "wpa_driver.h"
 #include "mdns.h"
@@ -3142,6 +3143,84 @@ static void test_provisioning_seed(void)
 }
 
 /* REV-29: portal join with hand-over, failures with reasons, boot join with backoff */
+static void test_wifi_link_policy(void)
+{
+    printf("  [TEST] Wi-Fi link manager policy: backoff, jitter, fast path (REV-12)...\n");
+
+    /* Backoff: 1 s doubling to a 5 min cap */
+    TEST_ASSERT(wifi_link_next_backoff_us(0U) == WIFI_LINK_RETRY_MIN_US, "Backoff starts at the minimum");
+    TEST_ASSERT(wifi_link_next_backoff_us(WIFI_LINK_RETRY_MIN_US) == 2U * WIFI_LINK_RETRY_MIN_US, "Backoff doubles");
+    uint64_t d = WIFI_LINK_RETRY_MIN_US;
+    uint32_t steps = 0U;
+    while (d < WIFI_LINK_RETRY_MAX_US && steps < 32U)
+    {
+        d = wifi_link_next_backoff_us(d);
+        steps++;
+    }
+    TEST_ASSERT(d == WIFI_LINK_RETRY_MAX_US && steps == 9U, "Cap reached after 9 doublings (1 s -> 5 min)");
+    TEST_ASSERT(wifi_link_next_backoff_us(WIFI_LINK_RETRY_MAX_US) == WIFI_LINK_RETRY_MAX_US, "Cap holds");
+
+    /* Jitter: +/- 20 %, whole range reachable, never outside */
+    const uint64_t base = 10U * WIFI_LINK_RETRY_MIN_US;
+    const uint64_t span = base * WIFI_LINK_JITTER_PERCENT / WIFI_LINK_PERCENT;
+    TEST_ASSERT(wifi_link_jitter_us(base, 0U) == base - span, "Jitter low end");
+    TEST_ASSERT(wifi_link_jitter_us(base, (uint32_t)(2U * span)) == base + span, "Jitter high end");
+    bool in_range = true;
+    uint32_t r = 12345U;
+    for (uint32_t i = 0U; i < 1000U; i++)
+    {
+        r = r * 1103515245U + 12345U;
+        uint64_t j = wifi_link_jitter_us(base, r);
+        in_range = in_range && j >= base - span && j <= base + span;
+    }
+    TEST_ASSERT(in_range, "Jitter stays within +/- 20 %");
+    TEST_ASSERT(wifi_link_jitter_us(0U, 0xFFFFFFFFU) == 0U, "Zero delay stays zero");
+
+    /* Fast path: none without a cached AP; N attempts on the cached AP, then full scans until a success */
+    const uint8_t ap[WIFI_LINK_BSSID_LEN] = {0x02U, 0x01U, 0x02U, 0x03U, 0x04U, 0x05U};
+    uint8_t out[WIFI_LINK_BSSID_LEN];
+    uint8_t chan = 0xFFU;
+    wifi_link_forget();
+    TEST_ASSERT(!wifi_link_next_target(out, &chan) && chan == 0U, "No cache: full scan");
+    wifi_link_on_connected(ap, 0U);
+    TEST_ASSERT(!wifi_link_get_cache()->valid, "Channel 0 is not cached");
+    wifi_link_on_connected(ap, 9U);
+    for (uint32_t i = 0U; i < WIFI_LINK_FAST_ATTEMPTS; i++)
+    {
+        memset(out, 0, sizeof(out));
+        TEST_ASSERT(wifi_link_next_target(out, &chan) && chan == 9U && memcmp(out, ap, sizeof(ap)) == 0,
+                    "Fast attempt on the cached AP");
+        wifi_link_on_attempt_failed(true);
+    }
+    TEST_ASSERT(!wifi_link_next_target(out, &chan) && chan == 0U, "Fast attempts used up: full scan");
+    wifi_link_on_attempt_failed(false);
+    TEST_ASSERT(!wifi_link_next_target(out, &chan), "Full scans continue until a success");
+    TEST_ASSERT(wifi_link_get_cache()->fast_attempts == WIFI_LINK_FAST_ATTEMPTS &&
+                wifi_link_get_cache()->full_attempts == 3U, "Attempts counted per path");
+    wifi_link_on_connected(ap, 9U);
+    TEST_ASSERT(wifi_link_next_target(out, &chan), "Success re-arms the fast path");
+    wifi_link_forget();
+    TEST_ASSERT(!wifi_link_get_cache()->valid, "Forget clears the cache");
+
+    /* PMK cache: same network reuses the PMK, other SSID or passphrase derives again */
+    wpa2_telemetry_t wt;
+    wpa2_client_init();
+    TEST_ASSERT(wpa2_client_configure("test-net-a", "passphrase-one") == WPA2_OK, "First configure");
+    wpa2_client_get_telemetry(&wt);
+    TEST_ASSERT(wt.pmk_derivations == 1U && wt.pmk_cache_hits == 0U && wt.has_pmk, "First configure derives");
+    TEST_ASSERT(wpa2_client_configure("test-net-a", "passphrase-one") == WPA2_OK, "Same network again");
+    wpa2_client_get_telemetry(&wt);
+    TEST_ASSERT(wt.pmk_derivations == 1U && wt.pmk_cache_hits == 1U && wt.has_pmk, "Same network: cache hit");
+    TEST_ASSERT(wpa2_client_configure("test-net-a", "passphrase-two") == WPA2_OK, "Other passphrase");
+    wpa2_client_get_telemetry(&wt);
+    TEST_ASSERT(wt.pmk_derivations == 2U, "Other passphrase derives again");
+    TEST_ASSERT(wpa2_client_configure("test-net-b", "passphrase-two") == WPA2_OK, "Other SSID");
+    wpa2_client_get_telemetry(&wt);
+    TEST_ASSERT(wt.pmk_derivations == 3U, "Other SSID derives again");
+    wpa2_client_init();
+    TEST_ASSERT(wpa2_client_get_telemetry(&wt) == WPA2_OK && wt.pmk_derivations == 0U, "Init clears the PMK cache");
+}
+
 static void test_provisioning_join(void)
 {
     printf("  [TEST] Provisioning station join and portal hand-over (REV-29)...\n");
@@ -3181,10 +3260,21 @@ static void test_provisioning_join(void)
     TEST_ASSERT(join.state == PROV_JOIN_JOINING && join.attempts == 1U, "Tick starts the join");
     TEST_ASSERT(wifi_is_ap_active() && wifi_get_ip_tx_if() == WIFI_TX_IF_AP, "Joining: IP stack still on the SoftAP");
 
+    const uint8_t bssid_a[WIFI_LINK_BSSID_LEN] = {0x02U, 0x11U, 0x22U, 0x33U, 0x44U, 0x55U};
+    const uint8_t bssid_b[WIFI_LINK_BSSID_LEN] = {0x02U, 0x66U, 0x77U, 0x88U, 0x99U, 0xAAU};
+    uint8_t target[WIFI_LINK_BSSID_LEN];
+    uint8_t target_chan = 0U;
+    wpa2_telemetry_t wtel;
+    wifi_host_set_sta_link(bssid_a, 6U);
     wifi_host_set_sta_connected(true);
     provisioning_tick(t0 + PROV_US_PER_SECOND);
     provisioning_get_join(&join);
     TEST_ASSERT(join.state == PROV_JOIN_HANDOVER, "Joined: hand-over pending");
+    TEST_ASSERT(wifi_link_get_cache()->valid && wifi_link_get_cache()->channel == 6U &&
+                memcmp(wifi_link_get_cache()->bssid, bssid_a, WIFI_LINK_BSSID_LEN) == 0, "Joined AP cached");
+    wpa2_client_get_telemetry(&wtel);
+    const uint32_t pmk_runs = wtel.pmk_derivations;
+    TEST_ASSERT(pmk_runs >= 1U, "First join derives the PMK");
     TEST_ASSERT(wifi_is_ap_active() && wifi_get_ip_tx_if() == WIFI_TX_IF_AP, "Hand-over pending: phone still reaches the portal");
     http_process_request(req_status, strlen(req_status), resp_buf, sizeof(resp_buf), &resp_len);
     TEST_ASSERT(strstr(resp_buf, "\"join\":{\"state\":\"connected\"") != NULL, "Status reports connected");
@@ -3198,38 +3288,91 @@ static void test_provisioning_join(void)
     TEST_ASSERT(join.state == PROV_JOIN_ONLINE, "Hand-over done: online");
     TEST_ASSERT(!wifi_is_ap_active() && wifi_get_ip_tx_if() == WIFI_TX_IF_STA, "SoftAP gone, IP stack on the STA");
 
-    /* 2. Link lost while online: retry after the minimum backoff, as a STA-only join */
+    /* 2. Link lost while online: retry after the minimum backoff (+/- jitter), cached AP first (REV-12) */
     uint64_t t1 = t0 + 100U * PROV_US_PER_SECOND;
     wifi_host_post_sta_disconnect(WIFI_REASON_BEACON_TIMEOUT);
     provisioning_tick(t1);
     provisioning_get_join(&join);
     TEST_ASSERT(join.state == PROV_JOIN_RETRY_WAIT && join.last_reason == WIFI_REASON_BEACON_TIMEOUT, "Link loss: waits to retry");
+    TEST_ASSERT(join.link_losses == 1U, "Link loss counted");
     TEST_ASSERT(!wifi_is_ap_active(), "Link loss does not start the SoftAP");
-    provisioning_tick(t1 + PROV_RETRY_MIN_US - 1U);
+    TEST_ASSERT(join.next_event_us >= t1 + WIFI_LINK_RETRY_MIN_US - WIFI_LINK_RETRY_MIN_US * WIFI_LINK_JITTER_PERCENT / WIFI_LINK_PERCENT &&
+                join.next_event_us <= t1 + WIFI_LINK_RETRY_MIN_US + WIFI_LINK_RETRY_MIN_US * WIFI_LINK_JITTER_PERCENT / WIFI_LINK_PERCENT,
+                "First retry after the minimum backoff, within the jitter");
+    provisioning_tick(join.next_event_us - 1U);
     provisioning_get_join(&join);
     TEST_ASSERT(join.state == PROV_JOIN_RETRY_WAIT, "No retry before the backoff ends");
-    provisioning_tick(t1 + PROV_RETRY_MIN_US);
-    provisioning_tick(t1 + PROV_RETRY_MIN_US);
+    provisioning_tick(join.next_event_us);
+    provisioning_tick(join.next_event_us);
     provisioning_get_join(&join);
-    TEST_ASSERT(join.state == PROV_JOIN_JOINING && !join.keep_ap, "Retry rejoins as a station");
+    TEST_ASSERT(join.state == PROV_JOIN_JOINING && !join.keep_ap && join.fast_path, "Retry rejoins as a station, fast path");
+    TEST_ASSERT(wifi_host_last_sta_target(target, &target_chan) && target_chan == 6U &&
+                memcmp(target, bssid_a, WIFI_LINK_BSSID_LEN) == 0, "Fast path targets the cached BSSID and channel");
+    wpa2_client_get_telemetry(&wtel);
+    TEST_ASSERT(wtel.pmk_derivations == pmk_runs && wtel.pmk_cache_hits >= 1U, "Reconnect reuses the cached PMK (no PBKDF2)");
 
-    /* 3. Repeated STA-only failures back off exponentially */
+    /* 3. Failed attempts: blob stopped, backoff doubles, full scan after the fast attempts */
     uint64_t t2 = t1 + 200U * PROV_US_PER_SECOND;
+    uint32_t disc_calls = wifi_host_sta_disconnect_calls();
     wifi_host_post_sta_disconnect(WIFI_REASON_NO_AP_FOUND);
     provisioning_tick(t2);
     provisioning_get_join(&join);
-    TEST_ASSERT(join.state == PROV_JOIN_RETRY_WAIT && join.next_event_us == t2 + PROV_RETRY_MIN_US &&
-                join.retry_delay_us == 2U * PROV_RETRY_MIN_US, "Failed retry: next delay doubles");
-    TEST_ASSERT(!wifi_is_ap_active(), "Failed boot join does not start the SoftAP");
-    for (uint32_t i = 0U; i < 10U; i++)
+    TEST_ASSERT(join.state == PROV_JOIN_RETRY_WAIT && join.retry_delay_us == 4U * WIFI_LINK_RETRY_MIN_US &&
+                join.next_event_us >= t2 + 2U * WIFI_LINK_RETRY_MIN_US * (WIFI_LINK_PERCENT - WIFI_LINK_JITTER_PERCENT) / WIFI_LINK_PERCENT &&
+                join.next_event_us <= t2 + 2U * WIFI_LINK_RETRY_MIN_US * (WIFI_LINK_PERCENT + WIFI_LINK_JITTER_PERCENT) / WIFI_LINK_PERCENT,
+                "Failed retry: waits 2 s (+/- jitter), next delay doubles");
+    TEST_ASSERT(wifi_host_sta_disconnect_calls() == disc_calls + 1U, "Failed attempt stops the blob's own retries (O-31)");
+    TEST_ASSERT(!wifi_is_ap_active(), "Failed join does not start the SoftAP");
+    for (uint32_t i = 1U; i < WIFI_LINK_FAST_ATTEMPTS; i++)
     {
         provisioning_tick(join.next_event_us);
         provisioning_tick(join.next_event_us);
+        provisioning_get_join(&join);
+        TEST_ASSERT(join.fast_path, "Fast path for the first attempts");
         wifi_host_post_sta_disconnect(WIFI_REASON_NO_AP_FOUND);
         provisioning_tick(join.next_event_us + 1U);
         provisioning_get_join(&join);
     }
-    TEST_ASSERT(join.retry_delay_us == PROV_RETRY_MAX_US, "Backoff capped");
+    provisioning_tick(join.next_event_us);
+    provisioning_tick(join.next_event_us);
+    provisioning_get_join(&join);
+    TEST_ASSERT(join.state == PROV_JOIN_JOINING && !join.fast_path, "After the fast attempts: full scan");
+    TEST_ASSERT(!wifi_host_last_sta_target(target, &target_chan) && target_chan == 0U, "Full scan: no BSSID, all channels");
+    for (uint32_t i = 0U; i < 10U; i++)
+    {
+        wifi_host_post_sta_disconnect(WIFI_REASON_NO_AP_FOUND);
+        provisioning_tick(join.next_event_us + 1U);
+        provisioning_get_join(&join);
+        provisioning_tick(join.next_event_us);
+        provisioning_tick(join.next_event_us);
+        provisioning_get_join(&join);
+    }
+    TEST_ASSERT(join.retry_delay_us == WIFI_LINK_RETRY_MAX_US && !join.fast_path, "Backoff capped, still full scans");
+
+    /* Full scan finds another node of the network: it becomes the cached AP */
+    wifi_host_set_sta_link(bssid_b, 11U);
+    wifi_host_set_sta_connected(true);
+    provisioning_tick(join.next_event_us + 1U);
+    provisioning_get_join(&join);
+    TEST_ASSERT(join.state == PROV_JOIN_ONLINE && join.retry_delay_us == WIFI_LINK_RETRY_MIN_US, "Rejoined: online, backoff reset");
+    TEST_ASSERT(wifi_link_get_cache()->channel == 11U && wifi_link_get_cache()->fast_failures == 0U &&
+                memcmp(wifi_link_get_cache()->bssid, bssid_b, WIFI_LINK_BSSID_LEN) == 0, "New AP cached");
+    uint64_t t2b = join.next_event_us + 10U * PROV_US_PER_SECOND;
+    wifi_host_post_sta_disconnect(WIFI_REASON_BEACON_TIMEOUT);
+    provisioning_tick(t2b);
+    provisioning_get_join(&join);
+    provisioning_tick(join.next_event_us);
+    provisioning_tick(join.next_event_us);
+    provisioning_get_join(&join);
+    TEST_ASSERT(join.fast_path && wifi_host_last_sta_target(target, &target_chan) && target_chan == 11U &&
+                memcmp(target, bssid_b, WIFI_LINK_BSSID_LEN) == 0 && join.link_losses == 2U,
+                "Next link loss: fast path to the new AP");
+    wpa2_client_get_telemetry(&wtel);
+    TEST_ASSERT(wtel.pmk_derivations == pmk_runs, "Still one PBKDF2 after many reconnects");
+    wifi_host_post_sta_disconnect(WIFI_REASON_NO_AP_FOUND);
+    provisioning_tick(join.next_event_us + 1U);
+    provisioning_get_join(&join);
+    TEST_ASSERT(join.state == PROV_JOIN_RETRY_WAIT, "Fast attempt failed: waiting to retry");
 
     /* 4. Portal join with a wrong passphrase: SoftAP stays, reason reported */
     provisioning_cancel_join();
@@ -5348,6 +5491,7 @@ int main(void)
     test_nvs_subsystem();
     test_selftest_snapshots();
     test_provisioning_subsystem();
+    test_wifi_link_policy();
     test_provisioning_join();
     test_provisioning_seed();
     test_mdns_legacy_unicast();

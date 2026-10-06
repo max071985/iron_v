@@ -874,6 +874,7 @@ esp_err_t esp_wifi_set_mode(wifi_mode_t mode);
 esp_err_t esp_wifi_get_mode(wifi_mode_t *mode);
 esp_err_t esp_wifi_set_storage(wifi_storage_t storage);
 esp_err_t esp_wifi_set_ps(wifi_ps_type_t type);
+esp_err_t esp_wifi_set_inactive_time(wifi_interface_t ifx, uint16_t sec);
 esp_err_t esp_wifi_get_inactive_time(wifi_interface_t ifx, uint16_t *sec);
 esp_err_t esp_wifi_set_protocol(wifi_interface_t ifx, uint8_t protocol_bitmap);
 esp_err_t esp_wifi_set_country(const wifi_country_t *country);

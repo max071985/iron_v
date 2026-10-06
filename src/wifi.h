@@ -38,6 +38,7 @@
 #define WIFI_SNIFFER_DEFAULT_DURATION_SEC 10U
 #define WIFI_SNIFFER_MAX_BEACONS_LOGGED  32U
 #define WIFI_STA_START_TIMEOUT_US        5000000ULL
+#define WIFI_STA_LEAVE_TIMEOUT_US        5000000ULL   /* disconnect event before joining another AP */
 #define WIFI_SCAN_ALL_2G_CHANNELS_MASK   0x7FFEU
 #define WIFI_SCAN_BYPASS_5G_MASK         0x0001U
 #define WIFI_DEFAULT_SCAN_RSSI_THRESHOLD (-127)
@@ -235,6 +236,13 @@ bool wifi_is_cca_enabled(void);
 /* Wi-Fi Station (STA) Subsystem (Task 8.2) */
 wifi_status_t wifi_start_sta(const char *ssid, const char *password) FLASH_TEXT_ATTR;
 wifi_status_t wifi_start_sta_chan(const char *ssid, const char *password, uint8_t channel) FLASH_TEXT_ATTR;
+/* Joins one AP: given BSSID on the given channel (link manager fast path, REV-12) */
+wifi_status_t wifi_start_sta_bssid(const char *ssid, const char *password, uint8_t channel,
+                                   const uint8_t *bssid) FLASH_TEXT_ATTR;
+/* Ends the current association or join attempt (also the blob's own retries); STA stays started */
+wifi_status_t wifi_sta_end_attempt(void) FLASH_TEXT_ATTR;
+/* Channel of the last STA association */
+uint8_t wifi_sta_get_channel(void);
 wifi_status_t wifi_stop_sta(void) FLASH_TEXT_ATTR;
 bool wifi_is_sta_connected(void) FLASH_TEXT_ATTR;
 wifi_status_t wifi_sta_get_bssid(uint8_t *out_bssid) FLASH_TEXT_ATTR;
@@ -256,6 +264,10 @@ const wifi_ap_record_t *wifi_get_scan_records(uint16_t *out_count);
 void wifi_host_set_scan_records(const wifi_ap_record_t *recs, uint16_t count);
 void wifi_host_set_sta_connected(bool connected);
 void wifi_host_post_sta_disconnect(uint16_t reason);
+void wifi_host_set_sta_link(const uint8_t *bssid, uint8_t channel);
+/* Target of the last STA join: returns whether a BSSID was set */
+bool wifi_host_last_sta_target(uint8_t *out_bssid, uint8_t *out_channel);
+uint32_t wifi_host_sta_disconnect_calls(void);
 #endif
 
 #endif /* IRON_V_WIFI_H */

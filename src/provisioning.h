@@ -32,8 +32,6 @@ extern "C" {
 #define PROV_JOIN_TIMEOUT_US             30000000ULL   /* one STA join attempt, PBKDF2 included */
 #define PROV_HANDOVER_DELAY_US           15000000ULL   /* portal shows the result before the SoftAP goes */
 #define PROV_PORTAL_JOIN_DELAY_US        1000000ULL    /* let the save reply out before the radio retunes */
-#define PROV_RETRY_MIN_US                5000000ULL    /* first retry after a lost or failed boot join */
-#define PROV_RETRY_MAX_US                300000000ULL  /* retry backoff cap */
 #define PROV_US_PER_SECOND               1000000ULL
 #define PROV_SCAN_REFRESH_PARAM          "refresh"     /* GET /api/wifi/scan?refresh=1 rescans */
 
@@ -83,9 +81,11 @@ typedef struct {
     bool     unproven;         /* credentials came from the portal and never joined: forget on failure */
     uint16_t last_reason;      /* last STA disconnect reason (0: timeout or none) */
     uint8_t  wpa2_fail;        /* supplicant verdict at the failure (wpa2_fail_t) */
+    bool     fast_path;        /* current STA-only attempt targets the cached BSSID/channel (REV-12) */
     uint32_t attempts;
+    uint32_t link_losses;      /* established links lost since boot */
     uint64_t next_event_us;    /* JOINING timeout, HANDOVER time or RETRY_WAIT end */
-    uint64_t retry_delay_us;
+    uint64_t retry_delay_us;   /* backoff for the next failure (before jitter, wifi_link.h) */
 } prov_join_info_t;
 
 typedef enum {

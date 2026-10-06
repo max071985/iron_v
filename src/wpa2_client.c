@@ -35,6 +35,9 @@
 static wpa2_state_t     s_wpa2_state = WPA2_STATE_DISCONNECTED;
 static wpa2_telemetry_t s_wpa2_telem;
 static uint8_t          s_pmk[WPA2_PMK_LEN];
+/* PMK cache (REV-12): SHA-1 over SSID length, SSID and passphrase of the PMK in s_pmk */
+static uint8_t          s_pmk_key[WPA2_SHA1_DIGEST_LEN];
+static bool             s_pmk_cached = false;
 static wpa2_ptk_t       s_ptk;              /* verified by a valid M3 MIC */
 static wpa2_ptk_t       s_tptk;             /* derived from M1, not yet verified */
 static bool             s_ptk_valid = false;
@@ -1212,6 +1215,19 @@ void wpa2_client_on_disconnected(uint8_t reason)
     wpa2_set_state(WPA2_STATE_DISCONNECTED);
 }
 
+/* Identifies the network a cached PMK belongs to without keeping a second copy of the passphrase */
+static void wpa2_pmk_cache_key(const char *ssid, size_t ssid_len, const char *passphrase, size_t pass_len,
+                               uint8_t out_key[WPA2_SHA1_DIGEST_LEN])
+{
+    wpa2_sha1_ctx_t ctx;
+    uint8_t len_byte = (uint8_t)ssid_len;
+    wpa2_sha1_init(&ctx);
+    wpa2_sha1_update(&ctx, &len_byte, sizeof(len_byte));
+    wpa2_sha1_update(&ctx, (const uint8_t *)ssid, ssid_len);
+    wpa2_sha1_update(&ctx, (const uint8_t *)passphrase, pass_len);
+    wpa2_sha1_final(&ctx, out_key);
+}
+
 wpa2_status_t wpa2_client_configure(const char *ssid, const char *passphrase)
 {
     if (ssid == NULL || passphrase == NULL)
@@ -1252,16 +1268,30 @@ wpa2_status_t wpa2_client_configure(const char *ssid, const char *passphrase)
     {
         return WPA2_ERR_UNSUPPORTED;
     }
+    /* Reconnects with the same network reuse the PMK: no PBKDF2 per reconnect (REV-12) */
+    uint8_t key[WPA2_SHA1_DIGEST_LEN];
+    wpa2_pmk_cache_key(ssid, slen, passphrase, plen, key);
+    if (s_pmk_cached && memcmp(key, s_pmk_key, sizeof(key)) == 0)
+    {
+        s_wpa2_telem.has_pmk = true;
+        s_wpa2_telem.pmk_cache_hits++;
+        return WPA2_OK;
+    }
+    s_pmk_cached = false;
     wpa2_status_t pst = wpa2_crypto_pbkdf2_sha1(passphrase, s_configured_ssid,
                                                 WPA2_PBKDF2_ITERATIONS, s_pmk);
     if (pst == WPA2_OK)
     {
+        memcpy(s_pmk_key, key, sizeof(s_pmk_key));
+        s_pmk_cached = true;
         s_wpa2_telem.has_pmk = true;
+        s_wpa2_telem.pmk_derivations++;
     }
     return pst;
 }
 
-wpa2_status_t wpa2_client_join(const char *ssid, const char *passphrase, uint8_t channel, bool keep_ap)
+wpa2_status_t wpa2_client_join(const char *ssid, const char *passphrase, uint8_t channel,
+                               const uint8_t *bssid, bool keep_ap)
 {
     wpa2_status_t cst = wpa2_client_configure(ssid, passphrase);
     if (cst != WPA2_OK)
@@ -1296,6 +1326,10 @@ wpa2_status_t wpa2_client_join(const char *ssid, const char *passphrase, uint8_t
     {
         wifi_start_sta_keep_ap(ssid, passphrase, channel);
     }
+    else if (bssid != NULL && channel != 0U)
+    {
+        wifi_start_sta_bssid(ssid, passphrase, channel, bssid);
+    }
     else
     {
         wifi_start_sta_chan(ssid, passphrase, channel);
@@ -1306,7 +1340,7 @@ wpa2_status_t wpa2_client_join(const char *ssid, const char *passphrase, uint8_t
 
 wpa2_status_t wpa2_client_handover_chan(const char *ssid, const char *passphrase, uint8_t channel)
 {
-    return wpa2_client_join(ssid, passphrase, channel, false);
+    return wpa2_client_join(ssid, passphrase, channel, NULL, false);
 }
 
 wpa2_status_t wpa2_client_handover(const char *ssid, const char *passphrase)
@@ -1337,6 +1371,11 @@ void wpa2_client_print_status(void)
     }
     console_puts("\r\n  Keys:                PMK=");
     put_dec(s_wpa2_telem.has_pmk);
+    console_puts(" (derived ");
+    put_dec(s_wpa2_telem.pmk_derivations);
+    console_puts("x, cache hits ");
+    put_dec(s_wpa2_telem.pmk_cache_hits);
+    console_puts(")");
     console_puts(", PTK installed=");
     put_dec(s_wpa2_telem.has_ptk);
     console_puts(", GTK installed=");
@@ -1405,6 +1444,8 @@ wpa2_status_t wpa2_client_init(void)
     s_wpa2_state = WPA2_STATE_DISCONNECTED;
     memset(&s_wpa2_telem, 0, sizeof(s_wpa2_telem));
     memset(s_pmk, 0, sizeof(s_pmk));
+    memset(s_pmk_key, 0, sizeof(s_pmk_key));
+    s_pmk_cached = false;
     memset(&s_ptk, 0, sizeof(s_ptk));
     memset(&s_tptk, 0, sizeof(s_tptk));
     memset(s_gtk, 0, sizeof(s_gtk));

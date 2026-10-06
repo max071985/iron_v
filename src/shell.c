@@ -2224,6 +2224,9 @@ void shell_execute(char *input_buffer)
             console_puts("  AP Inactive Time:  ");
             put_dec(wifi_get_inactive_time_s(WIFI_TX_IF_AP));
             console_puts(" s\r\n");
+            console_puts("  STA Beacon Loss:   ");
+            put_dec(wifi_get_inactive_time_s(WIFI_TX_IF_STA));
+            console_puts(" s\r\n");
             console_puts("  ISR 1 Count:       ");
             put_dec(interrupt_get_count(1));
             console_puts("\r\n");

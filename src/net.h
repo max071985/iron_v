@@ -295,6 +295,11 @@ net_status_t arp_process_packet(const uint8_t *in_frame, uint16_t in_len,
 /* Inbound Packet Processing & Dispatches */
 /* rx_if: the SoftAP-only services (DHCP server, captive DNS) answer NET_IF_AP frames only */
 net_status_t net_input(const uint8_t *frame, uint16_t len, net_if_t rx_if);
+
+/* Per-segment TCP and per-request HTTP console lines (O-46, REV-16): off by default, they slow the
+ * main loop during bursts. `net trace on|off` */
+void net_set_trace(bool on);
+bool net_trace_enabled(void);
 net_status_t icmp_process_packet(const uint8_t *in_packet, uint16_t in_len,
                                  uint8_t *out_reply, uint16_t max_out_len,
                                  uint16_t *out_reply_len);

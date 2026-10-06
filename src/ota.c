@@ -7,6 +7,7 @@
 
 #include "ota.h"
 #include "section.h"
+#include "flash_rom.h"
 #include "string.h"
 #include "console.h"
 #include "utils.h"
@@ -16,9 +17,6 @@
 
 /* ROM SPI Flash C API Prototypes */
 typedef int esp_rom_spiflash_result_t;
-extern esp_rom_spiflash_result_t esp_rom_spiflash_read(uint32_t target, uint32_t *dest, int32_t len);
-extern esp_rom_spiflash_result_t esp_rom_spiflash_write(uint32_t target, const uint32_t *src, int32_t len);
-extern esp_rom_spiflash_result_t esp_rom_spiflash_erase_sector(size_t sector_num);
 extern esp_rom_spiflash_result_t esp_rom_spiflash_unlock(void);
 extern void spi_flash_attach(uint32_t ishspi, bool legacy);
 
@@ -130,32 +128,7 @@ static IRAM_ATTR ota_status_t flash_read(uint32_t offset, void *dest, size_t len
     s_telemetry.flash_reads++;
 
 #if defined(__riscv)
-    uint32_t mstatus = interrupt_global_save_and_disable();
-    /* Ensure 4-byte aligned access */
-    uint32_t aligned_buf[16];
-    uint8_t *dst_byte = (uint8_t *)dest;
-    size_t remaining = len;
-    uint32_t cur_offset = offset;
-    ota_status_t status = OTA_OK;
-
-    while (remaining > 0U)
-    {
-        size_t chunk = (remaining > sizeof(aligned_buf)) ? sizeof(aligned_buf) : remaining;
-        size_t read_words = (chunk + 3U) / 4U;
-
-        if (esp_rom_spiflash_read(cur_offset, aligned_buf, (int32_t)(read_words * 4U)) != 0)
-        {
-            status = OTA_ERR_FLASH_IO;
-            break;
-        }
-
-        memcpy(dst_byte, aligned_buf, chunk);
-        dst_byte += chunk;
-        cur_offset += (uint32_t)chunk;
-        remaining -= chunk;
-    }
-    interrupt_global_restore(mstatus);
-    return status;
+    return (flash_rom_read(offset, dest, len) == FLASH_ROM_OK) ? OTA_OK : OTA_ERR_FLASH_IO;
 #else
     mock_flash_ensure_init();
     uint32_t sec_idx = 0U;
@@ -207,34 +180,7 @@ static IRAM_ATTR ota_status_t flash_write(uint32_t offset, const void *src, size
     s_telemetry.flash_writes++;
 
 #if defined(__riscv)
-    uint32_t mstatus = interrupt_global_save_and_disable();
-    esp_rom_spiflash_unlock();
-
-    uint32_t aligned_buf[16];
-    const uint8_t *src_byte = (const uint8_t *)src;
-    size_t remaining = len;
-    uint32_t cur_offset = offset;
-    ota_status_t status = OTA_OK;
-
-    while (remaining > 0U)
-    {
-        size_t chunk = (remaining > sizeof(aligned_buf)) ? sizeof(aligned_buf) : remaining;
-        size_t write_words = (chunk + 3U) / 4U;
-        memset(aligned_buf, 0xFF, sizeof(aligned_buf));
-        memcpy(aligned_buf, src_byte, chunk);
-
-        if (esp_rom_spiflash_write(cur_offset, aligned_buf, (int32_t)(write_words * 4U)) != 0)
-        {
-            status = OTA_ERR_FLASH_IO;
-            break;
-        }
-
-        src_byte += chunk;
-        cur_offset += (uint32_t)chunk;
-        remaining -= chunk;
-    }
-    interrupt_global_restore(mstatus);
-    return status;
+    return (flash_rom_write(offset, src, len) == FLASH_ROM_OK) ? OTA_OK : OTA_ERR_FLASH_IO;
 #else
     mock_flash_ensure_init();
     uint32_t sec_idx = 0U;
@@ -284,16 +230,7 @@ static IRAM_ATTR ota_status_t flash_erase_sector(uint32_t offset)
     s_telemetry.flash_erases++;
 
 #if defined(__riscv)
-    uint32_t mstatus = interrupt_global_save_and_disable();
-    esp_rom_spiflash_unlock();
-    uint32_t sec_num = offset / OTA_FLASH_SECTOR_SIZE;
-    int res = esp_rom_spiflash_erase_sector((size_t)sec_num);
-    interrupt_global_restore(mstatus);
-    if (res != 0)
-    {
-        return OTA_ERR_FLASH_IO;
-    }
-    return OTA_OK;
+    return (flash_rom_erase_sector(offset) == FLASH_ROM_OK) ? OTA_OK : OTA_ERR_FLASH_IO;
 #else
     mock_flash_ensure_init();
     uint32_t sec_idx = 0U;

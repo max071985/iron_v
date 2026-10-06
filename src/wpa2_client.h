@@ -122,7 +122,8 @@ typedef enum {
     WPA2_ERR_BUFFER_SMALL           = -8,
     WPA2_ERR_TX_FAIL                = -9,
     WPA2_ERR_UNSUPPORTED            = -10,
-    WPA2_ERR_PROTOCOL               = -11
+    WPA2_ERR_PROTOCOL               = -11,
+    WPA2_ERR_CRYPTO                 = -12   /* SHA accelerator did not finish (REV-16) */
 } wpa2_status_t;
 
 /* Why the last join attempt stopped; shown by `sta status` */
@@ -199,6 +200,7 @@ typedef struct {
     uint64_t     last_handshake_duration_us;
     uint32_t     pmk_derivations;   /* PBKDF2 runs since init (REV-12: once per network) */
     uint32_t     pmk_cache_hits;    /* joins that reused the cached PMK */
+    uint32_t     pmk_derive_us;     /* duration of the last PBKDF2 run (REV-16: SHA accelerator) */
 } wpa2_telemetry_t;
 
 /* ========================================================================= */

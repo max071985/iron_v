@@ -178,6 +178,7 @@ provisioning_status_t provisioning_get_scan_results(wifi_scan_item_t *out_items,
 /* Station join (REV-29). keep_ap: portal join with hand-over, else STA only */
 provisioning_status_t provisioning_request_join(bool keep_ap);
 void                  provisioning_cancel_join(void);
+bool                  provisioning_join_busy(void);   /* NVS commit gate (REV-16) */
 /* do-test: put the join back as it was before the suite (drop test joins; rejoin if it was active) */
 void                  provisioning_restore_join(prov_join_state_t saved_state);
 /* Boot: join with saved credentials, else start the setup SoftAP (CONFIG_WIFI_AUTO_START_AP) */

@@ -53,6 +53,7 @@
 #include "wpa_driver.h"
 #include "mdns.h"
 #include "button.h"
+#include "looptime.h"
 
 /* Host test stubs for hardware-specific functions */
 void wdt_feed(void)
@@ -4869,6 +4870,129 @@ static void test_mdns_traffic_rules(void)
     wifi_host_set_tx_hook(NULL);
 }
 
+/* REV-16: loop latency telemetry, deferred NVS commits, PBKDF2 block path */
+static bool s_test_nvs_gate_busy;
+static bool test_nvs_gate(void) { return s_test_nvs_gate_busy; }
+
+static void test_scheduler_hardening(void)
+{
+    printf("  [TEST] REV-16 scheduler hardening (loop telemetry, NVS deferral, PBKDF2)...\n");
+
+    /* --- Loop telemetry --- */
+    looptime_reset(1000U);
+    const loop_stats_t *ls = looptime_get();
+    looptime_iter_begin(1000U);
+    looptime_mark(LOOP_CLIENT_DPC, 1010U);                       /* 10 us */
+    looptime_mark(LOOP_CLIENT_PROV, 1010U + LOOP_BUDGET_PROV_US + 1U);  /* over the prov budget */
+    looptime_mark(LOOP_CLIENT_SHELL, 1010U + LOOP_BUDGET_PROV_US + 1U + 50000U); /* operator command */
+    looptime_iter_end(1010U + LOOP_BUDGET_PROV_US + 1U + 50000U);
+    TEST_ASSERT(ls->iterations == 1U, "One iteration counted");
+    TEST_ASSERT(ls->clients[LOOP_CLIENT_DPC].max_us == 10U, "Client time is the gap since the previous mark");
+    TEST_ASSERT(ls->clients[LOOP_CLIENT_PROV].overruns == 1U, "Call over its budget counts as an overrun");
+    TEST_ASSERT(ls->clients[LOOP_CLIENT_SHELL].overruns == 0U, "Shell has no budget (operator commands)");
+    TEST_ASSERT(ls->iter_max_us == 10U + LOOP_BUDGET_PROV_US + 1U + 50000U, "Longest iteration recorded");
+    TEST_ASSERT(ls->iter_max_client == (uint8_t)LOOP_CLIENT_SHELL, "Dominant client of the worst iteration");
+    TEST_ASSERT(ls->iter_max_no_shell_us == 10U + LOOP_BUDGET_PROV_US + 1U, "Max without shell excludes shell time");
+    TEST_ASSERT(ls->iter_overruns == 1U && ls->hist[3] == 1U, "Iteration over budget; histogram bucket <100 ms");
+
+    looptime_iter_begin(200000U);
+    looptime_mark(LOOP_CLIENT_TCP, 200050U);
+    looptime_iter_end(200050U);
+    TEST_ASSERT(ls->hist[0] == 1U && ls->iterations == 2U, "Short iteration in the <0.1 ms bucket");
+    TEST_ASSERT(ls->iter_max_us > 50000U, "A shorter iteration keeps the maximum");
+
+    loop_report_t rep;
+    TEST_ASSERT(!looptime_take_report(1000U + LOOP_REPORT_INTERVAL_US - 1U, &rep), "No report before the interval");
+    TEST_ASSERT(looptime_take_report(1000U + LOOP_REPORT_INTERVAL_US, &rep) && rep.overruns == 1U &&
+                rep.worst_client == (uint8_t)LOOP_CLIENT_PROV, "Report names the worst overrun");
+    TEST_ASSERT(!looptime_take_report(1000U + 3U * LOOP_REPORT_INTERVAL_US, &rep), "No report without new overruns");
+    looptime_mark(LOOP_CLIENT_TCP, 300000U);
+    TEST_ASSERT(ls->clients[LOOP_CLIENT_TCP].calls == 1U, "Marks outside an iteration are ignored");
+
+    looptime_irqoff_record(LOOP_IRQOFF_FLASH_ERASE, 24000U);
+    looptime_irqoff_record(LOOP_IRQOFF_FLASH_ERASE, 3000U);
+    TEST_ASSERT(ls->irqoff[LOOP_IRQOFF_FLASH_ERASE].max_us == 24000U &&
+                ls->irqoff[LOOP_IRQOFF_FLASH_ERASE].count == 2U, "IRQ-off window max and count");
+    looptime_reset(5U);
+    TEST_ASSERT(ls->iterations == 0U && ls->iter_max_us == 0U && ls->since_us == 5U, "Reset clears the window");
+
+    /* --- Deferred NVS commits --- */
+    nvs_mock_reset();
+    nvs_set_commit_gate(test_nvs_gate);
+    nvs_stats_t st0, st1;
+    nvs_get_stats(&st0);
+    s_test_nvs_gate_busy = true;
+    TEST_ASSERT(nvs_set_str("wifi_ssid", "HomeNet") == NVS_OK && nvs_commit_pending(), "Setter leaves a pending commit");
+    nvs_tick(1000000U);
+    nvs_tick(1000000U + NVS_COMMIT_MAX_HOLD_US - 1U);
+    nvs_get_stats(&st1);
+    TEST_ASSERT(st1.erases_count == st0.erases_count && nvs_commit_pending(), "No flash erase while the gate is busy");
+    char sbuf[32];
+    TEST_ASSERT(nvs_get_str("wifi_ssid", sbuf, sizeof(sbuf)) == NVS_OK && strcmp(sbuf, "HomeNet") == 0,
+                "Reads see the pending value");
+    s_test_nvs_gate_busy = false;
+    nvs_tick(2000000U);
+    nvs_get_stats(&st1);
+    TEST_ASSERT(st1.erases_count == st0.erases_count + 1U && !nvs_commit_pending() && st1.commits_forced == 0U,
+                "One sector rewrite once the gate is free");
+    TEST_ASSERT(nvs_init() == NVS_OK && nvs_get_str("wifi_ssid", sbuf, sizeof(sbuf)) == NVS_OK &&
+                strcmp(sbuf, "HomeNet") == 0, "Committed value survives a reload");
+
+    /* A change undone before the commit writes nothing (failed portal join restoring the old SSID) */
+    nvs_get_stats(&st0);
+    TEST_ASSERT(nvs_commit() == NVS_OK, "Boot counter from the reload committed");
+    nvs_get_stats(&st0);
+    s_test_nvs_gate_busy = true;
+    nvs_set_str("wifi_ssid", "OtherNet");
+    nvs_tick(3000000U);
+    nvs_set_str("wifi_ssid", "HomeNet");
+    s_test_nvs_gate_busy = false;
+    nvs_tick(4000000U);
+    nvs_get_stats(&st1);
+    TEST_ASSERT(st1.erases_count == st0.erases_count && st1.commits_skipped == st0.commits_skipped + 1U,
+                "Change and undo before the commit: no flash write");
+
+    /* A change held longer than the maximum is written even while busy */
+    s_test_nvs_gate_busy = true;
+    nvs_set_u32("test_u32", 5U);
+    nvs_tick(5000000U);
+    nvs_tick(5000000U + NVS_COMMIT_MAX_HOLD_US);
+    nvs_get_stats(&st1);
+    TEST_ASSERT(st1.erases_count == st0.erases_count + 1U && st1.commits_forced == 1U &&
+                st1.commit_max_hold_us == (uint32_t)NVS_COMMIT_MAX_HOLD_US, "Maximum hold forces the commit");
+
+    /* Re-init writes pending changes before reloading */
+    nvs_set_u32("test_u32", 6U);
+    uint32_t v = 0U;
+    TEST_ASSERT(nvs_init() == NVS_OK && nvs_get_u32("test_u32", &v) == NVS_OK && v == 6U,
+                "nvs_init() commits pending changes first");
+    s_test_nvs_gate_busy = false;
+    nvs_set_commit_gate(NULL);
+    nvs_mock_reset();
+
+    /* --- PBKDF2 block path: reference values from Python hashlib.pbkdf2_hmac --- */
+    static const struct { const char *pass; const char *ssid; uint8_t pmk0; uint8_t pmk31; } vec[] = {
+        { "ThisIsAPassword", "ThisIsASSID", 0x0dU, 0xafU },
+        { "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ", "SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS", 0xd9U, 0xfeU },
+        { "12345678", "x", 0xb4U, 0x90U },
+    };
+    static const uint8_t vec0_full[WPA2_PMK_LEN] = {
+        0x0d, 0xc0, 0xd6, 0xeb, 0x90, 0x55, 0x5e, 0xd6, 0x41, 0x97, 0x56, 0xb9, 0xa1, 0x5e, 0xc3, 0xe3,
+        0x20, 0x9b, 0x63, 0xdf, 0x70, 0x7d, 0xd5, 0x08, 0xd1, 0x45, 0x81, 0xf8, 0x98, 0x27, 0x21, 0xaf
+    };
+    uint8_t pmk[WPA2_PMK_LEN];
+    for (uint32_t i = 0U; i < sizeof(vec) / sizeof(vec[0]); i++)
+    {
+        TEST_ASSERT(wpa2_crypto_pbkdf2_sha1(vec[i].pass, vec[i].ssid, WPA2_PBKDF2_ITERATIONS, pmk) == WPA2_OK &&
+                    pmk[0] == vec[i].pmk0 && pmk[WPA2_PMK_LEN - 1U] == vec[i].pmk31,
+                    "PBKDF2 matches the reference (63-char passphrase, 32-char SSID, 1-char SSID)");
+    }
+    TEST_ASSERT(wpa2_crypto_pbkdf2_sha1(vec[0].pass, vec[0].ssid, WPA2_PBKDF2_ITERATIONS, pmk) == WPA2_OK &&
+                memcmp(pmk, vec0_full, sizeof(pmk)) == 0, "PBKDF2 full 32-byte PMK (IEEE 802.11 J.4 vector 2)");
+    TEST_ASSERT(wpa2_crypto_pbkdf2_sha1("password", "SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS", WPA2_PBKDF2_ITERATIONS, pmk) ==
+                WPA2_ERR_INVALID_ARG, "PBKDF2 rejects a 33-character SSID");
+}
+
 static void test_dashboard_page(void)
 {
     printf("  [TEST] Dashboard: no polling, one TCP segment (REV-15, O-44)...\n");
@@ -6655,6 +6779,7 @@ int main(void)
     test_setup_mode();
     test_mdns_traffic_rules();
     test_dashboard_page();
+    test_scheduler_hardening();
     test_wpa2_client_and_mdns_subsystem();
     test_dhcp_client_rfc2131();
     test_wpa_ie_parsing();

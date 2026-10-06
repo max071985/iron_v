@@ -1067,11 +1067,15 @@ static net_status_t http_tcp_recv_cb(void *arg, tcp_pcb_t *pcb, const uint8_t *d
     }
 
 #if defined(__riscv)
-    console_puts("[HTTP] ");
-    for (size_t i = 0U; i < slot->len && slot->buf[i] != '\r' && slot->buf[i] != '\n' && i < 64U; i++) {
-        console_putc(slot->buf[i]);
+    if (net_trace_enabled())
+    {
+        console_puts("[HTTP] ");
+        for (size_t i = 0U; i < slot->len && slot->buf[i] != '\r' && slot->buf[i] != '\n' && i < 64U; i++)
+        {
+            console_putc(slot->buf[i]);
+        }
+        console_puts("\r\n");
     }
-    console_puts("\r\n");
 #endif
 
     arena_scratch_mark_t mark = arena_scratch_mark();
@@ -1162,7 +1166,10 @@ static net_status_t http_tcp_accept_cb(void *arg, tcp_pcb_t *newpcb)
     }
 
 #if defined(__riscv)
-    console_puts("[HTTP] Client connected\r\n");
+    if (net_trace_enabled())
+    {
+        console_puts("[HTTP] Client connected\r\n");
+    }
 #endif
 
     http_req_slot_release(newpcb);   /* pcb reused for a new connection */

@@ -23,6 +23,7 @@
 #include "systimer.h"
 #include "wdt.h"
 #include "string.h"
+#include "sha1_hw.h"
 
 #if defined(__riscv)
 #include "console.h"
@@ -404,6 +405,72 @@ static void aes_128_decrypt_block(const uint8_t key[16], const uint8_t in[16], u
 /* ========================================================================= */
 /* Public Cryptographic Engine APIs (.flash.text)                            */
 /* ========================================================================= */
+/* PBKDF2-HMAC-SHA1 as single-block compressions (REV-16). The passphrase (<= 63 bytes) fits one
+ * block, so the HMAC inner/outer key states are computed once; each iteration is then
+ * compress(inner_state, U || pad) and compress(outer_state, inner || pad). Blocks and states are
+ * bytes in memory order (sha1_hw.h); on the target the SHA accelerator compresses, on the host the
+ * software transform with the same byte layout. */
+#define PBKDF2_HMAC_IPAD            0x36U
+#define PBKDF2_HMAC_OPAD            0x5CU
+#define PBKDF2_SHA1_PAD_BYTE        0x80U
+#define PBKDF2_SHA1_LEN_FIELD       8U      /* message bit length, big-endian, end of the block */
+#define PBKDF2_BITS_PER_BYTE        8U
+#define PBKDF2_BLOCK_INDEX_LEN      4U      /* INT_32_BE(i) */
+#define PBKDF2_PMK_BLOCKS           2U      /* 32-byte PMK = T1 (20) || T2[0..11] */
+#define PBKDF2_WDT_FEED_MASK        0x01FFU
+
+typedef union {
+    sha1_block_t b;
+    uint8_t      bytes[SHA1_BLOCK_BYTES];
+} pbkdf2_block_t;
+
+typedef union {
+    sha1_state_t s;
+    uint8_t      bytes[SHA1_DIGEST_BYTES];
+} pbkdf2_state_t;
+
+#if !defined(__riscv)
+static const uint32_t s_sha1_iv[SHA1_STATE_WORDS] = {
+    0x67452301U, 0xEFCDAB89U, 0x98BADCFEU, 0x10325476U, 0xC3D2E1F0U
+};
+#endif
+
+static bool pbkdf2_compress(const pbkdf2_state_t *in, const pbkdf2_block_t *blk, pbkdf2_state_t *out)
+{
+#if defined(__riscv)
+    return sha1_hw_compress((in != NULL) ? &in->s : NULL, &blk->b, &out->s);
+#else
+    uint32_t st[SHA1_STATE_WORDS];
+    for (uint32_t i = 0U; i < SHA1_STATE_WORDS; i++)
+    {
+        st[i] = (in == NULL) ? s_sha1_iv[i] :
+                (((uint32_t)in->bytes[4U * i] << 24) | ((uint32_t)in->bytes[4U * i + 1U] << 16) |
+                 ((uint32_t)in->bytes[4U * i + 2U] << 8) | (uint32_t)in->bytes[4U * i + 3U]);
+    }
+    wpa2_sha1_transform(st, blk->bytes);
+    for (uint32_t i = 0U; i < SHA1_STATE_WORDS; i++)
+    {
+        out->bytes[4U * i]      = (uint8_t)(st[i] >> 24);
+        out->bytes[4U * i + 1U] = (uint8_t)(st[i] >> 16);
+        out->bytes[4U * i + 2U] = (uint8_t)(st[i] >> 8);
+        out->bytes[4U * i + 3U] = (uint8_t)st[i];
+    }
+    return true;
+#endif
+}
+
+/* Final-block padding for a message of msg_len bytes following one 64-byte key block */
+static void pbkdf2_pad_block(pbkdf2_block_t *blk, size_t msg_len)
+{
+    uint32_t bits = (uint32_t)((SHA1_BLOCK_BYTES + msg_len) * PBKDF2_BITS_PER_BYTE);
+    memset(&blk->bytes[msg_len], 0, SHA1_BLOCK_BYTES - msg_len);
+    blk->bytes[msg_len] = PBKDF2_SHA1_PAD_BYTE;
+    blk->bytes[SHA1_BLOCK_BYTES - 4U] = (uint8_t)(bits >> 24);
+    blk->bytes[SHA1_BLOCK_BYTES - 3U] = (uint8_t)(bits >> 16);
+    blk->bytes[SHA1_BLOCK_BYTES - 2U] = (uint8_t)(bits >> 8);
+    blk->bytes[SHA1_BLOCK_BYTES - 1U] = (uint8_t)bits;
+}
+
 wpa2_status_t wpa2_crypto_pbkdf2_sha1(const char *passphrase, const char *ssid,
                                      uint32_t iterations, uint8_t *out_pmk)
 {
@@ -414,42 +481,60 @@ wpa2_status_t wpa2_crypto_pbkdf2_sha1(const char *passphrase, const char *ssid,
 
     size_t pass_len = strlen(passphrase);
     size_t ssid_len = strlen(ssid);
-    if (pass_len < WPA2_MIN_PASS_LEN || pass_len > WPA2_MAX_PASS_LEN || ssid_len == 0U)
+    if (pass_len < WPA2_MIN_PASS_LEN || pass_len > WPA2_MAX_PASS_LEN || ssid_len == 0U ||
+        ssid_len > WPA2_MAX_SSID_LEN)
     {
         return WPA2_ERR_INVALID_ARG;
     }
 
-    /* Buffer for Salt || INT_32_BE(i) */
-    uint8_t salt_block[WPA2_MAX_SSID_LEN + 4U];
-    memcpy(salt_block, ssid, ssid_len);
-
-    uint8_t u_prev[20];
-    uint8_t u_cur[20];
-    uint8_t t_block[20];
-
-    /* Block 1 (bytes 0..19) and Block 2 (bytes 20..31) */
-    for (uint32_t block_idx = 1U; block_idx <= 2U; block_idx++)
+    /* HMAC key states: compress(IV, K ^ ipad) and compress(IV, K ^ opad) */
+    pbkdf2_block_t blk;
+    pbkdf2_state_t ist;
+    pbkdf2_state_t ost;
+    memset(blk.bytes, PBKDF2_HMAC_IPAD, sizeof(blk.bytes));
+    for (size_t i = 0U; i < pass_len; i++)
     {
-        salt_block[ssid_len]     = 0x00U;
-        salt_block[ssid_len + 1] = 0x00U;
-        salt_block[ssid_len + 2] = 0x00U;
-        salt_block[ssid_len + 3] = (uint8_t)block_idx;
+        blk.bytes[i] ^= (uint8_t)passphrase[i];
+    }
+    bool ok = pbkdf2_compress(NULL, &blk, &ist);
+    for (size_t i = 0U; i < SHA1_BLOCK_BYTES; i++)
+    {
+        blk.bytes[i] ^= (uint8_t)(PBKDF2_HMAC_IPAD ^ PBKDF2_HMAC_OPAD);
+    }
+    ok = ok && pbkdf2_compress(NULL, &blk, &ost);
 
-        /* U_1 = HMAC(passphrase, salt || INT_32_BE(block_idx)) */
-        wpa2_hmac_sha1((const uint8_t *)passphrase, pass_len, salt_block, ssid_len + 4U, u_prev);
-        memcpy(t_block, u_prev, 20);
+    /* Every later message is a 20-byte digest: the padding of this block never changes */
+    pbkdf2_block_t dblk;
+    pbkdf2_pad_block(&dblk, SHA1_DIGEST_BYTES);
 
-        for (uint32_t iter = 2U; iter <= iterations; iter++)
+    pbkdf2_state_t u;
+    pbkdf2_state_t t;
+    for (uint32_t block_idx = 1U; ok && block_idx <= PBKDF2_PMK_BLOCKS; block_idx++)
+    {
+        /* U_1 = HMAC(P, SSID || INT_32_BE(block_idx)) */
+        memcpy(blk.bytes, ssid, ssid_len);
+        blk.bytes[ssid_len]      = 0U;
+        blk.bytes[ssid_len + 1U] = 0U;
+        blk.bytes[ssid_len + 2U] = 0U;
+        blk.bytes[ssid_len + 3U] = (uint8_t)block_idx;
+        pbkdf2_pad_block(&blk, ssid_len + PBKDF2_BLOCK_INDEX_LEN);
+        ok = pbkdf2_compress(&ist, &blk, &u);
+        memcpy(dblk.bytes, u.bytes, SHA1_DIGEST_BYTES);
+        ok = ok && pbkdf2_compress(&ost, &dblk, &u);
+        t = u;
+
+        for (uint32_t iter = 2U; ok && iter <= iterations; iter++)
         {
-            wpa2_hmac_sha1((const uint8_t *)passphrase, pass_len, u_prev, 20U, u_cur);
-            for (size_t b = 0; b < 20; b++)
+            memcpy(dblk.bytes, u.bytes, SHA1_DIGEST_BYTES);
+            ok = pbkdf2_compress(&ist, &dblk, &u);
+            memcpy(dblk.bytes, u.bytes, SHA1_DIGEST_BYTES);
+            ok = ok && pbkdf2_compress(&ost, &dblk, &u);
+            for (uint32_t w = 0U; w < SHA1_STATE_WORDS; w++)
             {
-                t_block[b] ^= u_cur[b];
-                u_prev[b] = u_cur[b];
+                t.s.w[w] ^= u.s.w[w];
             }
 
-            /* Periodically feed watchdog during heavy computation */
-            if ((iter & 0x01FFU) == 0U)
+            if ((iter & PBKDF2_WDT_FEED_MASK) == 0U)
             {
                 wdt_feed();
                 lp_wdt_feed();
@@ -458,15 +543,15 @@ wpa2_status_t wpa2_crypto_pbkdf2_sha1(const char *passphrase, const char *ssid,
 
         if (block_idx == 1U)
         {
-            memcpy(out_pmk, t_block, 20);
+            memcpy(out_pmk, t.bytes, SHA1_DIGEST_BYTES);
         }
         else
         {
-            memcpy(out_pmk + 20, t_block, 12);
+            memcpy(out_pmk + SHA1_DIGEST_BYTES, t.bytes, WPA2_PMK_LEN - SHA1_DIGEST_BYTES);
         }
     }
 
-    return WPA2_OK;
+    return ok ? WPA2_OK : WPA2_ERR_CRYPTO;
 }
 
 wpa2_status_t wpa2_crypto_prf512(const uint8_t *pmk, const uint8_t *mac1, const uint8_t *mac2,
@@ -1278,8 +1363,10 @@ wpa2_status_t wpa2_client_configure(const char *ssid, const char *passphrase)
         return WPA2_OK;
     }
     s_pmk_cached = false;
+    uint64_t derive_start_us = systimer_get_us();
     wpa2_status_t pst = wpa2_crypto_pbkdf2_sha1(passphrase, s_configured_ssid,
                                                 WPA2_PBKDF2_ITERATIONS, s_pmk);
+    s_wpa2_telem.pmk_derive_us = (uint32_t)(systimer_get_us() - derive_start_us);
     if (pst == WPA2_OK)
     {
         memcpy(s_pmk_key, key, sizeof(s_pmk_key));
@@ -1376,7 +1463,9 @@ void wpa2_client_print_status(void)
     put_dec(s_wpa2_telem.pmk_derivations);
     console_puts("x, cache hits ");
     put_dec(s_wpa2_telem.pmk_cache_hits);
-    console_puts(")");
+    console_puts(", last PBKDF2 ");
+    put_dec(s_wpa2_telem.pmk_derive_us / (uint32_t)US_PER_MS);
+    console_puts(" ms)");
     console_puts(", PTK installed=");
     put_dec(s_wpa2_telem.has_ptk);
     console_puts(", GTK installed=");

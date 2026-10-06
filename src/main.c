@@ -41,6 +41,7 @@
 #include "wpa2_client.h"
 #include "mdns.h"
 #include "button.h"
+#include "looptime.h"
 
 void main(void)
 {
@@ -55,6 +56,9 @@ void main(void)
 
     /* Initialize high-resolution 64-bit hardware system timer (SYSTIMER 16 MHz) */
     systimer_init();
+
+    /* Main-loop latency and flash IRQ-off telemetry from here on (REV-16) */
+    looptime_reset(systimer_get_us());
 
     /* Initialize active multi-tier watchdog supervisor */
     wdt_init(WDT_DEFAULT_TIMEOUT_MS);
@@ -143,6 +147,9 @@ void main(void)
     /* Setup button (BOOT, GPIO9): long press opens the setup SoftAP (REV-15) */
     button_setup_init();
 
+    /* NVS sector rewrites wait while a Wi-Fi join is in flight (REV-16) */
+    nvs_set_commit_gate(provisioning_join_busy);
+
     /* Saved credentials: join as a station; none: open the setup SoftAP */
     provisioning_boot();
 
@@ -156,19 +163,40 @@ void main(void)
     while (1)
     {
         uint64_t now_us = systimer_get_us();
+        looptime_iter_begin(now_us);
         wdt_supervisor_tick();
         dpc_process_all();
+        looptime_mark(LOOP_CLIENT_DPC, systimer_get_us());
         tcp_tick();
+        looptime_mark(LOOP_CLIENT_TCP, systimer_get_us());
         dhcp_client_tick();
+        looptime_mark(LOOP_CLIENT_DHCP, systimer_get_us());
         if (button_setup_poll(now_us) == BUTTON_EVENT_LONG_PRESS)
         {
             provisioning_on_setup_button(now_us);
         }
+        looptime_mark(LOOP_CLIENT_BUTTON, systimer_get_us());
         provisioning_tick(now_us);
+        looptime_mark(LOOP_CLIENT_PROV, systimer_get_us());
         mdns_tick(now_us);
+        looptime_mark(LOOP_CLIENT_MDNS, systimer_get_us());
+        nvs_tick(now_us);
+        looptime_mark(LOOP_CLIENT_NVS, systimer_get_us());
         wifi_os_adapter_poll();
+        looptime_mark(LOOP_CLIENT_WIFI_POLL, systimer_get_us());
         wifi_poll_rx_traffic();
+        looptime_mark(LOOP_CLIENT_RX, systimer_get_us());
         shell_tick();
+        looptime_mark(LOOP_CLIENT_SHELL, systimer_get_us());
         task_yield();
+        now_us = systimer_get_us();
+        looptime_mark(LOOP_CLIENT_YIELD, now_us);
+        looptime_iter_end(now_us);
+
+        loop_report_t rep;
+        if (looptime_take_report(now_us, &rep))
+        {
+            looptime_print_report(&rep);
+        }
     }
 }

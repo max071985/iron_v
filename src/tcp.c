@@ -992,7 +992,8 @@ tcp_status_t tcp_input(const uint8_t *ip_packet, uint16_t ip_len)
     }
 
 #if defined(__riscv)
-    if (dest_port == CONFIG_TCP_DEFAULT_HTTP_PORT || src_port == CONFIG_TCP_DEFAULT_HTTP_PORT)
+    if (net_trace_enabled() &&
+        (dest_port == CONFIG_TCP_DEFAULT_HTTP_PORT || src_port == CONFIG_TCP_DEFAULT_HTTP_PORT))
     {
         console_puts("[TCP] in fl=0x");
         put_hex(flags);

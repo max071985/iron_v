@@ -17,6 +17,7 @@
 #include "timer.h"
 #include "arena.h"
 #include "systimer.h"
+#include "looptime.h"
 #include "task.h"
 #include "pmp.h"
 #include "lp_core.h"
@@ -227,6 +228,7 @@ void shell_print_help(void)
 
     console_puts("  uptime              - Show high-resolution system uptime & timer telemetry\r\n");
     console_puts("  tasks               - Show cooperative coroutine scheduler tasks & status\r\n");
+    console_puts("  loop [reset|pbkdf2] - Main-loop latency, per-client budgets, flash IRQ-off windows\r\n");
     console_puts("  pmp                 - Show RISC-V PMP & HP_APM memory protection status\r\n");
     console_puts("  peek <hex_addr>     - Read 32-bit word from hex address\r\n");
     console_puts("  poke <addr> <val>   - Write 32-bit hex value to address\r\n");
@@ -244,6 +246,7 @@ void shell_print_help(void)
     console_puts("  mmu [status|map]    - Show MSPI MMU Flash XIP mapping & cache status\r\n");
     console_puts("  15.4 [status|chan|pan|short|rx|tx|stop] - Show or control IEEE 802.15.4 radio transceiver\r\n");
     console_puts("  net [status|ip|mask|gw|arp|tcp|reset] - Show or control IPv4 network interface & TCP state machine\r\n");
+    console_puts("  net trace [on|off]  - Per-segment TCP/HTTP console log (off by default)\r\n");
     console_puts("  dhcp [status]       - Show the DHCP client (STA lease) and SoftAP DHCP server\r\n");
     console_puts("  http [status|routes|start|stop] - Show or control zero-allocation local REST/HTTP server\r\n");
     console_puts("  speedtest [run|burst|udp|status|reset] - Run or inspect LAN network & Wi-Fi throughput benchmark\r\n");
@@ -966,6 +969,10 @@ void shell_execute(char *input_buffer)
 
             if (rc == NVS_OK)
             {
+                rc = nvs_commit();
+            }
+            if (rc == NVS_OK)
+            {
                 console_puts("Key '");
                 console_puts(key);
                 console_puts("' stored successfully in NVS.\r\n");
@@ -989,6 +996,10 @@ void shell_execute(char *input_buffer)
             }
             *k = '\0';
             nvs_status_t rc = nvs_erase_key(key);
+            if (rc == NVS_OK)
+            {
+                rc = nvs_commit();
+            }
             if (rc == NVS_OK)
             {
                 console_puts("Key '");
@@ -1268,6 +1279,28 @@ void shell_execute(char *input_buffer)
             put_dec(tel.alarm_count);
             console_puts(")\r\n");
         }
+    }
+    else if (strcmp(input_buffer, "loop") == 0)
+    {
+        looptime_print();
+    }
+    else if (strcmp(input_buffer, "loop pbkdf2") == 0)
+    {
+        /* IEEE 802.11 Annex J.4 vector: "password" / "IEEE", 4096 iterations */
+        uint8_t pmk[WPA2_PMK_LEN];
+        uint64_t t0 = systimer_get_us();
+        wpa2_status_t st = wpa2_crypto_pbkdf2_sha1("password", "IEEE", WPA2_PBKDF2_ITERATIONS, pmk);
+        uint32_t took = (uint32_t)(systimer_get_us() - t0);
+        console_puts("PBKDF2-SHA1 4096 iterations: ");
+        put_dec(took);
+        console_puts(" us, PMK[0..3] ");
+        put_hex(((uint32_t)pmk[0] << 24) | ((uint32_t)pmk[1] << 16) | ((uint32_t)pmk[2] << 8) | pmk[3]);
+        console_puts((st == WPA2_OK) ? " (expect f42c6fc5)\r\n" : " FAILED\r\n");
+    }
+    else if (strcmp(input_buffer, "loop reset") == 0)
+    {
+        looptime_reset(systimer_get_us());
+        console_puts("Loop latency counters reset\r\n");
     }
     else if (strcmp(input_buffer, "tasks") == 0)
     {
@@ -2466,7 +2499,18 @@ void shell_execute(char *input_buffer)
         char *subcmd = input_buffer + 3;
         while (*subcmd == ' ') subcmd++;
 
-        if (strncmp(subcmd, "ip", 2) == 0)
+        if (strncmp(subcmd, "trace", 5) == 0)
+        {
+            char *arg = subcmd + 5;
+            while (*arg == ' ') arg++;
+            if (strcmp(arg, "on") == 0 || strcmp(arg, "off") == 0)
+            {
+                net_set_trace(strcmp(arg, "on") == 0);
+            }
+            console_puts("Per-segment TCP/HTTP log: ");
+            console_puts(net_trace_enabled() ? "on\r\n" : "off\r\n");
+        }
+        else if (strncmp(subcmd, "ip", 2) == 0)
         {
             char *arg = subcmd + 2;
             while (*arg == ' ') arg++;
@@ -3087,6 +3131,7 @@ void shell_execute(char *input_buffer)
                 provisioning_status_t rc = provisioning_set_credentials(ssid, pass);
                 if (rc == PROV_OK)
                 {
+                    (void)nvs_commit();   /* operator writes persist now (REV-16 defers the rest) */
                     console_puts("Provisioning credentials saved to NVS for SSID: '");
                     console_puts(ssid);
                     console_puts("'\r\n");
@@ -3122,6 +3167,7 @@ void shell_execute(char *input_buffer)
         else if (strncmp(subcmd, "clear", 5) == 0)
         {
             provisioning_clear_credentials();
+            (void)nvs_commit();
             console_puts("Provisioning credentials cleared from NVS.\r\n");
         }
         else if (strncmp(subcmd, "join", 4) == 0)

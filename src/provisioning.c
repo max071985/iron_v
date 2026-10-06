@@ -599,6 +599,14 @@ void provisioning_restore_join(prov_join_state_t saved_state)
     }
 }
 
+/* NVS commit gate (REV-16): a sector erase keeps interrupts off for ~25 ms, so it waits while a
+ * join is requested, associating/handshaking, or handing the IP stack over */
+bool provisioning_join_busy(void)
+{
+    return s_prov_join.state == PROV_JOIN_PENDING || s_prov_join.state == PROV_JOIN_JOINING ||
+           s_prov_join.state == PROV_JOIN_HANDOVER;
+}
+
 /* Drops a join that has not started yet (pending or waiting to retry) */
 void provisioning_cancel_join(void)
 {

@@ -52,6 +52,10 @@ typedef enum {
 #define NVS_FLAG_DELETED        (0x00U)
 
 /* Golden Master Seal Constants */
+/* Deferred commits (REV-16): a sector rewrite erases with interrupts off for ~25 ms; never while
+ * the gate (provisioning: a Wi-Fi join in flight) is busy, unless a change has waited this long */
+#define NVS_COMMIT_MAX_HOLD_US  (60000000ULL)
+
 #define GOLDEN_MASTER_MAGIC     (0x5A5A5A5AU)  /* Golden Seal Verification Marker */
 
 /* Packed Key-Value Entry Structure */
@@ -73,6 +77,10 @@ typedef struct {
     uint32_t reads_count;
     uint32_t writes_count;
     uint32_t erases_count;
+    uint32_t commits_count;            /* sector rewrites */
+    uint32_t commits_skipped;          /* pending changes that matched the sector (nothing written) */
+    uint32_t commits_forced;           /* written while the gate was busy (NVS_COMMIT_MAX_HOLD_US) */
+    uint32_t commit_max_hold_us;       /* longest time a change waited for its commit */
 } nvs_stats_t;
 
 /* Golden Master System Health & Sealing Audit Report */
@@ -98,6 +106,14 @@ nvs_status_t nvs_get_blob(const char *key, void *out_val, size_t max_len, size_t
 nvs_status_t nvs_erase_key(const char *key);
 nvs_status_t nvs_erase_all(void);
 nvs_status_t nvs_get_stats(nvs_stats_t *out_stats);
+
+/* Setters and nvs_erase_key() change the RAM copy; the sector is rewritten by nvs_tick() when the
+ * commit gate is not busy, or by nvs_commit() now. nvs_erase_all() and snapshot restore commit at once. */
+typedef bool (*nvs_commit_gate_t)(void);   /* true: do not erase flash now */
+nvs_status_t nvs_commit(void);
+void         nvs_tick(uint64_t now_us);
+void         nvs_set_commit_gate(nvs_commit_gate_t gate);
+bool         nvs_commit_pending(void);
 
 /* Whole-store snapshot. The self-test saves the store before tests that write
  * NVS and restores it afterwards; restore rewrites the sector only if the

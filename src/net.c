@@ -45,6 +45,17 @@ static net_config_t s_net_config = {
 static arp_entry_t s_arp_table[ARP_TABLE_CAPACITY];
 static net_telemetry_t s_net_telemetry;
 static bool s_net_initialized = false;
+static bool s_net_trace = false;
+
+void net_set_trace(bool on)
+{
+    s_net_trace = on;
+}
+
+bool net_trace_enabled(void)
+{
+    return s_net_trace;
+}
 
 /* ========================================================================= */
 /* Subsystem Lifecycle Initialization                                        */

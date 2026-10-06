@@ -7,6 +7,8 @@
 
 #include "nvs.h"
 #include "section.h"
+#include "flash_rom.h"
+#include "systimer.h"
 #include "string.h"
 #include "console.h"
 #include "utils.h"
@@ -17,16 +19,6 @@
 #include "modem.h"
 
 #if defined(__riscv)
-#include "interrupt.h"
-
-/* ROM SPI Flash APIs */
-typedef int esp_rom_spiflash_result_t;
-extern esp_rom_spiflash_result_t esp_rom_spiflash_read(uint32_t target, uint32_t *dest, int32_t len);
-extern esp_rom_spiflash_result_t esp_rom_spiflash_write(uint32_t target, const uint32_t *src, int32_t len);
-extern esp_rom_spiflash_result_t esp_rom_spiflash_erase_sector(size_t sector_num);
-extern esp_rom_spiflash_result_t esp_rom_spiflash_unlock(void);
-extern void spi_flash_attach(uint32_t ishspi, bool legacy);
-
 /* Linker Cartography Symbols */
 extern char _stext[];
 extern char _etext[];
@@ -55,6 +47,15 @@ static uint32_t     s_active_entries_count = 0U;
 static uint32_t     s_sector_seq = 1U;
 static bool         s_nvs_initialized = false;
 static nvs_stats_t  s_stats;
+
+/* Deferred commits (REV-16): setters change the RAM cache; nvs_tick() writes the sector when the
+ * commit gate allows it. s_flash_crc identifies what the sector holds, so a change that is undone
+ * before the commit (e.g. a failed portal join restoring the old credentials) writes nothing. */
+static bool              s_dirty = false;
+static bool              s_dirty_seen = false;      /* nvs_tick() has started the hold timer */
+static uint64_t          s_dirty_since_us = 0U;
+static uint32_t          s_flash_crc = 0U;
+static nvs_commit_gate_t s_commit_gate = NULL;
 
 #if !defined(__riscv)
 /* Host Mock Sector Simulation */
@@ -112,31 +113,7 @@ static IRAM_ATTR nvs_status_t flash_read(uint32_t offset, void *dest, size_t len
     s_stats.reads_count++;
 
 #if defined(__riscv)
-    uint32_t mstatus = interrupt_global_save_and_disable();
-    uint32_t aligned_buf[16];
-    uint8_t *dst_byte = (uint8_t *)dest;
-    size_t remaining = len;
-    uint32_t cur_offset = offset;
-    nvs_status_t status = NVS_OK;
-
-    while (remaining > 0U)
-    {
-        size_t chunk = (remaining > sizeof(aligned_buf)) ? sizeof(aligned_buf) : remaining;
-        size_t read_words = (chunk + 3U) / 4U;
-
-        if (esp_rom_spiflash_read(cur_offset, aligned_buf, (int32_t)(read_words * 4U)) != 0)
-        {
-            status = NVS_ERR_FLASH_IO;
-            break;
-        }
-
-        memcpy(dst_byte, aligned_buf, chunk);
-        dst_byte += chunk;
-        cur_offset += (uint32_t)chunk;
-        remaining -= chunk;
-    }
-    interrupt_global_restore(mstatus);
-    return status;
+    return (flash_rom_read(offset, dest, len) == FLASH_ROM_OK) ? NVS_OK : NVS_ERR_FLASH_IO;
 #else
     mock_ensure_init();
     uint32_t sec_offset = offset - NVS_FLASH_BASE_OFFSET;
@@ -159,34 +136,7 @@ static IRAM_ATTR nvs_status_t flash_write(uint32_t offset, const void *src, size
     s_stats.writes_count++;
 
 #if defined(__riscv)
-    uint32_t mstatus = interrupt_global_save_and_disable();
-    esp_rom_spiflash_unlock();
-
-    uint32_t aligned_buf[16];
-    const uint8_t *src_byte = (const uint8_t *)src;
-    size_t remaining = len;
-    uint32_t cur_offset = offset;
-    nvs_status_t status = NVS_OK;
-
-    while (remaining > 0U)
-    {
-        size_t chunk = (remaining > sizeof(aligned_buf)) ? sizeof(aligned_buf) : remaining;
-        size_t write_words = (chunk + 3U) / 4U;
-        memset(aligned_buf, 0xFF, sizeof(aligned_buf));
-        memcpy(aligned_buf, src_byte, chunk);
-
-        if (esp_rom_spiflash_write(cur_offset, aligned_buf, (int32_t)(write_words * 4U)) != 0)
-        {
-            status = NVS_ERR_FLASH_IO;
-            break;
-        }
-
-        src_byte += chunk;
-        cur_offset += (uint32_t)chunk;
-        remaining -= chunk;
-    }
-    interrupt_global_restore(mstatus);
-    return status;
+    return (flash_rom_write(offset, src, len) == FLASH_ROM_OK) ? NVS_OK : NVS_ERR_FLASH_IO;
 #else
     mock_ensure_init();
     uint32_t sec_offset = offset - NVS_FLASH_BASE_OFFSET;
@@ -208,16 +158,7 @@ static IRAM_ATTR nvs_status_t flash_erase_sector(uint32_t offset)
     s_stats.erases_count++;
 
 #if defined(__riscv)
-    uint32_t mstatus = interrupt_global_save_and_disable();
-    esp_rom_spiflash_unlock();
-    uint32_t sec_num = offset / NVS_FLASH_SECTOR_SIZE;
-    int res = esp_rom_spiflash_erase_sector((size_t)sec_num);
-    interrupt_global_restore(mstatus);
-    if (res != 0)
-    {
-        return NVS_ERR_FLASH_IO;
-    }
-    return NVS_OK;
+    return (flash_rom_erase_sector(offset) == FLASH_ROM_OK) ? NVS_OK : NVS_ERR_FLASH_IO;
 #else
     (void)offset;
     mock_ensure_init();
@@ -225,6 +166,8 @@ static IRAM_ATTR nvs_status_t flash_erase_sector(uint32_t offset)
     return NVS_OK;
 #endif
 }
+
+static uint32_t cache_image_crc(void);
 
 /* Commit Entire In-Memory State to Flash Sector */
 static nvs_status_t flush_cache_to_flash(void)
@@ -250,7 +193,85 @@ static nvs_status_t flush_cache_to_flash(void)
     }
 
     s_sector_seq = hdr.seq;
+    s_flash_crc = (res == NVS_OK) ? cache_image_crc() : 0U;   /* unknown sector: rewrite next time */
+    s_dirty = false;
+    s_dirty_seen = false;
+    s_stats.commits_count++;
     return NVS_OK;
+}
+
+/* Identifies the cache image as flush_cache_to_flash() would write it. Not a CRC over the raw
+ * entries: each entry ends with its own CRC, and a CRC over data followed by that data's CRC is a
+ * constant residue, so it would not change with the values. The per-entry CRCs in order do. */
+static uint32_t cache_image_crc(void)
+{
+    uint32_t sums[NVS_MAX_ENTRIES + 1U];
+    sums[0] = s_active_entries_count;
+    for (uint32_t i = 0U; i < s_active_entries_count; i++)
+    {
+        sums[i + 1U] = s_nvs_cache[i].crc32;
+    }
+    return calc_crc32(sums, sizeof(uint32_t) * (s_active_entries_count + 1U));
+}
+
+static nvs_status_t nvs_mark_dirty(void)
+{
+    s_dirty = true;
+    return NVS_OK;
+}
+
+nvs_status_t nvs_commit(void)
+{
+    if (!s_dirty)
+    {
+        return NVS_OK;
+    }
+    s_dirty = false;
+    s_dirty_seen = false;
+    if (cache_image_crc() == s_flash_crc)
+    {
+        s_stats.commits_skipped++;
+        return NVS_OK;
+    }
+    return flush_cache_to_flash();
+}
+
+void nvs_set_commit_gate(nvs_commit_gate_t gate)
+{
+    s_commit_gate = gate;
+}
+
+bool nvs_commit_pending(void)
+{
+    return s_dirty;
+}
+
+void nvs_tick(uint64_t now_us)
+{
+    if (!s_dirty)
+    {
+        return;
+    }
+    if (!s_dirty_seen)
+    {
+        s_dirty_seen = true;
+        s_dirty_since_us = now_us;
+    }
+    uint64_t held_us = now_us - s_dirty_since_us;
+    bool busy = (s_commit_gate != NULL) && s_commit_gate();
+    if (busy && held_us < NVS_COMMIT_MAX_HOLD_US)
+    {
+        return;
+    }
+    if (busy)
+    {
+        s_stats.commits_forced++;
+    }
+    if (held_us > s_stats.commit_max_hold_us)
+    {
+        s_stats.commit_max_hold_us = (uint32_t)held_us;
+    }
+    (void)nvs_commit();
 }
 
 /* Find Key in Cache */
@@ -276,6 +297,13 @@ static int find_key_index(const char *key)
 /* Public NVS Initialization */
 nvs_status_t nvs_init(void)
 {
+    /* A re-init (do-test) reloads from flash: write pending changes first */
+    if (s_nvs_initialized)
+    {
+        (void)nvs_commit();
+    }
+    s_dirty = false;
+    s_dirty_seen = false;
     memset(&s_stats, 0, sizeof(s_stats));
     memset(s_nvs_cache, 0, sizeof(s_nvs_cache));
     s_active_entries_count = 0U;
@@ -289,6 +317,7 @@ nvs_status_t nvs_init(void)
         if (hdr.crc32 == exp_crc && hdr.entry_count <= NVS_MAX_ENTRIES)
         {
             s_sector_seq = hdr.seq;
+            s_flash_crc = cache_image_crc();
             if (hdr.entry_count > 0U)
             {
                 nvs_status_t rd_res = flash_read(NVS_FLASH_BASE_OFFSET + sizeof(hdr),
@@ -308,6 +337,7 @@ nvs_status_t nvs_init(void)
                         }
                     }
                     s_active_entries_count = valid_loaded;
+                    s_flash_crc = cache_image_crc();
                 }
             }
         }
@@ -371,7 +401,7 @@ nvs_status_t nvs_set_blob(const char *key, const void *val, size_t len)
     memcpy(ent->val, val, len);
     ent->crc32 = calc_crc32(ent, offsetof(nvs_entry_t, crc32));
 
-    return flush_cache_to_flash();
+    return nvs_mark_dirty();
 }
 
 nvs_status_t nvs_get_blob(const char *key, void *out_val, size_t max_len, size_t *out_len)
@@ -433,7 +463,7 @@ nvs_status_t nvs_set_u32(const char *key, uint32_t val)
     memcpy(ent->val, &val, sizeof(uint32_t));
     ent->crc32 = calc_crc32(ent, offsetof(nvs_entry_t, crc32));
 
-    return flush_cache_to_flash();
+    return nvs_mark_dirty();
 }
 
 nvs_status_t nvs_get_u32(const char *key, uint32_t *out_val)
@@ -499,7 +529,7 @@ nvs_status_t nvs_set_str(const char *key, const char *val)
     memcpy(ent->val, val, vlen + 1U);
     ent->crc32 = calc_crc32(ent, offsetof(nvs_entry_t, crc32));
 
-    return flush_cache_to_flash();
+    return nvs_mark_dirty();
 }
 
 nvs_status_t nvs_get_str(const char *key, char *out_val, size_t max_len)
@@ -590,7 +620,7 @@ nvs_status_t nvs_erase_key(const char *key)
     s_active_entries_count--;
     memset(&s_nvs_cache[s_active_entries_count], 0, sizeof(nvs_entry_t));
 
-    return flush_cache_to_flash();
+    return nvs_mark_dirty();
 }
 
 nvs_status_t nvs_erase_all(void)
@@ -642,6 +672,17 @@ void nvs_print_stats(void)
     put_dec(st.writes_count);
     console_puts(", Erases=");
     put_dec(st.erases_count);
+    console_puts("\r\n");
+    console_puts("  Commits:            Written=");
+    put_dec(st.commits_count);
+    console_puts(", Unchanged=");
+    put_dec(st.commits_skipped);
+    console_puts(", Forced=");
+    put_dec(st.commits_forced);
+    console_puts(", Max hold=");
+    put_dec(st.commit_max_hold_us / (uint32_t)US_PER_MS);
+    console_puts(" ms, Pending=");
+    console_puts(s_dirty ? "yes" : "no");
     console_puts("\r\n");
     console_puts("======================================================================\r\n");
 }
@@ -812,6 +853,8 @@ void golden_master_print_report(void)
 void nvs_mock_reset(void)
 {
     s_mock_inited = false;
+    s_nvs_initialized = false;   /* fresh flash: drop pending changes instead of committing them */
+    s_commit_gate = NULL;
     mock_ensure_init();
     nvs_init();
 }

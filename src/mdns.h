@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include "config.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -27,7 +28,7 @@ extern "C" {
 /* ========================================================================= */
 #define MDNS_PORT                           5353U
 #define MDNS_MULTICAST_IPV4                 0xE00000FBU /* 224.0.0.251 */
-#define MDNS_DEFAULT_HOSTNAME               "iron-v"
+#define MDNS_DEFAULT_HOSTNAME               CONFIG_DEVICE_HOSTNAME
 #define MDNS_DOMAIN                         "local"
 #define MDNS_DEFAULT_TTL_SEC                120U
 #define MDNS_LEGACY_UNICAST_TTL_SEC         10U   /* RFC 6762 6.7: one-shot queriers cache briefly */

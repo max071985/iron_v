@@ -1,0 +1,24 @@
+# Iron-V local configuration
+#
+# Copy this file to .config (git-ignored) and change what you need; `make` turns .config
+# into build/gen/config_gen.h, which overrides the defaults in src/config.h. Keys you leave
+# out keep their defaults; without a .config the firmware builds with the defaults only.
+# Format: KEY=VALUE, one per line, no quotes (everything after '=' is the value).
+
+# Device name on the LAN: http://<HOSTNAME>.local (mDNS) and the DNS name on the SoftAP.
+# Lowercase letters, digits and inner hyphens, up to 32 characters. Default: iron-v
+#HOSTNAME=iron-v
+
+# Setup access point (open network, started at boot only while no Wi-Fi is saved).
+# Default: IronV-AP on channel 1, started automatically.
+#AP_SSID=IronV-AP
+#AP_CHANNEL=1
+#AP_AUTO_START=1
+
+# Home network to join on the very first boot, so the setup portal can be skipped.
+# Only seeds the board's storage (NVS) when it holds no Wi-Fi credentials; after that the
+# portal and `sta connect`/`prov set` win. WPA2-PSK only; passphrase 8-63 characters.
+# WARNING: the passphrase is compiled into build/firmware.bin and readable from the flash
+# (no flash encryption). Never share an image built with these set.
+#STA_SSID=
+#STA_PASSPHRASE=

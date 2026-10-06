@@ -582,8 +582,35 @@ void provisioning_cancel_join(void)
     }
 }
 
+bool provisioning_seed_from_config(const char *ssid, const char *passphrase)
+{
+    if (ssid == NULL || ssid[0] == '\0' || provisioning_has_credentials())
+    {
+        return false;
+    }
+    char seeded[PROVISIONING_MAX_SSID_LEN + 1U];
+    memset(seeded, 0, sizeof(seeded));
+    if (nvs_get_str(PROV_NVS_KEY_SEED, seeded, sizeof(seeded)) == NVS_OK && strcmp(seeded, ssid) == 0)
+    {
+        return false;
+    }
+    if (provisioning_set_credentials(ssid, passphrase) != PROV_OK)
+    {
+        return false;
+    }
+    (void)nvs_set_str(PROV_NVS_KEY_SEED, ssid);
+    return true;
+}
+
 void provisioning_boot(void)
 {
+    /* First boot of an image built with STA_SSID/STA_PASSPHRASE in .config */
+    if (provisioning_seed_from_config(CONFIG_WIFI_STA_SSID, CONFIG_WIFI_STA_PASSPHRASE))
+    {
+#if defined(__riscv)
+        console_puts("[PROV] Wi-Fi credentials seeded from the build configuration\r\n");
+#endif
+    }
     if (provisioning_has_credentials())
     {
         /* Provisioned: never start the SoftAP, also not when the router is away (review 7.2) */
@@ -594,7 +621,7 @@ void provisioning_boot(void)
     {
         /* Scan before the SoftAP is up: the portal list is ready and no client is disturbed */
         (void)provisioning_start_scan();
-        wifi_start_ap(CONFIG_WIFI_SSID, NULL, CONFIG_WIFI_CHANNEL);
+        wifi_start_ap(CONFIG_WIFI_AP_SSID, NULL, CONFIG_WIFI_AP_CHANNEL);
     }
 #endif
 }

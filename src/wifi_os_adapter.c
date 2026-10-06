@@ -33,10 +33,10 @@
 #include "wpa_driver.h"
 
 /* ========================================================================= */
-/* 1. Deterministic Static Memory Arena for Wi-Fi Subsystem (64 KB)          */
+/* 1. Deterministic Static Memory Arena for Wi-Fi Subsystem (60 KB)          */
 /* Zero dynamic heap memory calls permitted (AGENTS.md execution standard)   */
 /* ========================================================================= */
-#define WIFI_HEAP_SIZE          (64U * 1024U)  /* 54 KB ran out switching to APSTA (REV-29) */
+#define WIFI_HEAP_SIZE          (60U * 1024U)  /* peak 53.5 KB in an APSTA portal join (54 KB ran out) */
 #define WIFI_BLOCK_MAGIC        0xA55AU
 #define WIFI_ALLOC_ALIGN_MASK   7U
 

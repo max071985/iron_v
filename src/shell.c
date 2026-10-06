@@ -2112,6 +2112,17 @@ void shell_execute(char *input_buffer)
             console_puts("), never used: ");
             put_dec(untouched);
             console_puts(" B\r\n");
+            size_t heap_used = 0U;
+            size_t heap_free = 0U;
+            size_t heap_peak = 0U;
+            wifi_os_adapter_get_heap_stats(&heap_used, &heap_free, &heap_peak);
+            console_puts("Wi-Fi heap: used ");
+            put_dec((uint32_t)heap_used);
+            console_puts(" B, peak ");
+            put_dec((uint32_t)heap_peak);
+            console_puts(" B of ");
+            put_dec((uint32_t)(heap_used + heap_free));
+            console_puts(" B\r\n");
 #endif
         }
         else if (strncmp(subcmd, "diag", 4) == 0 || strncmp(subcmd, "lmac", 4) == 0)

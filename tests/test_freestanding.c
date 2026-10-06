@@ -3110,6 +3110,37 @@ static void test_provisioning_subsystem(void)
     provisioning_clear_credentials();
 }
 
+/* REV-30: build-time STA credentials only seed NVS: once, never over saved credentials */
+static void test_provisioning_seed(void)
+{
+    printf("  [TEST] Build-time Wi-Fi credentials seed NVS once (REV-30)...\n");
+    nvs_mock_reset();
+    nvs_init();
+    provisioning_mock_reset();
+    http_server_init();
+    provisioning_init();
+    wifi_credentials_t creds;
+
+    TEST_ASSERT(CONFIG_WIFI_STA_SSID[0] == '\0' && CONFIG_WIFI_STA_PASSPHRASE[0] == '\0',
+                "Default build carries no station credentials");
+    TEST_ASSERT(!provisioning_seed_from_config(CONFIG_WIFI_STA_SSID, CONFIG_WIFI_STA_PASSPHRASE), "Empty seed: nothing stored");
+    TEST_ASSERT(!provisioning_has_credentials(), "Still unprovisioned");
+
+    TEST_ASSERT(provisioning_seed_from_config("SeedNet", "seedpass123"), "First boot with a seed stores it");
+    TEST_ASSERT(provisioning_get_credentials(&creds) == PROV_OK && strcmp(creds.ssid, "SeedNet") == 0 &&
+                strcmp(creds.passphrase, "seedpass123") == 0, "Seeded credentials in NVS");
+
+    TEST_ASSERT(provisioning_set_credentials("PortalNet", "portalpass1") == PROV_OK, "User saves other credentials");
+    TEST_ASSERT(!provisioning_seed_from_config("SeedNet", "seedpass123"), "Seed never overwrites saved credentials");
+    TEST_ASSERT(provisioning_get_credentials(&creds) == PROV_OK && strcmp(creds.ssid, "PortalNet") == 0, "NVS wins");
+
+    provisioning_clear_credentials();
+    TEST_ASSERT(!provisioning_seed_from_config("SeedNet", "seedpass123"), "Same seed after `prov clear`: not re-applied");
+    TEST_ASSERT(!provisioning_has_credentials(), "Cleared board stays unprovisioned (setup portal)");
+    TEST_ASSERT(provisioning_seed_from_config("NewNet", "newpass1234"), "A different seed (new .config) applies once");
+    provisioning_clear_credentials();
+}
+
 /* REV-29: portal join with hand-over, failures with reasons, boot join with backoff */
 static void test_provisioning_join(void)
 {
@@ -5318,6 +5349,7 @@ int main(void)
     test_selftest_snapshots();
     test_provisioning_subsystem();
     test_provisioning_join();
+    test_provisioning_seed();
     test_mdns_legacy_unicast();
     test_wpa2_client_and_mdns_subsystem();
     test_wpa_ie_parsing();

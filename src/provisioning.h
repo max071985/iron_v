@@ -41,6 +41,7 @@ extern "C" {
 #define PROV_NVS_KEY_SSID                "wifi_ssid"
 #define PROV_NVS_KEY_PASS                "wifi_pass"
 #define PROV_NVS_KEY_PROV                "wifi_prov"
+#define PROV_NVS_KEY_SEED                "wifi_seed"   /* SSID last seeded from .config (REV-30) */
 
 /* ========================================================================= */
 /* Provisioning Enumerations                                                 */
@@ -156,6 +157,9 @@ void                  provisioning_cancel_join(void);
 void                  provisioning_restore_join(prov_join_state_t saved_state);
 /* Boot: join with saved credentials, else start the setup SoftAP (CONFIG_WIFI_AUTO_START_AP) */
 void                  provisioning_boot(void);
+/* Seeds NVS from the build-time CONFIG_WIFI_STA_* once: only with no saved credentials and only
+ * for an SSID not seeded before (a later `prov clear` is respected). True when it seeded. */
+bool                  provisioning_seed_from_config(const char *ssid, const char *passphrase);
 void                  provisioning_tick(uint64_t now_us);
 provisioning_status_t provisioning_get_join(prov_join_info_t *out_info);
 const char           *provisioning_join_state_to_str(prov_join_state_t state);

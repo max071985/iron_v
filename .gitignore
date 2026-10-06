@@ -9,7 +9,8 @@
 __pycache__/
 *.pyc
 
-# Local secrets and overrides (local.mk: optional untracked make targets)
+# Local secrets and overrides (.config: see config.example; local.mk: optional make targets)
+/.config
 /src/config_local.h
 /local.mk
 
@@ -29,3 +30,4 @@ __pycache__/
 # Scripts: only build-relevant generators are tracked
 /scripts/*
 !/scripts/gen_headers.py
+!/scripts/gen_config.py

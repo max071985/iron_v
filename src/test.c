@@ -2182,7 +2182,7 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     if (t31_pass) passed_tests++;
     print_result(t31_pass);
 #if CONFIG_WIFI_AUTO_START_AP
-    wifi_start_ap(CONFIG_WIFI_SSID, NULL, CONFIG_WIFI_CHANNEL);
+    wifi_start_ap(CONFIG_WIFI_AP_SSID, NULL, CONFIG_WIFI_AP_CHANNEL);
 #endif
 
     /* ------------------------------------------------------------- */

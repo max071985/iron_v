@@ -21,6 +21,9 @@ HOST_DIR = $(BUILD)/host
 ELF = $(BUILD)/firmware.elf
 BIN = $(BUILD)/firmware.bin
 LP_IMAGE_H = $(GEN_DIR)/lp_firmware_image.h
+# Local configuration: .config (untracked, see config.example) -> generated header
+CONFIG_FILE ?= .config
+CONFIG_GEN_H = $(GEN_DIR)/config_gen.h
 HOST_TEST_BIN = $(HOST_DIR)/test_freestanding
 
 # Compiler flags
@@ -31,6 +34,7 @@ DEPFLAGS = -MMD -MP
 # Host test build: native compiler, stub LP image (tests/host/), no cross toolchain needed
 HOST_CC ?= gcc
 HOST_CFLAGS = -O2 -fno-tree-loop-distribute-patterns -Wall -Wextra -Werror -Itests/host -Isrc
+# Host tests always build with the defaults (tests/host/config_gen.h), never with .config
 
 # Linker flags
 LDFLAGS = -T ld/link.ld -T ld/rom/esp32c6.rom.ld -T ld/rom/esp32c6.rom.phy.ld -T ld/rom/esp32c6.rom.pp.ld -T ld/rom/esp32c6.rom.net80211.ld -T ld/rom/esp32c6.rom.coexist.ld -Llibs/esp32c6 -nostdlib -Wl,--wrap=ram_set_chan_freq_sw_start
@@ -92,14 +96,22 @@ $(LP_IMAGE_H): $(LP_DIR)/lp_firmware.bin
 	@python3 -c "with open('$<','rb') as f: d=f.read(); \
 	open('$@','w').write('/* Auto-generated */\n#ifndef LP_FIRMWARE_IMAGE_H\n#define LP_FIRMWARE_IMAGE_H\n#include <stdint.h>\n#include <stddef.h>\nstatic const uint8_t g_lp_firmware_bin[] __attribute__((aligned(4))) = {' + ','.join(f'0x{b:02X}U' for b in d) + '};\nstatic const size_t g_lp_firmware_bin_len = ' + str(len(d)) + 'U;\n#endif\n')"
 
+# Regenerated on every make; the file only changes (and triggers rebuilds via the .d files)
+# when .config changes. A missing .config gives an empty header: defaults only.
+$(CONFIG_GEN_H): FORCE
+	@python3 scripts/gen_config.py $(CONFIG_FILE) $@
+
+.PHONY: FORCE
+FORCE:
+
 # Firmware
 OBJS = $(patsubst src/%,$(OBJ_DIR)/%.o,$(basename $(SRCS)))
 
-$(OBJ_DIR)/%.o: src/%.c | $(LP_IMAGE_H)
+$(OBJ_DIR)/%.o: src/%.c $(CONFIG_GEN_H) | $(LP_IMAGE_H)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
-$(OBJ_DIR)/%.o: src/%.S | $(LP_IMAGE_H)
+$(OBJ_DIR)/%.o: src/%.S $(CONFIG_GEN_H) | $(LP_IMAGE_H)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
@@ -167,6 +179,7 @@ $(HOST_TEST_BIN): $(HOST_OBJS)
 	$(HOST_CC) $(HOST_OBJS) -o $@
 
 host-test: $(HOST_TEST_BIN)
+	@python3 scripts/gen_config.py --self-test
 	@./$(HOST_TEST_BIN)
 	@python3 tests/test_companion_app.py
 

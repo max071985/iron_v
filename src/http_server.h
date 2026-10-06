@@ -99,6 +99,7 @@ typedef struct {
     uint32_t responses_404;
     uint32_t responses_405;
     uint32_t responses_err;
+    uint32_t requests_deferred;    /* GETs left unacknowledged while the TCP send buffer was full */
     uint32_t bytes_tx;
     uint32_t bytes_rx;
     uint16_t active_routes;

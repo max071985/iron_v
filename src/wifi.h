@@ -24,7 +24,7 @@
 /* Software RX Queue Sizing                                                   */
 /* ========================================================================= */
 #define PACKET_BUFFER_SIZE               1536U
-#define PACKET_RING_COUNT                32U
+#define PACKET_RING_COUNT                28U   /* 32 -> 28 pays for the TCP send buffer (REV-13, O-38) */
 
 #ifndef WIFI_MAC_ADDR_LEN
 #define WIFI_MAC_ADDR_LEN                6U
@@ -198,6 +198,10 @@ wifi_tx_if_t wifi_get_ip_tx_if(void);
 #if !defined(__riscv)
 /* Host builds: last frame handed to wifi_tx_packet, for tests */
 const uint8_t *wifi_host_last_tx(uint16_t *out_len, wifi_tx_if_t *out_ifx);
+/* Host tests: called with every valid frame (NULL to stop); returning false makes wifi_tx_packet fail
+ * with WIFI_ERR_TX_FAILED (driver out of TX buffers) */
+typedef bool (*wifi_host_tx_hook_t)(const uint8_t *frame, uint16_t len);
+void wifi_host_set_tx_hook(wifi_host_tx_hook_t hook);
 #endif
 void wifi_poll_rx_traffic(void);
 

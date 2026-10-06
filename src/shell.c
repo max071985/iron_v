@@ -2546,6 +2546,26 @@ void shell_execute(char *input_buffer)
             console_puts(" / ");
             put_dec(tt.rst_sent_count);
             console_puts("\r\n");
+            console_puts("  Gave Up / Idle:    ");
+            put_dec(tt.rto_giveups);
+            console_puts(" / ");
+            put_dec(tt.idle_expired);
+            console_puts("\r\n");
+            console_puts("  Dup Segs / RTTs:   ");
+            put_dec(tt.dup_segments);
+            console_puts(" / ");
+            put_dec(tt.rtt_samples);
+            console_puts("\r\n");
+            console_puts("  Deferred RX / TX Blocked: ");
+            put_dec(tt.rx_deferred);
+            console_puts(" / ");
+            put_dec(tt.tx_blocked);
+            console_puts("\r\n");
+            console_puts("  Send Buffer:       ");
+            put_dec(tcp_sndbuf_free_chunks() * TCP_SNDBUF_CHUNK_SIZE);
+            console_puts(" B free, full ");
+            put_dec(tt.sndbuf_full);
+            console_puts("x\r\n");
             for (uint32_t i = 0; i < TCP_MAX_PCBS; i++)
             {
                 const tcp_pcb_t *p = tcp_get_pcb(i);
@@ -2559,6 +2579,20 @@ void shell_execute(char *input_buffer)
                     put_dec(p->local_port);
                     console_puts(", RemotePort=");
                     put_dec(p->remote_port);
+                    console_puts(", Unacked=");
+                    put_dec(p->snd_max - p->snd_una);
+                    console_puts(", RTO=");
+                    put_dec(p->rto_ms);
+                    console_puts(" ms, Idle=");
+                    if (p->idle_timeout_ms == TCP_IDLE_TIMEOUT_NEVER)
+                    {
+                        console_puts("never");
+                    }
+                    else
+                    {
+                        put_dec(p->idle_timeout_ms);
+                        console_puts(" ms");
+                    }
                     console_puts("\r\n");
                 }
             }

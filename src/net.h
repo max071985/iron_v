@@ -112,7 +112,8 @@ typedef enum {
     NET_ERR_NOT_FOUND = -4,
     NET_ERR_QUEUE_FULL = -5,
     NET_ERR_UNKNOWN_PROTO = -6,
-    NET_ERR_FRAME_CORRUPT = -7
+    NET_ERR_FRAME_CORRUPT = -7,
+    NET_ERR_BUSY = -8             /* receiver cannot take this data now: TCP does not acknowledge it */
 } net_status_t;
 
 /* ========================================================================= */

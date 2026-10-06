@@ -1098,16 +1098,52 @@ static net_status_t http_tcp_recv_cb(void *arg, tcp_pcb_t *pcb, const uint8_t *d
         out_len = strlen(too_large);
         memcpy(tx_buf, too_large, out_len);
     }
-    http_req_slot_release(pcb);
 
     if (out_len > 0U)
     {
-        tcp_write(pcb, tx_buf, (uint16_t)out_len);
+        tcp_status_t wst = tcp_write(pcb, tx_buf, (uint16_t)out_len);
+        const char get_prefix[] = "GET ";
+        bool idempotent = rst == HTTP_REQ_COMPLETE && slot->len >= (sizeof(get_prefix) - 1U) &&
+                          strncmp(slot->buf, get_prefix, sizeof(get_prefix) - 1U) == 0;
+        if (wst == TCP_ERR_MEM && idempotent)
+        {
+            /* TCP send buffer busy with other responses (REV-13): leave this segment unacknowledged;
+             * the client resends it once earlier responses are acknowledged */
+            slot->len -= take;
+            slot->buf[slot->len] = '\0';
+            s_http_telemetry.requests_deferred++;
+            arena_scratch_reset(mark);
+            return NET_ERR_BUSY;
+        }
+        http_req_slot_release(pcb);
+        if (wst == TCP_ERR_MEM)
+        {
+            /* Not repeatable (POST already applied): a short 503 instead of nothing */
+            const char busy[] =
+                "HTTP/1.1 503 Service Unavailable\r\n"
+                "Retry-After: 1\r\n"
+                "Content-Length: 0\r\n"
+                "Connection: close\r\n"
+                HTTP_SERVER_HEADER
+                "\r\n";
+            s_http_telemetry.responses_err++;
+            if (tcp_write(pcb, busy, (uint16_t)strlen(busy)) != TCP_OK)
+            {
+                arena_scratch_reset(mark);
+                tcp_abort(pcb);
+                return NET_OK;
+            }
+        }
 #if defined(__riscv)
-        console_puts("[HTTP] Sent response: ");
+        console_puts((wst == TCP_OK) ? "[HTTP] Sent response: " : "[HTTP] Send buffer full, 503 for: ");
         put_dec((uint32_t)out_len);
         console_puts(" bytes\r\n");
 #endif
+    }
+
+    else
+    {
+        http_req_slot_release(pcb);
     }
 
     arena_scratch_reset(mark);

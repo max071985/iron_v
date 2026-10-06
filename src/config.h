@@ -149,8 +149,10 @@
 #define CONFIG_TCP_RETRANSMIT_TIMEOUT_MS    1000U
 #endif
 
+/* Retransmissions of one data/FIN segment before the connection is dropped (RTO doubles each time:
+ * 6 rides out ~2 min of loss, REV-13) */
 #ifndef CONFIG_TCP_MAX_RETRIES
-#define CONFIG_TCP_MAX_RETRIES              3U
+#define CONFIG_TCP_MAX_RETRIES              6U
 #endif
 
 #ifndef CONFIG_TCP_DEFAULT_HTTP_PORT

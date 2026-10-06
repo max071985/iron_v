@@ -97,6 +97,7 @@ static bool s_wifi_initialized = false;
 
 #if !defined(__riscv)
 static uint8_t s_host_last_tx[PACKET_BUFFER_SIZE];
+static wifi_host_tx_hook_t s_host_tx_hook = NULL;
 static uint16_t s_host_last_tx_len = 0U;
 static wifi_tx_if_t s_host_last_tx_if = WIFI_TX_IF_AP;
 #endif
@@ -647,6 +648,11 @@ wifi_status_t wifi_tx_packet(wifi_tx_if_t ifx, const uint8_t *payload, uint16_t 
     memcpy(s_host_last_tx, payload, len);
     s_host_last_tx_len = len;
     s_host_last_tx_if = ifx;
+    if (s_host_tx_hook != NULL && !s_host_tx_hook(payload, len))
+    {
+        s_wifi_telemetry.tx_errors++;
+        return WIFI_ERR_TX_FAILED;
+    }
 #endif
 
     s_wifi_telemetry.tx_packets++;
@@ -655,6 +661,11 @@ wifi_status_t wifi_tx_packet(wifi_tx_if_t ifx, const uint8_t *payload, uint16_t 
 }
 
 #if !defined(__riscv)
+void wifi_host_set_tx_hook(wifi_host_tx_hook_t hook)
+{
+    s_host_tx_hook = hook;
+}
+
 const uint8_t *wifi_host_last_tx(uint16_t *out_len, wifi_tx_if_t *out_ifx)
 {
     if (out_len != NULL) *out_len = s_host_last_tx_len;

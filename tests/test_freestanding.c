@@ -1603,7 +1603,7 @@ static void test_wifi_mac_subsystem(void)
 
     /* 2. Concrete Data Structure Geometry & Memory Sizing */
     TEST_ASSERT(PACKET_BUFFER_SIZE == 1536U, "PACKET_BUFFER_SIZE must be exactly 1536 bytes");
-    TEST_ASSERT(PACKET_RING_COUNT == 32U, "PACKET_RING_COUNT must be exactly 32 descriptors");
+    TEST_ASSERT(PACKET_RING_COUNT == 28U, "PACKET_RING_COUNT must be exactly 28 descriptors");
     TEST_ASSERT(sizeof(net_packet_t) == (sizeof(dma_descriptor_t) + PACKET_BUFFER_SIZE), "net_packet_t layout packed with descriptor and buffer");
     TEST_ASSERT((sizeof(net_packet_t) % 4U) == 0U, "net_packet_t must be 4-byte aligned");
 
@@ -1626,13 +1626,13 @@ static void test_wifi_mac_subsystem(void)
     wifi_telemetry_t telem;
     TEST_ASSERT(wifi_get_telemetry(NULL) == WIFI_ERR_INVALID_ARG, "wifi_get_telemetry rejects NULL");
     TEST_ASSERT(wifi_get_telemetry(&telem) == WIFI_OK, "wifi_get_telemetry succeeds");
-    TEST_ASSERT(telem.rx_ring_capacity == PACKET_RING_COUNT, "RX ring capacity is 32");
+    TEST_ASSERT(telem.rx_ring_capacity == PACKET_RING_COUNT, "RX ring capacity is 28");
 
     /* 4. Circular Packet Ring Integrity & Boundary Traversal (TEST 31) */
     uint32_t visited_count = 0U;
     TEST_ASSERT(wifi_verify_rx_ring(NULL) == WIFI_ERR_INVALID_ARG, "wifi_verify_rx_ring rejects NULL");
     TEST_ASSERT(wifi_verify_rx_ring(&visited_count) == WIFI_OK, "wifi_verify_rx_ring succeeds");
-    TEST_ASSERT(visited_count == PACKET_RING_COUNT, "Circular traversal visits all 32 descriptors and loops back");
+    TEST_ASSERT(visited_count == PACKET_RING_COUNT, "Circular traversal visits all 28 descriptors and loops back");
 
     /* 5. Zero-Copy Packet Reception Polling & Buffer Release */
     net_packet_t *rx_pkt = NULL;
@@ -3143,6 +3143,474 @@ static void test_provisioning_seed(void)
 }
 
 /* REV-29: portal join with hand-over, failures with reasons, boot join with backoff */
+/* ========================================================================= */
+/* REV-13: TCP reliability replayed with dropped segments                    */
+/* ========================================================================= */
+#define TT_MAX_FRAMES      16U
+#define TT_PEER_PORT       40000U
+#define TT_LISTEN_PORT     8080U
+#define TT_PEER_ISN        1000U
+#define TT_PEER_WINDOW     8192U
+
+typedef struct {
+    uint32_t seq;
+    uint32_t ack;
+    uint8_t  flags;
+    uint16_t sport;
+    uint16_t len;
+    uint8_t  data[TCP_DEFAULT_SEGMENT_MSS];
+} tt_frame_t;
+
+static tt_frame_t s_tt_frames[TT_MAX_FRAMES];
+static uint32_t s_tt_frame_count;
+static uint8_t s_tt_rx[256];
+static uint32_t s_tt_rx_len;
+static uint32_t s_tt_rx_calls;
+static tcp_status_t s_tt_last_err;
+static uint32_t s_tt_err_calls;
+static uint32_t s_tt_now;
+static bool s_tt_reply;
+static bool s_tt_busy;
+
+static uint32_t s_tt_refuse_tx;   /* frames the "driver" refuses next */
+
+static bool tt_tx_hook(const uint8_t *frame, uint16_t len)
+{
+    if (s_tt_refuse_tx > 0U)
+    {
+        s_tt_refuse_tx--;
+        return false;
+    }
+    if (s_tt_frame_count >= TT_MAX_FRAMES || len < ETH_HDR_LEN + IPV4_MIN_HDR_LEN + TCP_MIN_HDR_LEN)
+    {
+        return true;
+    }
+    const tcp_header_t *t = (const tcp_header_t *)(frame + ETH_HDR_LEN + IPV4_MIN_HDR_LEN);
+    tt_frame_t *f = &s_tt_frames[s_tt_frame_count++];
+    f->seq = NET_NTOHL(t->seq_num);
+    f->ack = NET_NTOHL(t->ack_num);
+    f->flags = t->flags;
+    f->sport = NET_NTOHS(t->src_port);
+    f->len = (uint16_t)(len - ETH_HDR_LEN - IPV4_MIN_HDR_LEN - TCP_MIN_HDR_LEN);
+    memcpy(f->data, frame + ETH_HDR_LEN + IPV4_MIN_HDR_LEN + TCP_MIN_HDR_LEN, f->len);
+    return true;
+}
+
+static net_status_t tt_recv_cb(void *arg, tcp_pcb_t *pcb, const uint8_t *data, uint16_t len)
+{
+    (void)arg;
+    s_tt_rx_calls++;
+    if (s_tt_busy)
+    {
+        return NET_ERR_BUSY;
+    }
+    if (s_tt_reply)
+    {
+        (void)tcp_write(pcb, "OK", 2U);
+        (void)tcp_close(pcb);
+    }
+    for (uint16_t i = 0U; i < len && s_tt_rx_len < sizeof(s_tt_rx); i++)
+    {
+        s_tt_rx[s_tt_rx_len++] = data[i];
+    }
+    return NET_OK;
+}
+
+static void tt_err_cb(void *arg, tcp_status_t err)
+{
+    (void)arg;
+    s_tt_last_err = err;
+    s_tt_err_calls++;
+}
+
+static void tt_reset_capture(void)
+{
+    s_tt_frame_count = 0U;
+}
+
+static void tt_advance(uint32_t ms)
+{
+    s_tt_now += ms;
+    tcp_host_set_time_ms(s_tt_now);
+    tcp_tick();
+}
+
+static void tt_peer_send(uint16_t sport, uint16_t dport, uint32_t seq, uint32_t ack, uint8_t flags,
+                         uint16_t wnd, const void *data, uint16_t len)
+{
+    uint8_t pkt[IPV4_MIN_HDR_LEN + TCP_MIN_HDR_LEN + 64U];
+    memset(pkt, 0, sizeof(pkt));
+    uint32_t peer_ip = NET_IP4_ADDR(192, 168, 1, 50);
+    uint32_t our_ip = NET_IP4_ADDR(192, 168, 1, 77);
+    ipv4_header_t *ip = (ipv4_header_t *)pkt;
+    tcp_header_t *t = (tcp_header_t *)(pkt + IPV4_MIN_HDR_LEN);
+    ip->ver_ihl = IPV4_VER_IHL_DEFAULT;
+    ip->total_len = NET_HTONS(IPV4_MIN_HDR_LEN + TCP_MIN_HDR_LEN + len);
+    ip->ttl = IPV4_TTL_DEFAULT;
+    ip->protocol = IPV4_PROTO_TCP;
+    ip->src_ip = NET_HTONL(peer_ip);
+    ip->dest_ip = NET_HTONL(our_ip);
+    t->src_port = NET_HTONS(sport);
+    t->dest_port = NET_HTONS(dport);
+    t->seq_num = NET_HTONL(seq);
+    t->ack_num = NET_HTONL(ack);
+    t->data_offset_reserved = (uint8_t)((TCP_MIN_HDR_LEN / TCP_HDR_WORD_BYTES) << TCP_DATA_OFFSET_SHIFT);
+    t->flags = flags;
+    t->window = NET_HTONS(wnd);
+    uint8_t *payload = pkt + IPV4_MIN_HDR_LEN + TCP_MIN_HDR_LEN;
+    if (len > 0U)
+    {
+        memcpy(payload, data, len);
+    }
+    t->checksum = NET_HTONS(net_tcp_checksum(peer_ip, our_ip, t, TCP_MIN_HDR_LEN, payload, len));
+    (void)tcp_input(pkt, (uint16_t)(IPV4_MIN_HDR_LEN + TCP_MIN_HDR_LEN + len));
+}
+
+static tcp_pcb_t *tt_find_conn(uint16_t peer_port)
+{
+    for (uint32_t i = 0U; i < TCP_MAX_PCBS; i++)
+    {
+        const tcp_pcb_t *p = tcp_get_pcb(i);
+        if (p->in_use && p->state != TCP_STATE_LISTEN && p->remote_port == peer_port)
+        {
+            return (tcp_pcb_t *)p;
+        }
+    }
+    return NULL;
+}
+
+/* Handshake from peer_port; returns the server ISN + 1 (first data seq) */
+static uint32_t tt_open(uint16_t peer_port)
+{
+    tt_reset_capture();
+    tt_peer_send(peer_port, TT_LISTEN_PORT, TT_PEER_ISN, 0U, TCP_FLAG_SYN, TT_PEER_WINDOW, NULL, 0U);
+    uint32_t s1 = s_tt_frames[0].seq + 1U;
+    tt_peer_send(peer_port, TT_LISTEN_PORT, TT_PEER_ISN + 1U, s1, TCP_FLAG_ACK, TT_PEER_WINDOW, NULL, 0U);
+    return s1;
+}
+
+static void test_tcp_reliability(void)
+{
+    printf("  [TEST] TCP retransmission, SYN retry, idle policy (REV-13)...\n");
+    tcp_telemetry_t tt;
+    static uint8_t pattern[3000];
+    for (uint32_t i = 0U; i < sizeof(pattern); i++)
+    {
+        pattern[i] = (uint8_t)(i * 7U + 3U);
+    }
+
+    TEST_ASSERT(tcp_init() == TCP_OK, "tcp_init");
+    s_tt_now = 100000U;
+    tcp_host_set_time_ms(s_tt_now);
+    wifi_host_set_tx_hook(tt_tx_hook);
+    s_tt_rx_len = 0U;
+    s_tt_rx_calls = 0U;
+    s_tt_err_calls = 0U;
+
+    tcp_pcb_t *lst = tcp_new();
+    TEST_ASSERT(lst != NULL && tcp_bind(lst, TT_LISTEN_PORT) == TCP_OK && tcp_listen(lst, NULL) == TCP_OK,
+                "listener up");
+    tcp_set_recv_cb(lst, tt_recv_cb);
+    tcp_set_err_cb(lst, tt_err_cb);
+
+    /* --- Lost SYN-ACK: retransmitted after RTO with the same sequence number --- */
+    tt_reset_capture();
+    tt_peer_send(TT_PEER_PORT, TT_LISTEN_PORT, TT_PEER_ISN, 0U, TCP_FLAG_SYN, TT_PEER_WINDOW, NULL, 0U);
+    TEST_ASSERT(s_tt_frame_count == 1U && s_tt_frames[0].flags == (TCP_FLAG_SYN | TCP_FLAG_ACK) &&
+                s_tt_frames[0].ack == TT_PEER_ISN + 1U, "SYN answered with SYN-ACK");
+    uint32_t s_isn = s_tt_frames[0].seq;
+    tt_advance(TCP_RTO_INITIAL_MS - 1U);
+    TEST_ASSERT(s_tt_frame_count == 1U, "no resend before the RTO");
+    tt_advance(1U);
+    TEST_ASSERT(s_tt_frame_count == 2U && s_tt_frames[1].flags == (TCP_FLAG_SYN | TCP_FLAG_ACK) &&
+                s_tt_frames[1].seq == s_isn, "lost SYN-ACK retransmitted with the same ISN");
+    tt_peer_send(TT_PEER_PORT, TT_LISTEN_PORT, TT_PEER_ISN, 0U, TCP_FLAG_SYN, TT_PEER_WINDOW, NULL, 0U);
+    TEST_ASSERT(s_tt_frame_count == 3U && s_tt_frames[2].seq == s_isn, "repeated SYN answered with the same SYN-ACK");
+
+    /* Handshake ACK carries the request */
+    tt_reset_capture();
+    tt_peer_send(TT_PEER_PORT, TT_LISTEN_PORT, TT_PEER_ISN + 1U, s_isn + 1U, TCP_FLAG_ACK | TCP_FLAG_PSH,
+                 TT_PEER_WINDOW, "GET", 3U);
+    tcp_pcb_t *c = tt_find_conn(TT_PEER_PORT);
+    TEST_ASSERT(c != NULL && c->state == TCP_STATE_ESTABLISHED, "handshake completes");
+    TEST_ASSERT(s_tt_rx_calls == 1U && s_tt_rx_len == 3U && memcmp(s_tt_rx, "GET", 3U) == 0, "request delivered once");
+    TEST_ASSERT(s_tt_frame_count == 1U && s_tt_frames[0].ack == TT_PEER_ISN + 4U, "request ACKed");
+    uint32_t rcv = TT_PEER_ISN + 4U;
+
+    /* --- Peer retransmission (our ACK was lost): not delivered twice, re-ACKed --- */
+    tcp_get_telemetry(&tt);
+    uint32_t dup0 = tt.dup_segments;
+    tt_reset_capture();
+    tt_peer_send(TT_PEER_PORT, TT_LISTEN_PORT, TT_PEER_ISN + 1U, s_isn + 1U, TCP_FLAG_ACK, TT_PEER_WINDOW, "GET", 3U);
+    tcp_get_telemetry(&tt);
+    TEST_ASSERT(s_tt_rx_calls == 1U && tt.dup_segments == dup0 + 1U, "duplicate segment not delivered again");
+    TEST_ASSERT(s_tt_frame_count == 1U && s_tt_frames[0].flags == TCP_FLAG_ACK && s_tt_frames[0].ack == rcv,
+                "duplicate segment re-ACKed");
+    /* Overlap: only the new bytes go up */
+    tt_peer_send(TT_PEER_PORT, TT_LISTEN_PORT, TT_PEER_ISN + 1U, s_isn + 1U, TCP_FLAG_ACK, TT_PEER_WINDOW, "GETXY", 5U);
+    TEST_ASSERT(s_tt_rx_len == 5U && memcmp(&s_tt_rx[3], "XY", 2U) == 0, "overlapping segment trimmed to new bytes");
+    rcv += 2U;
+    /* Gap (a segment before it was lost): dropped and re-ACKed, the peer resends */
+    tt_reset_capture();
+    tt_peer_send(TT_PEER_PORT, TT_LISTEN_PORT, rcv + 10U, s_isn + 1U, TCP_FLAG_ACK, TT_PEER_WINDOW, "ZZ", 2U);
+    TEST_ASSERT(s_tt_rx_len == 5U && s_tt_frame_count == 1U && s_tt_frames[0].ack == rcv,
+                "out-of-order segment dropped, duplicate ACK for rcv_nxt");
+
+    /* --- Lost data segment: retransmitted with the same bytes, one segment after the timeout --- */
+    tcp_get_telemetry(&tt);
+    uint32_t rtt0 = tt.rtt_samples;
+    uint32_t rtx0 = tt.retransmit_count;
+    tt_reset_capture();
+    TEST_ASSERT(tcp_write(c, pattern, sizeof(pattern)) == TCP_OK, "3000 B write accepted");
+    TEST_ASSERT(s_tt_frame_count == 1U && s_tt_frames[0].len == TCP_DEFAULT_SEGMENT_MSS &&
+                s_tt_frames[0].seq == s_isn + 1U && (s_tt_frames[0].flags & TCP_FLAG_PSH) == 0U,
+                "after a lost SYN-ACK the first flight is one segment (RFC 5681 3.1)");
+    tt_advance(5U);
+    tt_reset_capture();
+    tt_peer_send(TT_PEER_PORT, TT_LISTEN_PORT, rcv, s_isn + 1U + TCP_DEFAULT_SEGMENT_MSS, TCP_FLAG_ACK,
+                 TT_PEER_WINDOW, NULL, 0U);
+    TEST_ASSERT(s_tt_frame_count == 2U && s_tt_frames[0].len == TCP_DEFAULT_SEGMENT_MSS && s_tt_frames[1].len == 80U &&
+                s_tt_frames[0].seq == s_isn + 1U + TCP_DEFAULT_SEGMENT_MSS && (s_tt_frames[1].flags & TCP_FLAG_PSH) != 0U,
+                "ACK grows cwnd: next two segments, PSH on the last");
+    TEST_ASSERT(memcmp(s_tt_frames[0].data, &pattern[TCP_DEFAULT_SEGMENT_MSS], TCP_DEFAULT_SEGMENT_MSS) == 0,
+                "segment carries the right bytes");
+    /* segment 2 is lost: no further ACK */
+    tcp_get_telemetry(&tt);
+    TEST_ASSERT(tt.rtt_samples == rtt0 + 1U && c->rto_ms == TCP_RTO_MIN_MS, "RTT sampled, RTO clamped to the minimum");
+    TEST_ASSERT(c->snd_una == s_isn + 1U + TCP_DEFAULT_SEGMENT_MSS && c->sndbuf_len == sizeof(pattern) - TCP_DEFAULT_SEGMENT_MSS,
+                "acked bytes leave the send buffer");
+    tt_reset_capture();
+    tt_advance(TCP_RTO_MIN_MS);
+    tcp_get_telemetry(&tt);
+    TEST_ASSERT(s_tt_frame_count == 1U && s_tt_frames[0].seq == s_isn + 1U + TCP_DEFAULT_SEGMENT_MSS &&
+                s_tt_frames[0].len == TCP_DEFAULT_SEGMENT_MSS &&
+                memcmp(s_tt_frames[0].data, &pattern[TCP_DEFAULT_SEGMENT_MSS], TCP_DEFAULT_SEGMENT_MSS) == 0,
+                "lost segment retransmitted alone with identical bytes");
+    TEST_ASSERT(tt.retransmit_count == rtx0 + 1U && c->rto_ms == TCP_RTO_MIN_MS * TCP_RTO_BACKOFF_FACTOR,
+                "retransmit counted, RTO doubled");
+    tt_reset_capture();
+    tt_advance(TCP_RTO_MIN_MS * TCP_RTO_BACKOFF_FACTOR - 1U);
+    TEST_ASSERT(s_tt_frame_count == 0U, "backed-off timer not yet due");
+    tt_advance(1U);
+    TEST_ASSERT(s_tt_frame_count == 1U && s_tt_frames[0].seq == s_isn + 1U + TCP_DEFAULT_SEGMENT_MSS,
+                "second retransmission after the doubled RTO");
+    /* Retransmission arrives: cumulative ACK; Karn: no RTT sample from a resent range */
+    tt_reset_capture();
+    tt_peer_send(TT_PEER_PORT, TT_LISTEN_PORT, rcv, s_isn + 1U + 2U * TCP_DEFAULT_SEGMENT_MSS, TCP_FLAG_ACK,
+                 TT_PEER_WINDOW, NULL, 0U);
+    TEST_ASSERT(s_tt_frame_count == 1U && s_tt_frames[0].seq == s_isn + 1U + 2U * TCP_DEFAULT_SEGMENT_MSS &&
+                s_tt_frames[0].len == 80U, "ACK opens cwnd: the rest is resent");
+    tt_peer_send(TT_PEER_PORT, TT_LISTEN_PORT, rcv, s_isn + 1U + sizeof(pattern), TCP_FLAG_ACK,
+                 TT_PEER_WINDOW, NULL, 0U);
+    tcp_get_telemetry(&tt);
+    TEST_ASSERT(tt.rtt_samples == rtt0 + 1U, "Karn: no RTT sample from retransmitted data");
+    TEST_ASSERT(c->sndbuf_len == 0U && !c->rtx_armed && tcp_sndbuf_free_chunks() == TCP_SNDBUF_CHUNKS,
+                "all acknowledged: buffer returned, timer stopped");
+    TEST_ASSERT(c->retries == 0U, "retries reset by progress");
+
+    /* --- Peer window limits what is in flight --- */
+    tt_reset_capture();
+    tt_peer_send(TT_PEER_PORT, TT_LISTEN_PORT, rcv, s_isn + 1U + sizeof(pattern), TCP_FLAG_ACK, 1000U, NULL, 0U);
+    TEST_ASSERT(tcp_write(c, pattern, 2000U) == TCP_OK && s_tt_frame_count == 1U && s_tt_frames[0].len == 1000U,
+                "only the peer window is sent");
+    uint32_t base = s_isn + 1U + sizeof(pattern);
+    tt_reset_capture();
+    tt_peer_send(TT_PEER_PORT, TT_LISTEN_PORT, rcv, base + 1000U, TCP_FLAG_ACK, 1000U, NULL, 0U);
+    TEST_ASSERT(s_tt_frame_count == 1U && s_tt_frames[0].seq == base + 1000U && s_tt_frames[0].len == 1000U,
+                "window update releases the next bytes");
+    tt_peer_send(TT_PEER_PORT, TT_LISTEN_PORT, rcv, base + 2000U, TCP_FLAG_ACK, TT_PEER_WINDOW, NULL, 0U);
+    base += 2000U;
+
+    /* --- Response + close: FIN piggybacked; lost FIN retransmitted; TIME_WAIT re-ACKs a resent FIN --- */
+    tt_reset_capture();
+    s_tt_reply = true;   /* HTTP pattern: recv_cb writes the response and closes */
+    tt_peer_send(TT_PEER_PORT, TT_LISTEN_PORT, rcv, base, TCP_FLAG_ACK | TCP_FLAG_PSH, TT_PEER_WINDOW, "Q", 1U);
+    s_tt_reply = false;
+    rcv += 1U;
+    TEST_ASSERT(s_tt_frame_count == 1U && (s_tt_frames[0].flags & TCP_FLAG_FIN) != 0U && s_tt_frames[0].len == 2U &&
+                s_tt_frames[0].ack == rcv && c->state == TCP_STATE_FIN_WAIT_1,
+                "response, FIN and the request's ACK leave in one frame");
+    tt_peer_send(TT_PEER_PORT, TT_LISTEN_PORT, rcv, base + 2U, TCP_FLAG_ACK, TT_PEER_WINDOW, NULL, 0U);
+    TEST_ASSERT(c->state == TCP_STATE_FIN_WAIT_1 && c->rtx_armed, "data acked, FIN still outstanding");
+    tt_reset_capture();
+    tt_advance(c->rto_ms);
+    TEST_ASSERT(s_tt_frame_count == 1U && s_tt_frames[0].flags == (TCP_FLAG_FIN | TCP_FLAG_ACK) &&
+                s_tt_frames[0].seq == base + 2U && s_tt_frames[0].len == 0U, "lost FIN retransmitted bare");
+    tt_peer_send(TT_PEER_PORT, TT_LISTEN_PORT, rcv, base + 3U, TCP_FLAG_ACK, TT_PEER_WINDOW, NULL, 0U);
+    TEST_ASSERT(c->state == TCP_STATE_FIN_WAIT_2 && !c->rtx_armed, "FIN acked: FIN_WAIT_2");
+    tt_reset_capture();
+    tt_peer_send(TT_PEER_PORT, TT_LISTEN_PORT, rcv, base + 3U, TCP_FLAG_FIN | TCP_FLAG_ACK, TT_PEER_WINDOW, NULL, 0U);
+    TEST_ASSERT(c->state == TCP_STATE_TIME_WAIT && s_tt_frame_count == 1U && s_tt_frames[0].ack == rcv + 1U,
+                "peer FIN acked, TIME_WAIT");
+    tt_peer_send(TT_PEER_PORT, TT_LISTEN_PORT, rcv, base + 3U, TCP_FLAG_FIN | TCP_FLAG_ACK, TT_PEER_WINDOW, NULL, 0U);
+    TEST_ASSERT(s_tt_frame_count == 2U && s_tt_frames[1].ack == rcv + 1U, "resent peer FIN re-ACKed in TIME_WAIT");
+    tt_advance(TCP_TIME_WAIT_MS);
+    TEST_ASSERT(!c->in_use, "TIME_WAIT ends");
+
+    /* --- Retries exhausted: err_cb(TIMEOUT), PCB and buffer freed --- */
+    uint32_t s2 = tt_open(TT_PEER_PORT + 1U);
+    c = tt_find_conn(TT_PEER_PORT + 1U);
+    TEST_ASSERT(c != NULL && c->state == TCP_STATE_ESTABLISHED, "second connection");
+    tt_reset_capture();
+    TEST_ASSERT(tcp_write(c, pattern, 100U) == TCP_OK, "write never acknowledged");
+    tcp_get_telemetry(&tt);
+    uint32_t give0 = tt.rto_giveups;
+    s_tt_err_calls = 0U;
+    uint32_t rto = TCP_RTO_INITIAL_MS;
+    for (uint32_t r = 0U; r < TCP_MAX_RETRIES; r++)
+    {
+        tt_advance(rto);
+        rto = (rto * TCP_RTO_BACKOFF_FACTOR > TCP_RTO_MAX_MS) ? TCP_RTO_MAX_MS : rto * TCP_RTO_BACKOFF_FACTOR;
+    }
+    TEST_ASSERT(s_tt_frame_count == 1U + TCP_MAX_RETRIES && s_tt_frames[TCP_MAX_RETRIES].seq == s2 &&
+                c->in_use, "every retry resends the oldest segment");
+    tt_advance(rto);
+    tcp_get_telemetry(&tt);
+    TEST_ASSERT(!c->in_use && s_tt_err_calls == 1U && s_tt_last_err == TCP_ERR_TIMEOUT && tt.rto_giveups == give0 + 1U,
+                "gives up after the last retry and tells the application");
+    TEST_ASSERT(tcp_sndbuf_free_chunks() == TCP_SNDBUF_CHUNKS, "send buffer returned on give-up");
+
+    /* --- Idle policy: default expires, NEVER survives --- */
+    (void)tt_open(TT_PEER_PORT + 2U);
+    tcp_pcb_t *http_like = tt_find_conn(TT_PEER_PORT + 2U);
+    (void)tt_open(TT_PEER_PORT + 3U);
+    tcp_pcb_t *persistent = tt_find_conn(TT_PEER_PORT + 3U);
+    tcp_set_idle_timeout(persistent, TCP_IDLE_TIMEOUT_NEVER);
+    TEST_ASSERT(http_like != NULL && persistent != NULL && http_like->idle_timeout_ms == TCP_IDLE_TIMEOUT_DEFAULT_MS,
+                "accepted connections inherit the default idle timeout");
+    tcp_get_telemetry(&tt);
+    uint32_t idle0 = tt.idle_expired;
+    tt_advance(TCP_IDLE_TIMEOUT_DEFAULT_MS - 1U);
+    TEST_ASSERT(http_like->in_use, "not expired before the idle timeout");
+    tt_advance(1U);
+    tcp_get_telemetry(&tt);
+    TEST_ASSERT(!http_like->in_use && tt.idle_expired == idle0 + 1U, "default connection expires when idle");
+    for (uint32_t h = 0U; h < 24U; h++)
+    {
+        tt_advance(3600000U);
+    }
+    TEST_ASSERT(persistent->in_use && persistent->state == TCP_STATE_ESTABLISHED, "NEVER connection idle for 24 h survives");
+    for (uint32_t i = 0U; i < TCP_MAX_PCBS; i++)
+    {
+        tcp_pcb_t *spare = tcp_new();
+        TEST_ASSERT(spare != persistent, "slot recycling never takes a persistent connection");
+        if (spare == NULL) break;
+    }
+
+    /* --- RST: err_cb(RST) --- */
+    s_tt_err_calls = 0U;
+    tt_peer_send(TT_PEER_PORT + 3U, TT_LISTEN_PORT, TT_PEER_ISN + 1U, 0U, TCP_FLAG_RST, 0U, NULL, 0U);
+    TEST_ASSERT(!persistent->in_use && s_tt_err_calls == 1U && s_tt_last_err == TCP_ERR_RST, "RST reported to the application");
+
+    /* --- Client SYN retries, then gives up; ephemeral ports rotate --- */
+    TEST_ASSERT(tcp_init() == TCP_OK, "fresh stack");
+    tcp_pcb_t *cl = tcp_new();
+    tcp_set_err_cb(cl, tt_err_cb);
+    s_tt_err_calls = 0U;
+    tt_reset_capture();
+    TEST_ASSERT(tcp_connect(cl, NET_IP4_ADDR(192, 168, 1, 50), 1883U) == TCP_OK && cl->state == TCP_STATE_SYN_SENT,
+                "connect sends SYN");
+    TEST_ASSERT(s_tt_frame_count == 1U && s_tt_frames[0].flags == TCP_FLAG_SYN && s_tt_frames[0].sport == TCP_EPHEMERAL_PORT_MIN,
+                "SYN from the first ephemeral port");
+    rto = TCP_RTO_INITIAL_MS;
+    for (uint32_t r = 0U; r < TCP_SYN_MAX_RETRIES; r++)
+    {
+        tt_advance(rto);
+        rto *= TCP_RTO_BACKOFF_FACTOR;
+    }
+    TEST_ASSERT(s_tt_frame_count == 1U + TCP_SYN_MAX_RETRIES && s_tt_frames[TCP_SYN_MAX_RETRIES].flags == TCP_FLAG_SYN &&
+                s_tt_frames[TCP_SYN_MAX_RETRIES].seq == s_tt_frames[0].seq, "SYN retransmitted with backoff");
+    tt_advance(rto);
+    TEST_ASSERT(!cl->in_use && s_tt_err_calls == 1U && s_tt_last_err == TCP_ERR_TIMEOUT, "connect times out");
+    cl = tcp_new();
+    tt_reset_capture();
+    (void)tcp_connect(cl, NET_IP4_ADDR(192, 168, 1, 50), 1883U);
+    TEST_ASSERT(s_tt_frames[0].sport == TCP_EPHEMERAL_PORT_MIN + 1U, "next connect uses the next ephemeral port");
+    uint32_t c_isn = s_tt_frames[0].seq;
+    tt_peer_send(1883U, TCP_EPHEMERAL_PORT_MIN + 1U, 5000U, c_isn + 1U, TCP_FLAG_SYN | TCP_FLAG_ACK, TT_PEER_WINDOW, NULL, 0U);
+    TEST_ASSERT(cl->state == TCP_STATE_ESTABLISHED && !cl->rtx_armed && cl->rcv_nxt == 5001U, "client handshake completes");
+    tcp_abort(cl);
+
+    /* --- Send buffer pool: all-or-nothing writes --- */
+    TEST_ASSERT(tcp_init() == TCP_OK, "fresh stack");
+    lst = tcp_new();
+    (void)tcp_bind(lst, TT_LISTEN_PORT);
+    (void)tcp_listen(lst, NULL);
+    (void)tt_open(TT_PEER_PORT);
+    (void)tt_open(TT_PEER_PORT + 1U);
+    tcp_pcb_t *a = tt_find_conn(TT_PEER_PORT);
+    tcp_pcb_t *b = tt_find_conn(TT_PEER_PORT + 1U);
+    static uint8_t big[TCP_SNDBUF_PCB_MAX_BYTES];
+    memset(big, 'x', sizeof(big));
+    tcp_get_telemetry(&tt);
+    uint32_t full0 = tt.sndbuf_full;
+    TEST_ASSERT(tcp_write(a, big, sizeof(big)) == TCP_OK, "4 KB response buffered");
+    TEST_ASSERT(tcp_write(a, big, 1U) == TCP_ERR_MEM, "per-connection cap");
+    uint32_t left = TCP_SNDBUF_CHUNKS * TCP_SNDBUF_CHUNK_SIZE - TCP_SNDBUF_PCB_MAX_BYTES;
+    TEST_ASSERT(tcp_sndbuf_space(b) == left && tcp_write(b, big, (uint16_t)(left + 1U)) == TCP_ERR_MEM,
+                "pool exhaustion refuses the whole write");
+    TEST_ASSERT(tcp_write(b, big, (uint16_t)left) == TCP_OK && tcp_sndbuf_free_chunks() == 0U, "the rest of the pool fits");
+    tcp_get_telemetry(&tt);
+    TEST_ASSERT(tt.sndbuf_full == full0 + 2U, "refusals counted");
+    tcp_abort(a);
+    tcp_abort(b);
+    TEST_ASSERT(tcp_sndbuf_free_chunks() == TCP_SNDBUF_CHUNKS, "abort returns the buffers");
+
+    /* --- Driver out of TX buffers: short retry, no backoff; a dead interface ends in the RTO path --- */
+    (void)tt_open(TT_PEER_PORT + 6U);
+    tcp_pcb_t *tb = tt_find_conn(TT_PEER_PORT + 6U);
+    tcp_get_telemetry(&tt);
+    uint32_t blk0 = tt.tx_blocked;
+    uint32_t rtx1 = tt.retransmit_count;
+    tt_reset_capture();
+    s_tt_refuse_tx = 1U;
+    TEST_ASSERT(tcp_write(tb, "DATA", 4U) == TCP_OK && s_tt_frame_count == 0U && tb->tx_blocked,
+                "refused send leaves the data unsent");
+    tt_advance(TCP_TX_BLOCKED_RETRY_MS);
+    tcp_get_telemetry(&tt);
+    TEST_ASSERT(s_tt_frame_count == 1U && s_tt_frames[0].len == 4U && tt.tx_blocked == blk0 + 1U &&
+                tt.retransmit_count == rtx1 && tb->rto_ms == TCP_RTO_INITIAL_MS && tb->retries == 0U,
+                "sent after the short retry without backoff or retry count");
+    TEST_ASSERT(tb->rtx_armed && !tb->tx_blocked, "normal RTO armed for the sent segment");
+    tcp_abort(tb);
+    (void)tt_open(TT_PEER_PORT + 7U);
+    tb = tt_find_conn(TT_PEER_PORT + 7U);
+    tt_reset_capture();
+    s_tt_refuse_tx = TCP_TX_BLOCKED_MAX + 1U;
+    (void)tcp_write(tb, "DATA", 4U);
+    for (uint32_t k = 0U; k < TCP_TX_BLOCKED_MAX; k++)
+    {
+        tt_advance(TCP_TX_BLOCKED_RETRY_MS);
+    }
+    TEST_ASSERT(!tb->tx_blocked && tb->snd_max == tb->snd_una + 4U && tb->rtx_armed,
+                "interface down: after the cap the segment counts as lost, RTO path");
+    tt_advance(tb->rto_ms);
+    TEST_ASSERT(s_tt_frame_count == 1U && tb->retries == 1U, "RTO resends it");
+    tcp_abort(tb);
+
+    /* --- Backpressure: a refused segment is not acknowledged; its retransmission is taken --- */
+    lst->recv_cb = tt_recv_cb;
+    uint32_t s3 = tt_open(TT_PEER_PORT + 5U);
+    tcp_pcb_t *bp = tt_find_conn(TT_PEER_PORT + 5U);
+    tcp_get_telemetry(&tt);
+    uint32_t def0 = tt.rx_deferred;
+    s_tt_rx_len = 0U;
+    s_tt_busy = true;
+    tt_reset_capture();
+    tt_peer_send(TT_PEER_PORT + 5U, TT_LISTEN_PORT, TT_PEER_ISN + 1U, s3, TCP_FLAG_ACK | TCP_FLAG_PSH, TT_PEER_WINDOW, "GET", 3U);
+    s_tt_busy = false;
+    tcp_get_telemetry(&tt);
+    TEST_ASSERT(bp->rcv_nxt == TT_PEER_ISN + 1U && s_tt_frame_count == 0U && tt.rx_deferred == def0 + 1U,
+                "busy receiver: segment left unacknowledged");
+    tt_peer_send(TT_PEER_PORT + 5U, TT_LISTEN_PORT, TT_PEER_ISN + 1U, s3, TCP_FLAG_ACK | TCP_FLAG_PSH, TT_PEER_WINDOW, "GET", 3U);
+    TEST_ASSERT(bp->rcv_nxt == TT_PEER_ISN + 4U && s_tt_rx_len == 3U && s_tt_frame_count == 1U &&
+                s_tt_frames[0].ack == TT_PEER_ISN + 4U, "peer retransmission accepted and acknowledged");
+    tcp_abort(bp);
+
+    wifi_host_set_tx_hook(NULL);
+    TEST_ASSERT(tcp_init() == TCP_OK, "stack reset for later tests");
+}
+
 static void test_wifi_link_policy(void)
 {
     printf("  [TEST] Wi-Fi link manager policy: backoff, jitter, fast path (REV-12)...\n");
@@ -5480,6 +5948,7 @@ int main(void)
     test_wifi_custom_stack_refactor();
     test_ieee802154_subsystem();
     test_tcpip_subsystem();
+    test_tcp_reliability();
     test_http_server_subsystem();
     test_dhcp_dns_subsystem();
     test_softap_dns_modes();

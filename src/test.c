@@ -2653,7 +2653,7 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     m_ip->checksum = NET_HTONS(net_ipv4_checksum(m_ip));
 
     uint16_t m_frame_len = (uint16_t)(ETH_HDR_LEN + IPV4_MIN_HDR_LEN + UDP_HDR_LEN + m_payload_len);
-    int rx_ok = (net_input(mock_sp_frame, m_frame_len) == NET_OK);
+    int rx_ok = (net_input(mock_sp_frame, m_frame_len, NET_IF_AP) == NET_OK);
 
     speedtest_get_telemetry(&st_telem);
     int rx_telem_ok = (st_telem.total_packets_rx >= 1U);

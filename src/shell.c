@@ -257,6 +257,18 @@ void shell_print_help(void)
     console_puts("  do-test             - Run full baseline validation test suite\r\n");
 }
 
+/* aa:bb:cc:dd:ee:ff */
+static void shell_put_mac(const uint8_t *mac)
+{
+    const char hex_chars[] = "0123456789abcdef";
+    for (uint32_t i = 0U; i < ETH_ADDR_LEN; i++)
+    {
+        console_putc(hex_chars[(mac[i] >> 4U) & 0x0FU]);
+        console_putc(hex_chars[mac[i] & 0x0FU]);
+        if (i < (ETH_ADDR_LEN - 1U)) console_putc(':');
+    }
+}
+
 /* Seconds as "<n> s", or "never" for DHCP_LEASE_INFINITE */
 static void shell_put_secs(uint32_t secs)
 {
@@ -2724,6 +2736,9 @@ void shell_execute(char *input_buffer)
             console_puts("  Checksum Errors:   ");
             put_dec(nt.checksum_errors);
             console_puts(" (RFC 1071 Validation OK)\r\n");
+            console_puts("  SoftAP-only Drops: ");
+            put_dec(nt.softap_only_drops);
+            console_puts(" (DHCP server/DNS frames heard on the STA)\r\n");
         }
     }
     else if (strncmp(input_buffer, "dhcp", 4) == 0 && (input_buffer[4] == ' ' || input_buffer[4] == '\0'))
@@ -2747,14 +2762,11 @@ void shell_execute(char *input_buffer)
             const dhcp_lease_t *l = dhcp_get_lease(i);
             if (l != NULL && l->active)
             {
+                char ip_str[NET_IP_STR_BUF_LEN];
+                net_ip_to_str(l->ip, ip_str, sizeof(ip_str));
                 console_puts("    Slot "); put_dec(i);
-                console_puts(": IP=192.168.1."); put_dec(l->ip & 0xFFU);
-                console_puts(" MAC=");
-                for (int m = 0; m < 6; m++)
-                {
-                    put_hex(l->mac[m]);
-                    if (m < 5) console_putc(':');
-                }
+                console_puts(": IP="); console_puts(ip_str);
+                console_puts(" MAC="); shell_put_mac(l->mac);
                 console_puts("\r\n");
             }
         }

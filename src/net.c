@@ -576,7 +576,7 @@ net_status_t icmp_process_packet(const uint8_t *in_packet, uint16_t in_len,
 /* Inbound Packet Processing & Protocol Routing                              */
 /* ========================================================================= */
 
-net_status_t net_input(const uint8_t *frame, uint16_t len)
+net_status_t net_input(const uint8_t *frame, uint16_t len, net_if_t rx_if)
 {
     if (frame == NULL || len < ETH_HDR_LEN)
     {
@@ -681,7 +681,14 @@ net_status_t net_input(const uint8_t *frame, uint16_t len)
                     uint16_t payload_len = (uint16_t)(udp_len - UDP_HDR_LEN);
                     const uint8_t *payload = (const uint8_t *)udp + UDP_HDR_LEN;
 
-                    if (dest_port == DHCP_SERVER_PORT)
+                    bool softap_service = (dest_port == DHCP_SERVER_PORT || dest_port == DNS_SERVER_PORT);
+                    if (softap_service && rx_if != NET_IF_AP)
+                    {
+                        /* The SoftAP's DHCP server and catch-all DNS must not answer LAN clients
+                         * that the STA hears (O-47) */
+                        s_net_telemetry.softap_only_drops++;
+                    }
+                    else if (dest_port == DHCP_SERVER_PORT)
                     {
                         dhcp_process_packet(frame, payload, payload_len);
                     }

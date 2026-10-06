@@ -159,6 +159,7 @@ typedef enum {
 typedef struct {
     dma_descriptor_t dma_desc;
     uint8_t payload[PACKET_BUFFER_SIZE];
+    uint8_t rx_if;                       /* wifi_tx_if_t the frame arrived on (after payload: keeps it aligned) */
 } __attribute__((aligned(4))) net_packet_t;
 
 /**

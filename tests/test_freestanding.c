@@ -1604,7 +1604,10 @@ static void test_wifi_mac_subsystem(void)
     /* 2. Concrete Data Structure Geometry & Memory Sizing */
     TEST_ASSERT(PACKET_BUFFER_SIZE == 1536U, "PACKET_BUFFER_SIZE must be exactly 1536 bytes");
     TEST_ASSERT(PACKET_RING_COUNT == 28U, "PACKET_RING_COUNT must be exactly 28 descriptors");
-    TEST_ASSERT(sizeof(net_packet_t) == (sizeof(dma_descriptor_t) + PACKET_BUFFER_SIZE), "net_packet_t layout packed with descriptor and buffer");
+    TEST_ASSERT(offsetof(net_packet_t, payload) == sizeof(dma_descriptor_t) &&
+                (offsetof(net_packet_t, payload) % 4U) == 0U, "net_packet_t payload follows the descriptor, 4-byte aligned");
+    TEST_ASSERT(offsetof(net_packet_t, rx_if) == offsetof(net_packet_t, payload) + PACKET_BUFFER_SIZE,
+                "net_packet_t RX interface tag after the buffer");
     TEST_ASSERT((sizeof(net_packet_t) % 4U) == 0U, "net_packet_t must be 4-byte aligned");
 
     /* 3. Subsystem Lifecycle & MAC Address Retrieval */
@@ -2293,7 +2296,16 @@ static void test_dhcp_dns_subsystem(void)
     opts[3] = DHCP_OPT_END;
 
     uint16_t frame_len = (uint16_t)(ETH_HDR_LEN + IPV4_MIN_HDR_LEN + UDP_HDR_LEN + 250U);
-    TEST_ASSERT(net_input(disc_frame, frame_len) == NET_OK, "net_input handles DHCPDISCOVER");
+    /* O-47: a LAN client's DISCOVER heard on the STA must not reach the SoftAP DHCP server */
+    net_telemetry_t nt_before, nt_after;
+    net_get_telemetry(&nt_before);
+    net_input(disc_frame, frame_len, NET_IF_STA);
+    net_get_telemetry(&nt_after);
+    dhcp_get_telemetry(&dt);
+    TEST_ASSERT(dt.discover_rx == 0U && dt.offer_tx == 0U && dhcp_get_lease(0) != NULL && !dhcp_get_lease(0)->active &&
+                nt_after.softap_only_drops == nt_before.softap_only_drops + 1U,
+                "DISCOVER received on the STA: no server processing, no lease, counted as dropped");
+    TEST_ASSERT(net_input(disc_frame, frame_len, NET_IF_AP) == NET_OK, "net_input handles DHCPDISCOVER");
     dhcp_get_telemetry(&dt);
     TEST_ASSERT(dt.discover_rx == 1U, "Telemetry discover_rx incremented to 1");
     TEST_ASSERT(dt.offer_tx == 1U, "Telemetry offer_tx incremented to 1");
@@ -2317,7 +2329,7 @@ static void test_dhcp_dns_subsystem(void)
     opts[14] = (uint8_t)(DHCP_DEFAULT_GATEWAY & 0xFFU);
     opts[15] = DHCP_OPT_END;
 
-    TEST_ASSERT(net_input(disc_frame, frame_len) == NET_OK, "net_input handles DHCPREQUEST");
+    TEST_ASSERT(net_input(disc_frame, frame_len, NET_IF_AP) == NET_OK, "net_input handles DHCPREQUEST");
     dhcp_get_telemetry(&dt);
     TEST_ASSERT(dt.request_rx == 1U, "Telemetry request_rx incremented to 1");
     TEST_ASSERT(dt.ack_tx == 1U, "Telemetry ack_tx incremented to 1");
@@ -2361,7 +2373,13 @@ static void test_dhcp_dns_subsystem(void)
     d_ip->checksum = NET_HTONS(net_ipv4_checksum(d_ip));
 
     uint16_t dns_frame_len = (uint16_t)(ETH_HDR_LEN + IPV4_MIN_HDR_LEN + UDP_HDR_LEN + dns_payload_len);
-    TEST_ASSERT(net_input(dns_frame, dns_frame_len) == NET_OK, "net_input handles DNS query");
+    net_get_telemetry(&nt_before);
+    net_input(dns_frame, dns_frame_len, NET_IF_STA);
+    net_get_telemetry(&nt_after);
+    dhcp_get_telemetry(&dt);
+    TEST_ASSERT(dt.dns_queries_rx == 0U && nt_after.softap_only_drops == nt_before.softap_only_drops + 1U,
+                "DNS query received on the STA: catch-all DNS does not answer");
+    TEST_ASSERT(net_input(dns_frame, dns_frame_len, NET_IF_AP) == NET_OK, "net_input handles DNS query");
     dhcp_get_telemetry(&dt);
     TEST_ASSERT(dt.dns_queries_rx == 1U, "Telemetry dns_queries_rx incremented to 1");
     TEST_ASSERT(dt.dns_replies_tx == 1U, "Telemetry dns_replies_tx incremented to 1");
@@ -2484,7 +2502,7 @@ static void test_speedtest_subsystem(void)
     sp_ip->checksum = NET_HTONS(net_ipv4_checksum(sp_ip));
 
     uint16_t sp_frame_len = (uint16_t)(ETH_HDR_LEN + IPV4_MIN_HDR_LEN + UDP_HDR_LEN + sp_payload_len);
-    TEST_ASSERT(net_input(sp_frame, sp_frame_len) == NET_OK, "net_input handles inbound speedtest UDP packet");
+    TEST_ASSERT(net_input(sp_frame, sp_frame_len, NET_IF_AP) == NET_OK, "net_input handles inbound speedtest UDP packet");
 
     speedtest_get_telemetry(&telem);
     TEST_ASSERT(telem.total_packets_rx >= 1U, "Telemetry records inbound speedtest packet");

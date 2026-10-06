@@ -250,7 +250,14 @@ typedef struct {
     uint32_t tcp_tx;
     uint32_t checksum_errors;
     uint32_t dropped_packets;
+    uint32_t softap_only_drops;   /* DHCP server / captive DNS frames that arrived on the STA (O-47) */
 } net_telemetry_t;
+
+/* Interface a frame was received on; values match wifi_tx_if_t and the blob's wifi_interface_t */
+typedef enum {
+    NET_IF_STA = 0,
+    NET_IF_AP = 1
+} net_if_t;
 
 /* ========================================================================= */
 /* Public Driver & Protocol APIs                                             */
@@ -286,7 +293,8 @@ net_status_t arp_process_packet(const uint8_t *in_frame, uint16_t in_len,
                                 uint16_t *out_reply_len);
 
 /* Inbound Packet Processing & Dispatches */
-net_status_t net_input(const uint8_t *frame, uint16_t len);
+/* rx_if: the SoftAP-only services (DHCP server, captive DNS) answer NET_IF_AP frames only */
+net_status_t net_input(const uint8_t *frame, uint16_t len, net_if_t rx_if);
 net_status_t icmp_process_packet(const uint8_t *in_packet, uint16_t in_len,
                                  uint8_t *out_reply, uint16_t max_out_len,
                                  uint16_t *out_reply_len);

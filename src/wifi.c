@@ -237,7 +237,7 @@ wifi_status_t wifi_verify_rx_ring(uint32_t *out_visited_count)
 /* ========================================================================= */
 
 #if defined(__riscv)
-static esp_err_t wifi_vendor_rx_callback(void *buffer, uint16_t len, void *eb)
+static esp_err_t wifi_vendor_rx_enqueue(wifi_tx_if_t rx_if, void *buffer, uint16_t len, void *eb)
 {
     if (buffer != NULL && len > 0U && len <= PACKET_BUFFER_SIZE)
     {
@@ -248,6 +248,7 @@ static esp_err_t wifi_vendor_rx_callback(void *buffer, uint16_t len, void *eb)
         {
             memcpy(s_rx_packet_ring[tail].payload, buffer, len);
             s_rx_packet_ring[tail].dma_desc.length = len;
+            s_rx_packet_ring[tail].rx_if = (uint8_t)rx_if;
             s_rx_packet_ring[tail].dma_desc.suc_eof = 1U;
             wifi_fence();
             s_rx_packet_ring[tail].dma_desc.owner = DMA_OWNER_CPU;
@@ -266,6 +267,17 @@ static esp_err_t wifi_vendor_rx_callback(void *buffer, uint16_t len, void *eb)
         esp_wifi_internal_free_rx_buffer(eb);
     }
     return 0;
+}
+
+/* One callback per interface: the IP stack needs to know where a frame came from (O-47) */
+static esp_err_t wifi_vendor_rx_callback_sta(void *buffer, uint16_t len, void *eb)
+{
+    return wifi_vendor_rx_enqueue(WIFI_TX_IF_STA, buffer, len, eb);
+}
+
+static esp_err_t wifi_vendor_rx_callback_ap(void *buffer, uint16_t len, void *eb)
+{
+    return wifi_vendor_rx_enqueue(WIFI_TX_IF_AP, buffer, len, eb);
 }
 #endif
 
@@ -326,7 +338,7 @@ static void wifi_sta_attach_ip(void)
     }
     /* ESP-IDF registers the STA RX path on every STA_CONNECTED
      * (wifi_default_action_sta_connected) */
-    esp_wifi_internal_reg_rxcb(WIFI_IF_STA, wifi_vendor_rx_callback);
+    esp_wifi_internal_reg_rxcb(WIFI_IF_STA, wifi_vendor_rx_callback_sta);
     esp_wifi_internal_set_sta_ip();
     /* The blob posts STA_CONNECTED after the 4-way handshake (wpa_drv_auth_done) */
     dhcp_client_start();
@@ -545,8 +557,8 @@ wifi_status_t wifi_init(void)
             sta_cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
             esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
 
-            esp_wifi_internal_reg_rxcb(WIFI_IF_STA, wifi_vendor_rx_callback);
-            esp_wifi_internal_reg_rxcb(WIFI_IF_AP, wifi_vendor_rx_callback);
+            esp_wifi_internal_reg_rxcb(WIFI_IF_STA, wifi_vendor_rx_callback_sta);
+            esp_wifi_internal_reg_rxcb(WIFI_IF_AP, wifi_vendor_rx_callback_ap);
             wifi_os_adapter_register_wpa_stubs();
             s_vendor_wifi_inited = true;
         }
@@ -684,7 +696,7 @@ void wifi_poll_rx_traffic(void)
     {
         if (pkt != NULL && len > 0U)
         {
-            net_input(pkt->payload, len);
+            net_input(pkt->payload, len, (pkt->rx_if == (uint8_t)WIFI_TX_IF_AP) ? NET_IF_AP : NET_IF_STA);
         }
         wifi_rx_release(pkt);
     }
@@ -1307,7 +1319,7 @@ wifi_status_t wifi_start_ap(const char *ssid, const char *password, uint8_t chan
 
         console_puts("[Wi-Fi] Starting AP stack...\r\n");
         esp_wifi_config_11b_rate(WIFI_IF_AP, false);
-        esp_wifi_internal_reg_rxcb(WIFI_IF_AP, wifi_vendor_rx_callback);
+        esp_wifi_internal_reg_rxcb(WIFI_IF_AP, wifi_vendor_rx_callback_ap);
         esp_err_t err_start = esp_wifi_start();
         if (err_start != 0)
         {
@@ -1598,7 +1610,7 @@ static wifi_status_t wifi_sta_begin(const char *ssid, const char *password, uint
         }
         else
         {
-            esp_wifi_internal_reg_rxcb(WIFI_IF_STA, wifi_vendor_rx_callback);
+            esp_wifi_internal_reg_rxcb(WIFI_IF_STA, wifi_vendor_rx_callback_sta);
             if (s_wifi_telemetry.state != WIFI_STATE_ACTIVE && s_wifi_telemetry.state != WIFI_STATE_CONNECTED)
             {
                 esp_wifi_start();

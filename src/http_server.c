@@ -18,7 +18,7 @@
 #include "clock.h"
 #include "shell.h"
 #include "speedtest.h"
-#include "gpio.h"
+#include "api_v1.h"
 
 #if defined(__riscv)
 #include "systimer.h"
@@ -44,6 +44,12 @@ static uint16_t s_http_route_count = 0U;
 static http_telemetry_t s_http_telemetry;
 static tcp_pcb_t *s_http_listener_pcb = NULL;
 static bool s_http_initialized = false;
+static http_status_code_t s_http_handler_status = HTTP_STATUS_200_OK;   /* set by the running handler */
+
+void http_response_set_status(http_status_code_t code)
+{
+    s_http_handler_status = code;
+}
 
 /* ========================================================================= */
 /* Internal String Formatting Utilities (Zero C-Library Dependency)          */
@@ -247,20 +253,6 @@ static void http_handler_telemetry(const char *query_params, char *response_body
     http_str_append(response_body, max_len, "}}\r\n");
 }
 
-/* POST /api/wdt/feed -> Feeds watchdog supervisor via REST API */
-static void http_handler_wdt_feed(const char *query_params, char *response_body, size_t max_len)
-{
-    (void)query_params;
-    if (response_body == NULL || max_len == 0U)
-    {
-        return;
-    }
-
-    wdt_feed();
-    response_body[0] = '\0';
-    http_str_append(response_body, max_len, "{\"status\":\"ok\",\"fed\":true,\"message\":\"watchdog fed\"}\r\n");
-}
-
 /* GET /favicon.ico -> Returns 200 OK empty response */
 static void http_handler_favicon(const char *query_params, char *response_body, size_t max_len)
 {
@@ -311,25 +303,6 @@ static void http_append_portal_location(char *out, size_t max_len)
     http_str_append(out, max_len, HTTP_CAPTIVE_PORTAL_PATH "\r\n");
 }
 
-static bool http_find_int_param(const char *buf, const char *key, int32_t *out_val)
-{
-    if (buf == NULL || key == NULL || out_val == NULL) return false;
-    const char *p = strstr(buf, key);
-    if (p == NULL) return false;
-    p += strlen(key);
-    while (*p == ' ' || *p == '\t' || *p == ':' || *p == '=' || *p == '"') p++;
-    bool neg = false;
-    if (*p == '-') { neg = true; p++; }
-    if (*p < '0' || *p > '9') return false;
-    int32_t val = 0;
-    while (*p >= '0' && *p <= '9') {
-        val = val * 10 + (*p - '0');
-        p++;
-    }
-    *out_val = neg ? -val : val;
-    return true;
-}
-
 static bool http_param_contains(const char *buf, const char *key)
 {
     if (buf == NULL || key == NULL) return false;
@@ -359,18 +332,6 @@ static const char s_str_sp_run_lat_max[] FLASH_RODATA_ATTR = ",\"latency_max_us\
 static const char s_str_sp_run_pkt_loss[] FLASH_RODATA_ATTR = ",\"packet_loss_count\":";
 
 
-static const char s_str_gpio_ok_pin[] FLASH_RODATA_ATTR = "{\"status\":\"ok\",\"pin\":";
-static const char s_str_gpio_level[] FLASH_RODATA_ATTR = ",\"level\":";
-static const char s_str_gpio_pins_pre[] FLASH_RODATA_ATTR = "{\"pins\":[";
-static const char s_str_gpio_p15[] FLASH_RODATA_ATTR = "{\"pin\":15,\"level\":";
-static const char s_str_gpio_n15[] FLASH_RODATA_ATTR = ",\"name\":\"Status LED\"},";
-static const char s_str_gpio_p2[] FLASH_RODATA_ATTR = "{\"pin\":2,\"level\":";
-static const char s_str_gpio_n2[] FLASH_RODATA_ATTR = ",\"name\":\"Relay 1\"},";
-static const char s_str_gpio_p3[] FLASH_RODATA_ATTR = "{\"pin\":3,\"level\":";
-static const char s_str_gpio_n3[] FLASH_RODATA_ATTR = ",\"name\":\"Relay 2\"},";
-static const char s_str_gpio_p8[] FLASH_RODATA_ATTR = "{\"pin\":8,\"level\":";
-static const char s_str_gpio_n8[] FLASH_RODATA_ATTR = ",\"name\":\"Output Pin 8\"}";
-static const char s_str_close_bracket[] FLASH_RODATA_ATTR = "]}\r\n";
 static const char s_str_close_brace[] FLASH_RODATA_ATTR = "}\r\n";
 static const char s_cors_methods_hdr[] FLASH_RODATA_ATTR = "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n";
 static const char s_cors_headers_hdr[] FLASH_RODATA_ATTR = "Access-Control-Allow-Headers: Content-Type, Authorization\r\n";
@@ -477,73 +438,6 @@ static void http_handler_speedtest(const char *query_params, char *response_body
     }
 }
 
-/* GET & POST /api/gpio -> Interactive GPIO pin & relay control */
-static void http_handler_gpio(const char *query_params, char *response_body, size_t max_len)
-{
-    if (response_body == NULL || max_len == 0U) return;
-
-    char num_buf[24];
-    response_body[0] = '\0';
-
-    int32_t pin = -1;
-    if (http_find_int_param(query_params, "pin", &pin) && pin >= 0 && pin <= (int32_t)GPIO_PIN_MAX)
-    {
-        uint32_t u_pin = (uint32_t)pin;
-        if (http_param_contains(query_params, "toggle"))
-        {
-            gpio_toggle_level(u_pin);
-        }
-        else
-        {
-            int32_t val = 0;
-            if (http_find_int_param(query_params, "value", &val) || http_find_int_param(query_params, "level", &val))
-            {
-                gpio_set_level(u_pin, (val != 0) ? 1U : 0U);
-            }
-        }
-
-        int curr_lvl = gpio_get_output_level(u_pin);
-        if (curr_lvl < 0) curr_lvl = 0;
-
-        http_str_append(response_body, max_len, s_str_gpio_ok_pin);
-        http_u32_to_dec(u_pin, num_buf, sizeof(num_buf));
-        http_str_append(response_body, max_len, num_buf);
-        http_str_append(response_body, max_len, s_str_gpio_level);
-        http_u32_to_dec((uint32_t)curr_lvl, num_buf, sizeof(num_buf));
-        http_str_append(response_body, max_len, num_buf);
-        http_str_append(response_body, max_len, s_str_close_brace);
-    }
-    else
-    {
-        int l15 = gpio_get_output_level(15U); if (l15 < 0) l15 = 0;
-        int l2  = gpio_get_output_level(2U);  if (l2 < 0)  l2 = 0;
-        int l3  = gpio_get_output_level(3U);  if (l3 < 0)  l3 = 0;
-        int l8  = gpio_get_output_level(8U);  if (l8 < 0)  l8 = 0;
-
-        http_str_append(response_body, max_len, s_str_gpio_pins_pre);
-        http_str_append(response_body, max_len, s_str_gpio_p15);
-        http_u32_to_dec((uint32_t)l15, num_buf, sizeof(num_buf));
-        http_str_append(response_body, max_len, num_buf);
-        http_str_append(response_body, max_len, s_str_gpio_n15);
-
-        http_str_append(response_body, max_len, s_str_gpio_p2);
-        http_u32_to_dec((uint32_t)l2, num_buf, sizeof(num_buf));
-        http_str_append(response_body, max_len, num_buf);
-        http_str_append(response_body, max_len, s_str_gpio_n2);
-
-        http_str_append(response_body, max_len, s_str_gpio_p3);
-        http_u32_to_dec((uint32_t)l3, num_buf, sizeof(num_buf));
-        http_str_append(response_body, max_len, num_buf);
-        http_str_append(response_body, max_len, s_str_gpio_n3);
-
-        http_str_append(response_body, max_len, s_str_gpio_p8);
-        http_u32_to_dec((uint32_t)l8, num_buf, sizeof(num_buf));
-        http_str_append(response_body, max_len, num_buf);
-        http_str_append(response_body, max_len, s_str_gpio_n8);
-        http_str_append(response_body, max_len, s_str_close_bracket);
-    }
-}
-
 static __attribute__((noinline)) void http_register_default_routes(void)
 {
     http_route_register("/", HTTP_METHOD_GET, http_handler_root);
@@ -558,12 +452,11 @@ static __attribute__((noinline)) void http_register_default_routes(void)
     http_route_register("/api/status", HTTP_METHOD_GET, http_handler_status);
     http_route_register("/api/info", HTTP_METHOD_GET, http_handler_info);
     http_route_register("/api/telemetry", HTTP_METHOD_GET, http_handler_telemetry);
-    http_route_register("/api/wdt/feed", HTTP_METHOD_POST, http_handler_wdt_feed);
     http_route_register("/api/health", HTTP_METHOD_GET, http_handler_health);
     http_route_register("/api/speedtest", HTTP_METHOD_GET, http_handler_speedtest);
     http_route_register("/api/speedtest", HTTP_METHOD_POST, http_handler_speedtest);
-    http_route_register("/api/gpio", HTTP_METHOD_GET, http_handler_gpio);
-    http_route_register("/api/gpio", HTTP_METHOD_POST, http_handler_gpio);
+    /* Raw GPIO and remote watchdog feeding were removed in REV-23 (property-model-v1.md section 5) */
+    api_v1_register_routes();
 }
 
 /* ========================================================================= */
@@ -857,8 +750,18 @@ http_status_t http_process_request(const char *raw_request, size_t req_len,
     if (route != NULL)
     {
         /* Matched route and method -> execute handler */
+        s_http_handler_status = HTTP_STATUS_200_OK;
         route->handler(query_buf, body_buf, sizeof(body_buf));
-        s_http_telemetry.responses_200++;
+        if (s_http_handler_status == HTTP_STATUS_400_BAD_REQUEST)
+        {
+            status_line = HTTP_STATUS_LINE_400;
+            s_http_telemetry.responses_err++;
+            ret_status = HTTP_ERR_MALFORMED;
+        }
+        else
+        {
+            s_http_telemetry.responses_200++;
+        }
 
         if (http_is_connectivity_probe(path_buf))
         {

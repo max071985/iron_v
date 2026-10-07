@@ -42,6 +42,8 @@
 #include "wpa2_client.h"
 #include "mdns.h"
 #include "hw_rng.h"
+#include "light.h"
+#include "mqtt.h"
 
 
 /* ========================================================================= */
@@ -257,6 +259,8 @@ void shell_print_help(void)
     console_puts("  ota [status|partitions|switch|rollback|mark-valid|verify] - Dual-slot Flash OTA upgrade & rollback\r\n");
     console_puts("  nvs [status|list|get|set|erase|format] - Non-Volatile Flash Key-Value storage\r\n");
     console_puts("  prov [status|scan|set|get|clear|setup [on|off]] - Wi-Fi provisioning; setup = setup SoftAP (BOOT long press)\r\n");
+    console_puts("  light [on|off|bri <1-100>|rgb <r> <g> <b>] - Onboard RGB LED (BOOT short press toggles)\r\n");
+    console_puts("  mqtt [on|off|set host|port|user|pass <v>] - MQTT client to the bridge's broker\r\n");
     console_puts("  sta [status|connect|disconnect|mdns|eapol] - WPA2 Station & mDNS Client\r\n");
     console_puts("  seal                - Run Golden Master system-wide integrity seal audit\r\n");
     console_puts("  do-test             - Run full baseline validation test suite\r\n");
@@ -3114,6 +3118,14 @@ void shell_execute(char *input_buffer)
         {
             console_puts("Usage: efuse [status|summary|security|mac]\r\n");
         }
+    }
+    else if (strncmp(input_buffer, "light", 5) == 0 && (input_buffer[5] == ' ' || input_buffer[5] == '\0'))
+    {
+        light_shell(input_buffer + 5, systimer_get_us());
+    }
+    else if (strncmp(input_buffer, "mqtt", 4) == 0 && (input_buffer[4] == ' ' || input_buffer[4] == '\0'))
+    {
+        mqtt_shell(input_buffer + 4, systimer_get_us());
     }
     else if (strncmp(input_buffer, "prov", 4) == 0 && (input_buffer[4] == ' ' || input_buffer[4] == '\0'))
     {

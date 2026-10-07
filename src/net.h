@@ -89,6 +89,7 @@
 
 /* Static Sizing & Capacity Limits (Zero Heap Allocation) */
 #define ARP_TABLE_CAPACITY               8U
+#define ARP_BROADCAST_OCTET              0xFFU   /* who-has goes to ff:ff:ff:ff:ff:ff */
 #define NET_MAX_FRAME_SIZE               1536U
 #define NET_IP_STR_BUF_LEN               16U
 
@@ -240,6 +241,7 @@ typedef struct {
     uint32_t tx_bytes;
     uint32_t arp_requests_rx;
     uint32_t arp_replies_tx;
+    uint32_t arp_requests_tx;     /* who-has sent for an outgoing connection (REV-23) */
     uint32_t ipv4_rx;
     uint32_t ipv4_tx;
     uint32_t icmp_rx;
@@ -293,6 +295,10 @@ net_status_t arp_insert(uint32_t ip, const uint8_t *mac);
 net_status_t arp_process_packet(const uint8_t *in_frame, uint16_t in_len,
                                 uint8_t *out_reply, uint16_t max_out_len,
                                 uint16_t *out_reply_len);
+/* Who-has broadcast for target_ip; the reply lands in the cache through arp_process_packet */
+net_status_t net_arp_request(uint32_t target_ip);
+/* Address to resolve for dest_ip: itself on the local subnet, else the gateway */
+uint32_t net_next_hop(uint32_t dest_ip);
 
 /* Inbound Packet Processing & Dispatches */
 /* rx_if: the SoftAP-only services (DHCP server, captive DNS) answer NET_IF_AP frames only */

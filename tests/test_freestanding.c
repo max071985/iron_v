@@ -55,6 +55,10 @@
 #include "button.h"
 #include "looptime.h"
 #include "hw_rng.h"
+#include "light.h"
+#include "rgb_led.h"
+#include "mqtt.h"
+#include "api_v1.h"
 
 /* Host test stubs for hardware-specific functions */
 void wdt_feed(void)
@@ -2119,7 +2123,7 @@ static void test_http_server_subsystem(void)
 
     /* 1. Protocol & Sizing Constants */
     TEST_ASSERT(HTTP_SERVER_DEFAULT_PORT == 80U, "HTTP default port is 80");
-    TEST_ASSERT(HTTP_MAX_ROUTES == 24U, "HTTP_MAX_ROUTES is 24");
+    TEST_ASSERT(HTTP_MAX_ROUTES == 28U, "HTTP_MAX_ROUTES is 28 (REV-23 v1 API)");
     TEST_ASSERT(HTTP_REQUEST_BUF_SIZE == 1536U, "HTTP request buffer size is 1536");
 
     /* Request assembly: phones send headers and body in separate segments (REV-29 bug) */
@@ -2196,24 +2200,19 @@ static void test_http_server_subsystem(void)
     resp[0] = '\0';
     TEST_ASSERT(http_process_request(req_matter, strlen(req_matter), resp, sizeof(resp), &resp_len) == HTTP_ERR_NOT_FOUND, "GET /api/matter/payload returns 404 (Matter descoped)");
 
-    /* 4e. Request Processing: Valid GET & POST /api/gpio */
+    /* 4e. Raw GPIO and remote watchdog feeding were removed in REV-23 */
     const char req_gpio_get[] = "GET /api/gpio HTTP/1.1\r\n\r\n";
     resp[0] = '\0';
-    TEST_ASSERT(http_process_request(req_gpio_get, strlen(req_gpio_get), resp, sizeof(resp), &resp_len) == HTTP_OK, "Process GET /api/gpio succeeds");
-    TEST_ASSERT(strstr(resp, "HTTP/1.1 200 OK") != NULL, "GPIO GET response is 200 OK");
-    TEST_ASSERT(strstr(resp, "Status LED") != NULL, "GPIO GET lists Status LED");
-
-    const char req_gpio_set[] = "POST /api/gpio?pin=15&value=1 HTTP/1.1\r\n\r\n";
+    TEST_ASSERT(http_process_request(req_gpio_get, strlen(req_gpio_get), resp, sizeof(resp), &resp_len) == HTTP_ERR_NOT_FOUND,
+                "GET /api/gpio returns 404 (REV-23)");
+    const char req_gpio_set[] = "POST /api/gpio?pin=8&value=1 HTTP/1.1\r\n\r\n";
     resp[0] = '\0';
-    TEST_ASSERT(http_process_request(req_gpio_set, strlen(req_gpio_set), resp, sizeof(resp), &resp_len) == HTTP_OK, "Process POST /api/gpio set succeeds");
-    TEST_ASSERT(strstr(resp, "\"pin\":15") != NULL, "GPIO set reports pin 15");
-    TEST_ASSERT(strstr(resp, "\"level\":1") != NULL, "GPIO set reports level 1");
-
-    const char req_gpio_toggle[] = "POST /api/gpio?pin=15&toggle=1 HTTP/1.1\r\n\r\n";
+    TEST_ASSERT(http_process_request(req_gpio_set, strlen(req_gpio_set), resp, sizeof(resp), &resp_len) == HTTP_ERR_NOT_FOUND,
+                "POST /api/gpio returns 404 (REV-23)");
+    const char req_wdt[] = "POST /api/wdt/feed HTTP/1.1\r\n\r\n";
     resp[0] = '\0';
-    TEST_ASSERT(http_process_request(req_gpio_toggle, strlen(req_gpio_toggle), resp, sizeof(resp), &resp_len) == HTTP_OK, "Process POST /api/gpio toggle succeeds");
-    TEST_ASSERT(strstr(resp, "\"pin\":15") != NULL, "GPIO toggle reports pin 15");
-    TEST_ASSERT(strstr(resp, "\"level\":0") != NULL, "GPIO toggle reports level 0");
+    TEST_ASSERT(http_process_request(req_wdt, strlen(req_wdt), resp, sizeof(resp), &resp_len) == HTTP_ERR_NOT_FOUND,
+                "POST /api/wdt/feed returns 404 (REV-23)");
 
     /* 4f. Request Processing: OPTIONS CORS Preflight */
     const char req_options[] = "OPTIONS /api/status HTTP/1.1\r\nOrigin: http://localhost:8080\r\n\r\n";
@@ -6896,6 +6895,861 @@ static void test_multi_protocol_coex_and_soak_subsystem(void)
     TEST_ASSERT(soak_failed == 0U, "Zero failed cycles during simulated soak");
 }
 
+/* ========================================================================= */
+/* REV-23: light property, RGB LED encoding, MQTT client, REST v1             */
+/* ========================================================================= */
+
+static bool rq_parse(const char *json, light_cmd_t *cmd, light_cmd_status_t want)
+{
+    return light_parse_command(json, strlen(json), cmd) == want;
+}
+
+static void test_light_model(void)
+{
+    printf("  [TEST] Light property: command rules, JSON, packing, NVS settle, coalescing (REV-23)...\n");
+    light_cmd_t cmd;
+
+    /* Parser: spec 2.2 rules */
+    TEST_ASSERT(rq_parse("{\"state\":\"ON\"}", &cmd, LIGHT_CMD_OK) && cmd.has_state && cmd.on && !cmd.has_brightness,
+                "state ON parsed");
+    TEST_ASSERT(rq_parse(" {\"state\" : \"OFF\" , \"brightness\": 75}\r\n", &cmd, LIGHT_CMD_OK) && !cmd.on &&
+                cmd.has_brightness && cmd.brightness == 75U, "whitespace and two keys");
+    TEST_ASSERT(rq_parse("{\"color\":{\"r\":0,\"g\":0,\"b\":255}}", &cmd, LIGHT_CMD_OK) && cmd.has_color && cmd.b == 255U,
+                "colour parsed");
+    TEST_ASSERT(rq_parse("{\"state\":\"ON\",\"transition\":2,\"effect\":{\"a\":[1,2,{\"b\":null}]},\"x\":true}", &cmd,
+                         LIGHT_CMD_OK) && cmd.on, "unknown keys are skipped");
+    TEST_ASSERT(rq_parse("{\"state\":\"on\"}", &cmd, LIGHT_CMD_ERR_STATE), "state must be ON/OFF");
+    TEST_ASSERT(rq_parse("{\"state\":1}", &cmd, LIGHT_CMD_ERR_TYPE), "state must be a string");
+    TEST_ASSERT(rq_parse("{\"brightness\":50.5}", &cmd, LIGHT_CMD_ERR_TYPE), "fraction rejected");
+    TEST_ASSERT(rq_parse("{\"brightness\":-5}", &cmd, LIGHT_CMD_ERR_TYPE), "negative rejected");
+    TEST_ASSERT(rq_parse("{\"brightness\":\"5\"}", &cmd, LIGHT_CMD_ERR_TYPE), "string brightness rejected");
+    TEST_ASSERT(rq_parse("{\"brightness\":101}", &cmd, LIGHT_CMD_ERR_RANGE), "brightness over 100 rejected");
+    TEST_ASSERT(rq_parse("{\"color\":{\"r\":1,\"g\":2}}", &cmd, LIGHT_CMD_ERR_RANGE), "partial colour rejected");
+    TEST_ASSERT(rq_parse("{\"color\":{\"r\":256,\"g\":0,\"b\":0}}", &cmd, LIGHT_CMD_ERR_RANGE), "channel over 255 rejected");
+    TEST_ASSERT(rq_parse("{\"color\":{\"r\":0,\"g\":0,\"b\":0}}", &cmd, LIGHT_CMD_ERR_BLACK), "black rejected");
+    TEST_ASSERT(rq_parse("{}", &cmd, LIGHT_CMD_ERR_EMPTY) && rq_parse("{\"foo\":1}", &cmd, LIGHT_CMD_ERR_EMPTY),
+                "no known key: empty");
+    TEST_ASSERT(rq_parse("{\"state\":\"ON\"} x", &cmd, LIGHT_CMD_ERR_SYNTAX), "trailing garbage rejected");
+    TEST_ASSERT(rq_parse("[1]", &cmd, LIGHT_CMD_ERR_SYNTAX) && rq_parse("{\"state\":\"ON\"", &cmd, LIGHT_CMD_ERR_SYNTAX),
+                "not an object / unterminated");
+    TEST_ASSERT(rq_parse("{\"a\":[[[[[1]]]]],\"state\":\"ON\"}", &cmd, LIGHT_CMD_ERR_SYNTAX), "nesting limit");
+    char long_cmd[LIGHT_CMD_MAX_LEN + 8U];
+    memset(long_cmd, ' ', sizeof(long_cmd));
+    memcpy(long_cmd, "{\"state\":\"ON\"}", 14U);
+    TEST_ASSERT(light_parse_command(long_cmd, LIGHT_CMD_MAX_LEN, &cmd) == LIGHT_CMD_OK, "128 bytes accepted");
+    TEST_ASSERT(light_parse_command(long_cmd, LIGHT_CMD_MAX_LEN + 1U, &cmd) == LIGHT_CMD_ERR_TOO_LONG, "129 bytes rejected");
+
+    /* Apply: absent fields keep their value, brightness 0 = off with the level kept */
+    light_state_t cur = {true, 60U, 10U, 20U, 30U};
+    light_state_t next;
+    (void)rq_parse("{\"brightness\":0}", &cmd, LIGHT_CMD_OK);
+    light_apply_cmd(&cur, &cmd, &next);
+    TEST_ASSERT(!next.on && next.brightness == 60U && next.r == 10U, "brightness 0: off, level kept");
+    (void)rq_parse("{\"state\":\"ON\",\"brightness\":0}", &cmd, LIGHT_CMD_OK);
+    light_apply_cmd(&cur, &cmd, &next);
+    TEST_ASSERT(!next.on, "ON with brightness 0: off");
+    (void)rq_parse("{\"brightness\":20}", &cmd, LIGHT_CMD_OK);
+    cur.on = false;
+    light_apply_cmd(&cur, &cmd, &next);
+    TEST_ASSERT(!next.on && next.brightness == 20U, "brightness alone does not switch on");
+    (void)rq_parse("{\"color\":{\"r\":1,\"g\":2,\"b\":3}}", &cmd, LIGHT_CMD_OK);
+    light_apply_cmd(&cur, &cmd, &next);
+    TEST_ASSERT(next.r == 1U && next.g == 2U && next.b == 3U && next.brightness == 60U, "colour alone");
+
+    /* JSON (HA json schema), output scaling, packing */
+    char json[LIGHT_STATE_JSON_MAX];
+    light_state_t js = {true, 40U, 255U, 120U, 0U};
+    light_state_to_json(&js, json, sizeof(json));
+    TEST_ASSERT(strcmp(json, "{\"state\":\"ON\",\"brightness\":40,\"color_mode\":\"rgb\",\"color\":{\"r\":255,\"g\":120,\"b\":0}}") == 0,
+                "state JSON matches the spec");
+    TEST_ASSERT(light_state_to_json(&js, json, 20U) == 0U && json[0] == '\0', "short buffer: empty, no overflow");
+    uint8_t r, g, b;
+    light_output_rgb(&js, &r, &g, &b);
+    TEST_ASSERT(r == 102U && g == 48U && b == 0U, "output = colour * brightness / 100 (rounded)");
+    light_state_t dim = {true, 1U, 255U, 255U, 255U};
+    light_output_rgb(&dim, &r, &g, &b);
+    TEST_ASSERT(r == 3U, "1 % stays visible");
+    js.on = false;
+    light_output_rgb(&js, &r, &g, &b);
+    TEST_ASSERT(r == 0U && g == 0U && b == 0U, "off: dark");
+    light_state_t back;
+    TEST_ASSERT(light_unpack(light_pack(&cur), &back) && light_state_equal(&back, &cur), "pack/unpack round trip");
+    TEST_ASSERT(!light_unpack(0U, &back) && !light_unpack(light_pack(&cur) & ~0x00FFFFFFU, &back),
+                "invalid stored words rejected");
+
+    /* Module: defaults, NVS restore after the settle time, coalesced reports, LED retry */
+    nvs_mock_reset();
+    uint64_t t = 100000000ULL;
+    light_init(t);
+    light_state_t s;
+    light_get(&s);
+    TEST_ASSERT(!s.on && s.brightness == LIGHT_DEFAULT_BRIGHTNESS && s.r == 255U && s.g == 255U && s.b == 255U,
+                "first boot: off, 100 %, white");
+    TEST_ASSERT(rgb_led_host_writes() == 1U, "LED written once at init");
+    TEST_ASSERT(light_take_report(t), "initial state is reported");
+    TEST_ASSERT(light_command("{\"state\":\"ON\",\"brightness\":40}", strlen("{\"state\":\"ON\",\"brightness\":40}"), LIGHT_SRC_REST, t) == LIGHT_CMD_OK,
+                "REST command accepted");
+    rgb_led_host_last(&r, &g, &b);
+    TEST_ASSERT(r == 102U && g == 102U && b == 102U && rgb_led_host_writes() == 2U, "LED shows the new state at once");
+    TEST_ASSERT(!light_take_report(t + LIGHT_STATE_COALESCE_US - 1U), "report waits for the coalescing window");
+    (void)light_command("{\"brightness\":50}", strlen("{\"brightness\":50}"), LIGHT_SRC_MQTT, t + 1000U);
+    TEST_ASSERT(light_take_report(t + LIGHT_STATE_COALESCE_US), "one report for the burst");
+    TEST_ASSERT(!light_take_report(t + 2U * LIGHT_STATE_COALESCE_US), "nothing pending afterwards");
+    uint32_t w0 = rgb_led_host_writes();
+    TEST_ASSERT(light_command("{\"brightness\":50}", strlen("{\"brightness\":50}"), LIGHT_SRC_MQTT, t + 2000U) == LIGHT_CMD_OK &&
+                rgb_led_host_writes() == w0 && !light_take_report(t + 3U * LIGHT_STATE_COALESCE_US),
+                "unchanged command: no LED write, no report");
+    TEST_ASSERT(light_command("{\"brightness\":500}", strlen("{\"brightness\":500}"), LIGHT_SRC_MQTT, t) == LIGHT_CMD_ERR_RANGE, "bad command rejected");
+    light_stats_t ls;
+    light_get_stats(&ls);
+    TEST_ASSERT(ls.applied[LIGHT_SRC_REST] == 1U && ls.applied[LIGHT_SRC_MQTT] == 1U && ls.unchanged == 1U &&
+                ls.rejected == 1U, "stats per source");
+
+    uint32_t v = 0U;
+    light_tick(t + 1000U + LIGHT_NVS_SETTLE_US - 1U);
+    TEST_ASSERT(nvs_get_u32(LIGHT_NVS_KEY, &v) != NVS_OK, "no NVS write before the state settled");
+    light_tick(t + 1000U + LIGHT_NVS_SETTLE_US);
+    TEST_ASSERT(nvs_get_u32(LIGHT_NVS_KEY, &v) == NVS_OK && light_unpack(v, &back) && back.on && back.brightness == 50U,
+                "state written once it held for 10 s");
+    light_get_stats(&ls);
+    light_tick(t + 3U * LIGHT_NVS_SETTLE_US);
+    light_stats_t ls2;
+    light_get_stats(&ls2);
+    TEST_ASSERT(ls2.nvs_writes == ls.nvs_writes && ls.nvs_writes == 1U, "one NVS write per settled change");
+
+    light_toggle_local(t + 4U * LIGHT_NVS_SETTLE_US);
+    light_get(&s);
+    TEST_ASSERT(!s.on && s.brightness == 50U, "BOOT short press toggles off, level kept");
+    light_toggle_local(t + 4U * LIGHT_NVS_SETTLE_US + 1U);
+    light_tick(t + 6U * LIGHT_NVS_SETTLE_US);
+    light_get_stats(&ls2);
+    TEST_ASSERT(ls2.nvs_writes == 1U, "toggled back before settling: stored word unchanged, no write");
+
+    rgb_led_host_set_busy(true);
+    (void)light_command("{\"color\":{\"r\":0,\"g\":255,\"b\":0}}", strlen("{\"color\":{\"r\":0,\"g\":255,\"b\":0}}"), LIGHT_SRC_SHELL, t);
+    light_get_stats(&ls);
+    TEST_ASSERT(ls.led_busy == 1U, "LED busy: retried later");
+    rgb_led_host_set_busy(false);
+    light_tick(t + 1U);
+    rgb_led_host_last(&r, &g, &b);
+    TEST_ASSERT(r == 0U && g == 128U && b == 0U, "retry writes the latest output");
+
+    /* Restore from NVS on the next boot */
+    light_tick(t + 10U * LIGHT_NVS_SETTLE_US);
+    light_init(t + 11U * LIGHT_NVS_SETTLE_US);
+    light_get(&s);
+    TEST_ASSERT(s.on && s.brightness == 50U && s.r == 0U && s.g == 255U && s.b == 0U, "reboot restores the last state");
+    nvs_mock_reset();
+}
+
+static void test_rgb_led_encoding(void)
+{
+    printf("  [TEST] RGB LED RMT encoding (REV-23)...\n");
+    uint32_t w[RGB_LED_FRAME_WORDS];
+    rgb_led_encode(0x01U, 0x80U, 0x00U, w);
+    uint32_t one = RGB_LED_PULSE_LEVEL_BIT | RGB_LED_T1H_TICKS | (RGB_LED_T1L_TICKS << RGB_LED_PULSE_SECOND_SHIFT);
+    uint32_t zero = RGB_LED_PULSE_LEVEL_BIT | RGB_LED_T0H_TICKS | (RGB_LED_T0L_TICKS << RGB_LED_PULSE_SECOND_SHIFT);
+    TEST_ASSERT(w[0] == one && w[1] == zero, "green first, MSB first");
+    TEST_ASSERT(w[8] == zero && w[15] == one, "then red (0x01: last bit set)");
+    TEST_ASSERT(w[16] == zero && w[23] == zero, "then blue");
+    TEST_ASSERT(w[24] == RGB_LED_RESET_TICKS && (w[24] >> RGB_LED_PULSE_SECOND_SHIFT) == 0U,
+                "reset low followed by the end marker");
+    TEST_ASSERT(RGB_LED_RESET_TICKS <= RGB_LED_PULSE_PERIOD_MASK, "reset fits the 15-bit period");
+    TEST_ASSERT(RGB_LED_FRAME_WORDS <= RGB_LED_RMT_RAM_WORDS_PER_CH, "frame fits one RMT RAM block");
+    /* TRM eq. (1): 3 APB (40 MHz) + 5 RMT (80 MHz) clocks < shortest period (100 ns ticks) */
+    TEST_ASSERT(3U * 25U + 5U * 125U / 10U < RGB_LED_T0H_TICKS * 100U, "shortest pulse meets the RMT minimum");
+}
+
+static void test_setup_button_short_press(void)
+{
+    printf("  [TEST] BOOT short press toggles, long press unchanged (REV-23)...\n");
+    button_t b;
+    button_reset(&b);
+    const uint64_t p = 20000000ULL;
+    button_update(&b, true, p);
+    button_update(&b, true, p + BUTTON_DEBOUNCE_US);
+    button_update(&b, false, p + 300000ULL);
+    TEST_ASSERT(button_update(&b, false, p + 300000ULL + BUTTON_DEBOUNCE_US) == BUTTON_EVENT_SHORT_PRESS &&
+                b.short_presses == 1U, "300 ms press: short press on release");
+    const uint64_t q = p + 5000000ULL;
+    button_update(&b, true, q);
+    button_update(&b, true, q + BUTTON_DEBOUNCE_US);
+    button_update(&b, false, q + BUTTON_SHORT_PRESS_MAX_US + 500000ULL);
+    TEST_ASSERT(button_update(&b, false, q + BUTTON_SHORT_PRESS_MAX_US + 500000ULL + BUTTON_DEBOUNCE_US) == BUTTON_EVENT_NONE,
+                "1.5 s press: nothing");
+    const uint64_t r = q + 10000000ULL;
+    button_update(&b, true, r);
+    button_update(&b, true, r + BUTTON_DEBOUNCE_US);
+    TEST_ASSERT(button_update(&b, true, r + BUTTON_LONG_PRESS_US) == BUTTON_EVENT_LONG_PRESS, "long press still fires");
+    button_update(&b, false, r + BUTTON_LONG_PRESS_US + 100U);
+    TEST_ASSERT(button_update(&b, false, r + BUTTON_LONG_PRESS_US + 100U + BUTTON_DEBOUNCE_US) == BUTTON_EVENT_NONE &&
+                b.short_presses == 1U, "release after a long press: no short press");
+    button_update(&b, true, r + 20000000ULL);
+    button_update(&b, false, r + 20000000ULL + 1000U);
+    TEST_ASSERT(button_update(&b, false, r + 20000000ULL + 1000U + BUTTON_DEBOUNCE_US) == BUTTON_EVENT_NONE &&
+                b.short_presses == 1U, "bounce is not a short press");
+}
+
+/* --- MQTT over the real TCP stack against a scripted broker --- */
+#define RQ_MAX_FRAMES      48U
+#define RQ_STREAM_MAX      4096U
+#define RQ_BROKER_PORT     1883U
+#define RQ_BROKER_ISN      7000U
+
+typedef struct {
+    bool     arp;
+    uint32_t arp_target;
+    uint8_t  flags;
+    uint32_t seq;
+    uint16_t sport;
+    uint16_t len;
+    uint8_t  data[TCP_DEFAULT_SEGMENT_MSS];
+} rq_frame_t;
+
+static rq_frame_t s_rq[RQ_MAX_FRAMES];
+static uint32_t s_rq_n;
+static uint64_t s_rq_now;
+static uint32_t s_rq_our_ip;
+static uint32_t s_rq_broker_ip;
+static uint16_t s_rq_our_port;
+static uint32_t s_rq_our_next;    /* next byte expected from the board */
+static uint32_t s_rq_bk_seq;      /* broker's next sequence number */
+static uint8_t  s_rq_stream[RQ_STREAM_MAX];
+static uint32_t s_rq_stream_len;
+
+static bool rq_hook(const uint8_t *frame, uint16_t len)
+{
+    if (s_rq_n >= RQ_MAX_FRAMES || len < ETH_HDR_LEN)
+    {
+        return true;
+    }
+    rq_frame_t *f = &s_rq[s_rq_n];
+    memset(f, 0, sizeof(*f) - sizeof(f->data));
+    uint16_t et = (uint16_t)((frame[12] << 8) | frame[13]);
+    if (et == ETHERTYPE_ARP && len >= sizeof(arp_frame_t))
+    {
+        const arp_frame_t *a = (const arp_frame_t *)frame;
+        f->arp = true;
+        f->arp_target = NET_NTOHL(a->arp.target_ip);
+        s_rq_n++;
+        return true;
+    }
+    if (et != ETHERTYPE_IPV4 || len < ETH_HDR_LEN + IPV4_MIN_HDR_LEN + TCP_MIN_HDR_LEN ||
+        frame[ETH_HDR_LEN + 9] != IPV4_PROTO_TCP)
+    {
+        return true;
+    }
+    const tcp_header_t *t = (const tcp_header_t *)(frame + ETH_HDR_LEN + IPV4_MIN_HDR_LEN);
+    f->flags = t->flags;
+    f->seq = NET_NTOHL(t->seq_num);
+    f->sport = NET_NTOHS(t->src_port);
+    f->len = (uint16_t)(len - ETH_HDR_LEN - IPV4_MIN_HDR_LEN - TCP_MIN_HDR_LEN);
+    memcpy(f->data, frame + ETH_HDR_LEN + IPV4_MIN_HDR_LEN + TCP_MIN_HDR_LEN, f->len);
+    s_rq_n++;
+    return true;
+}
+
+/* Board -> broker bytes in order (retransmissions skipped); frames consumed */
+static void rq_collect(void)
+{
+    for (uint32_t i = 0U; i < s_rq_n; i++)
+    {
+        rq_frame_t *f = &s_rq[i];
+        if (f->arp || f->len == 0U || f->seq != s_rq_our_next)
+        {
+            continue;
+        }
+        if (s_rq_stream_len + f->len <= RQ_STREAM_MAX)
+        {
+            memcpy(s_rq_stream + s_rq_stream_len, f->data, f->len);
+            s_rq_stream_len += f->len;
+        }
+        s_rq_our_next += f->len;
+    }
+    s_rq_n = 0U;
+}
+
+static void rq_bk_send(uint8_t flags, const void *data, uint16_t len)
+{
+    static uint8_t pkt[IPV4_MIN_HDR_LEN + TCP_MIN_HDR_LEN + 512U];
+    memset(pkt, 0, sizeof(pkt));
+    ipv4_header_t *ip = (ipv4_header_t *)pkt;
+    tcp_header_t *t = (tcp_header_t *)(pkt + IPV4_MIN_HDR_LEN);
+    ip->ver_ihl = IPV4_VER_IHL_DEFAULT;
+    ip->total_len = NET_HTONS(IPV4_MIN_HDR_LEN + TCP_MIN_HDR_LEN + len);
+    ip->ttl = IPV4_TTL_DEFAULT;
+    ip->protocol = IPV4_PROTO_TCP;
+    ip->src_ip = NET_HTONL(s_rq_broker_ip);
+    ip->dest_ip = NET_HTONL(s_rq_our_ip);
+    t->src_port = NET_HTONS(RQ_BROKER_PORT);
+    t->dest_port = NET_HTONS(s_rq_our_port);
+    t->seq_num = NET_HTONL(s_rq_bk_seq);
+    t->ack_num = NET_HTONL(s_rq_our_next);
+    t->data_offset_reserved = (uint8_t)((TCP_MIN_HDR_LEN / TCP_HDR_WORD_BYTES) << TCP_DATA_OFFSET_SHIFT);
+    t->flags = flags;
+    t->window = NET_HTONS(8192U);
+    uint8_t *payload = pkt + IPV4_MIN_HDR_LEN + TCP_MIN_HDR_LEN;
+    if (len > 0U)
+    {
+        memcpy(payload, data, len);
+    }
+    t->checksum = NET_HTONS(net_tcp_checksum(s_rq_broker_ip, s_rq_our_ip, t, TCP_MIN_HDR_LEN, payload, len));
+    (void)tcp_input(pkt, (uint16_t)(IPV4_MIN_HDR_LEN + TCP_MIN_HDR_LEN + len));
+    s_rq_bk_seq += len + (((flags & TCP_FLAG_SYN) != 0U) ? 1U : 0U);
+}
+
+static void rq_advance(uint64_t us, bool link_up)
+{
+    s_rq_now += us;
+    tcp_host_set_time_ms((uint32_t)(s_rq_now / 1000ULL));
+    tcp_tick();
+    light_tick(s_rq_now);
+    mqtt_tick(s_rq_now, link_up);
+}
+
+/* Broker reads and ACKs whatever the board sent */
+static void rq_bk_ack(void)
+{
+    rq_collect();
+    rq_bk_send(TCP_FLAG_ACK, NULL, 0U);
+}
+
+typedef struct {
+    uint8_t  first;
+    uint32_t len;
+    const uint8_t *body;
+} rq_pkt_t;
+
+/* Splits the collected stream into MQTT packets; returns the count */
+static uint32_t rq_packets(rq_pkt_t *out, uint32_t max)
+{
+    uint32_t n = 0U;
+    uint32_t pos = 0U;
+    while (pos + 2U <= s_rq_stream_len && n < max)
+    {
+        uint32_t rem = 0U, shift = 0U, i = pos + 1U;
+        while (i < s_rq_stream_len)
+        {
+            rem |= (uint32_t)(s_rq_stream[i] & 0x7FU) << shift;
+            shift += 7U;
+            if ((s_rq_stream[i++] & 0x80U) == 0U)
+            {
+                break;
+            }
+        }
+        if (i + rem > s_rq_stream_len)
+        {
+            break;
+        }
+        out[n].first = s_rq_stream[pos];
+        out[n].len = rem;
+        out[n].body = s_rq_stream + i;
+        n++;
+        pos = i + rem;
+    }
+    return n;
+}
+
+static bool rq_pkt_topic_is(const rq_pkt_t *p, const char *topic)
+{
+    size_t tl = strlen(topic);
+    return p->len >= 2U + tl && (size_t)((p->body[0] << 8) | p->body[1]) == tl && memcmp(p->body + 2, topic, tl) == 0;
+}
+
+static const char *rq_find(const char *hay, uint32_t hay_len, const char *needle)
+{
+    size_t nl = strlen(needle);
+    for (uint32_t i = 0U; i + nl <= hay_len; i++)
+    {
+        if (memcmp(hay + i, needle, nl) == 0)
+        {
+            return hay + i;
+        }
+    }
+    return NULL;
+}
+
+/* SYN -> SYN-ACK; returns true once the board is in TCP ESTABLISHED and has sent CONNECT */
+static bool rq_open_tcp(void)
+{
+    rq_advance(1000U, true);   /* SYN goes out (or already went out when the backoff ended) */
+    for (uint32_t i = 0U; i < s_rq_n; i++)
+    {
+        if (!s_rq[i].arp && (s_rq[i].flags & TCP_FLAG_SYN) != 0U)
+        {
+            s_rq_our_port = s_rq[i].sport;
+            s_rq_our_next = s_rq[i].seq + 1U;
+        }
+    }
+    s_rq_n = 0U;
+    s_rq_bk_seq = RQ_BROKER_ISN;
+    rq_bk_send(TCP_FLAG_SYN | TCP_FLAG_ACK, NULL, 0U);
+    s_rq_stream_len = 0U;
+    rq_advance(1000U, true);   /* CONNECT goes out */
+    rq_bk_ack();
+    return s_rq_stream_len > 0U && s_rq_stream[0] == MQTT_PKT_CONNECT;
+}
+
+static void test_mqtt_codec(void)
+{
+    printf("  [TEST] MQTT 3.1.1 packet codec and stream reassembly (REV-23)...\n");
+    uint8_t enc[MQTT_REMLEN_MAX_BYTES];
+    TEST_ASSERT(mqtt_encode_remaining_length(0U, enc) == 1U && enc[0] == 0U, "remaining length 0");
+    TEST_ASSERT(mqtt_encode_remaining_length(127U, enc) == 1U && enc[0] == 0x7FU, "127: one byte");
+    TEST_ASSERT(mqtt_encode_remaining_length(128U, enc) == 2U && enc[0] == 0x80U && enc[1] == 0x01U, "128: two bytes");
+    TEST_ASSERT(mqtt_encode_remaining_length(16383U, enc) == 2U && enc[0] == 0xFFU && enc[1] == 0x7FU, "16383: two bytes");
+    TEST_ASSERT(mqtt_encode_remaining_length(268435456U, enc) == 0U, "over the 4-byte limit");
+
+    uint8_t buf[256];
+    size_t n = mqtt_encode_connect(buf, sizeof(buf), "ironv-a1b2c3", "u", "p", 180U, "t/av", "offline", true);
+    const uint8_t want[] = {0x10, 45, 0x00, 0x04, 'M', 'Q', 'T', 'T', 0x04, 0xEE, 0x00, 0xB4,
+                            0x00, 12, 'i', 'r', 'o', 'n', 'v', '-', 'a', '1', 'b', '2', 'c', '3',
+                            0x00, 4, 't', '/', 'a', 'v', 0x00, 7, 'o', 'f', 'f', 'l', 'i', 'n', 'e',
+                            0x00, 1, 'u', 0x00, 1, 'p'};
+    TEST_ASSERT(n == sizeof(want) && memcmp(buf, want, sizeof(want)) == 0, "CONNECT byte-exact");
+    TEST_ASSERT(n == 47U && buf[1] == 45U && memcmp(buf + 2, want + 2, 10U) == 0 && buf[9] == 0xEEU,
+                "CONNECT: MQTT level 4, user+pass+will retain QoS1+clean, keepalive 180");
+    n = mqtt_encode_connect(buf, sizeof(buf), "id", "", "p", 180U, NULL, NULL, true);
+    TEST_ASSERT(n > 0U && buf[9] == MQTT_CONN_FLAG_CLEAN, "no password without a user name (3.1.1)");
+    TEST_ASSERT(mqtt_encode_connect(buf, 20U, "ironv-a1b2c3", "u", "p", 180U, "t/av", "offline", true) == 0U,
+                "CONNECT that does not fit: 0");
+
+    n = mqtt_encode_publish(buf, sizeof(buf), "a/b", "xy", 2U, MQTT_QOS1, true, 0x1234U);
+    const uint8_t pub[] = {0x33, 9, 0x00, 3, 'a', '/', 'b', 0x12, 0x34, 'x', 'y'};
+    TEST_ASSERT(n == sizeof(pub) && memcmp(buf, pub, sizeof(pub)) == 0, "PUBLISH QoS 1 retained");
+    n = mqtt_encode_subscribe(buf, sizeof(buf), 5U, "s", MQTT_QOS1);
+    const uint8_t sub[] = {0x82, 6, 0x00, 5, 0x00, 1, 's', 0x01};
+    TEST_ASSERT(n == sizeof(sub) && memcmp(buf, sub, sizeof(sub)) == 0, "SUBSCRIBE");
+    TEST_ASSERT(mqtt_encode_puback(buf, sizeof(buf), 7U) == 4U && buf[0] == 0x40U && buf[3] == 7U, "PUBACK");
+    TEST_ASSERT(mqtt_encode_simple(buf, sizeof(buf), MQTT_PKT_PINGREQ) == 2U && buf[0] == 0xC0U && buf[1] == 0U, "PINGREQ");
+
+    mqtt_publish_t p;
+    TEST_ASSERT(mqtt_parse_publish(pub[0], pub + 2, sizeof(pub) - 2U, &p) && p.topic_len == 3U && p.qos == 1U &&
+                p.retain && p.packet_id == 0x1234U && p.payload_len == 2U && p.payload[0] == 'x', "parse PUBLISH");
+    TEST_ASSERT(!mqtt_parse_publish(0x33U, pub + 2, 6U, &p), "truncated PUBLISH rejected");
+}
+
+typedef struct {
+    uint32_t count;
+    uint8_t  first[8];
+    size_t   len[8];
+} rq_rx_log_t;
+
+static void rq_rx_cb(void *arg, uint8_t first, const uint8_t *body, size_t body_len)
+{
+    (void)body;
+    rq_rx_log_t *log = (rq_rx_log_t *)arg;
+    if (log->count < 8U)
+    {
+        log->first[log->count] = first;
+        log->len[log->count] = body_len;
+    }
+    log->count++;
+}
+
+static void test_mqtt_rx_reassembly(void)
+{
+    printf("  [TEST] MQTT stream reassembly across segments, oversized skip (REV-23)...\n");
+    static mqtt_rx_t rx;
+    mqtt_rx_reset(&rx);
+    rx.oversized = 0U;
+    rq_rx_log_t log;
+    memset(&log, 0, sizeof(log));
+    const uint8_t two[] = {0x20, 0x02, 0x00, 0x00, 0xD0, 0x00};
+    mqtt_rx_feed(&rx, two, 1U, rq_rx_cb, &log);
+    mqtt_rx_feed(&rx, two + 1, 2U, rq_rx_cb, &log);
+    TEST_ASSERT(log.count == 0U, "partial packet held");
+    mqtt_rx_feed(&rx, two + 3, 3U, rq_rx_cb, &log);
+    TEST_ASSERT(log.count == 2U && log.first[0] == 0x20U && log.len[0] == 2U && log.first[1] == 0xD0U, "two packets split");
+    static uint8_t big[600];
+    memset(big, 'z', sizeof(big));
+    big[0] = 0x30U;
+    big[1] = 0xD5U;   /* 597 = 0x255: 0xD5 0x04 */
+    big[2] = 0x04U;
+    mqtt_rx_feed(&rx, big, 300U, rq_rx_cb, &log);
+    mqtt_rx_feed(&rx, big + 300, 300U, rq_rx_cb, &log);
+    mqtt_rx_feed(&rx, two + 4, 2U, rq_rx_cb, &log);
+    TEST_ASSERT(rx.oversized == 1U && log.count == 3U && log.first[2] == 0xD0U, "oversized packet skipped, stream stays in sync");
+    const uint8_t bad[] = {0x30, 0xFF, 0xFF, 0xFF, 0xFF, 0x01};
+    mqtt_rx_feed(&rx, bad, sizeof(bad), rq_rx_cb, &log);
+    TEST_ASSERT(rx.malformed, "5-byte remaining length: malformed");
+}
+
+static void test_arp_request_and_merge(void)
+{
+    printf("  [TEST] ARP who-has for outgoing connections, RFC 826 merge rule (REV-23)...\n");
+    uint32_t our = NET_IP4_ADDR(192, 168, 1, 77);
+    net_set_ip(our, NET_IP4_ADDR(255, 255, 255, 0), NET_IP4_ADDR(192, 168, 1, 1));
+    TEST_ASSERT(net_next_hop(NET_IP4_ADDR(192, 168, 1, 61)) == NET_IP4_ADDR(192, 168, 1, 61), "LAN peer: itself");
+    TEST_ASSERT(net_next_hop(NET_IP4_ADDR(10, 0, 0, 5)) == NET_IP4_ADDR(192, 168, 1, 1), "off-LAN: gateway");
+
+    wifi_host_set_tx_hook(rq_hook);
+    s_rq_n = 0U;
+    TEST_ASSERT(net_arp_request(NET_IP4_ADDR(192, 168, 1, 61)) == NET_OK && s_rq_n == 1U && s_rq[0].arp &&
+                s_rq[0].arp_target == NET_IP4_ADDR(192, 168, 1, 61), "who-has sent for the target");
+    uint16_t len = 0U;
+    wifi_tx_if_t ifx;
+    const uint8_t *fr = wifi_host_last_tx(&len, &ifx);
+    TEST_ASSERT(len == sizeof(arp_frame_t) && fr[0] == 0xFFU && fr[5] == 0xFFU &&
+                ((const arp_frame_t *)fr)->arp.opcode == NET_HTONS(ARP_OPCODE_REQUEST), "broadcast who-has frame");
+    wifi_host_set_tx_hook(NULL);
+
+    arp_frame_t f;
+    memset(&f, 0, sizeof(f));
+    f.eth.ethertype = NET_HTONS(ETHERTYPE_ARP);
+    f.arp.hw_type = NET_HTONS(ARP_HW_TYPE_ETHERNET);
+    f.arp.proto_type = NET_HTONS(ARP_PROTO_IPV4);
+    f.arp.hw_size = ETH_ADDR_LEN;
+    f.arp.proto_size = IPV4_ADDR_LEN;
+    f.arp.opcode = NET_HTONS(ARP_OPCODE_REQUEST);
+    const uint8_t mac_a[ETH_ADDR_LEN] = {0x02, 0xAA, 0, 0, 0, 0x01};
+    memcpy(f.arp.sender_mac, mac_a, ETH_ADDR_LEN);
+    f.arp.sender_ip = NET_HTONL(NET_IP4_ADDR(192, 168, 1, 91));
+    f.arp.target_ip = NET_HTONL(NET_IP4_ADDR(192, 168, 1, 92));
+    uint8_t reply[sizeof(arp_frame_t)];
+    uint16_t rlen = 0U;
+    uint8_t mac[ETH_ADDR_LEN];
+    (void)arp_process_packet((const uint8_t *)&f, sizeof(f), reply, sizeof(reply), &rlen);
+    TEST_ASSERT(arp_lookup(NET_IP4_ADDR(192, 168, 1, 91), mac) != NET_OK, "ARP between other hosts: not learned");
+    f.arp.opcode = NET_HTONS(ARP_OPCODE_REPLY);
+    f.arp.target_ip = NET_HTONL(our);
+    (void)arp_process_packet((const uint8_t *)&f, sizeof(f), reply, sizeof(reply), &rlen);
+    TEST_ASSERT(arp_lookup(NET_IP4_ADDR(192, 168, 1, 91), mac) == NET_OK && mac[5] == 0x01U, "reply to us: learned");
+    f.arp.sender_mac[5] = 0x02U;
+    f.arp.target_ip = NET_HTONL(NET_IP4_ADDR(192, 168, 1, 92));
+    (void)arp_process_packet((const uint8_t *)&f, sizeof(f), reply, sizeof(reply), &rlen);
+    TEST_ASSERT(arp_lookup(NET_IP4_ADDR(192, 168, 1, 91), mac) == NET_OK && mac[5] == 0x02U,
+                "known entry refreshed from any ARP frame");
+}
+
+static void test_mqtt_session(void)
+{
+    printf("  [TEST] MQTT session against a scripted broker: discovery, commands, keepalive, backoff (REV-23)...\n");
+    nvs_mock_reset();
+    tcp_init();
+    s_rq_now = 300000000ULL;
+    tcp_host_set_time_ms((uint32_t)(s_rq_now / 1000ULL));
+    s_rq_our_ip = NET_IP4_ADDR(192, 168, 1, 77);
+    s_rq_broker_ip = NET_IP4_ADDR(192, 168, 1, 63);
+    net_set_ip(s_rq_our_ip, NET_IP4_ADDR(255, 255, 255, 0), NET_IP4_ADDR(192, 168, 1, 1));
+    wifi_host_set_tx_hook(rq_hook);
+    s_rq_n = 0U;
+    light_init(s_rq_now);
+    mqtt_init();
+
+    mqtt_status_t st;
+    mqtt_tick(s_rq_now, true);
+    mqtt_get_status(&st);
+    TEST_ASSERT(st.state == MQTT_ST_OFF && s_rq_n == 0U, "no broker set: off, silent");
+    TEST_ASSERT(strncmp(mqtt_device_id(), "ironv-", 6U) == 0 && strlen(mqtt_device_id()) == 12U, "device id ironv-xxxxxx");
+    char topic[MQTT_TOPIC_MAX];
+    snprintf(topic, sizeof(topic), "ironv/%s/light/set", mqtt_device_id());
+    TEST_ASSERT(strcmp(mqtt_topic_set(), topic) == 0, "set topic per spec");
+    snprintf(topic, sizeof(topic), "homeassistant/light/%s/config", mqtt_device_id());
+    TEST_ASSERT(strcmp(mqtt_topic_discovery(), topic) == 0, "discovery topic per spec");
+
+    mqtt_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.enabled = true;
+    cfg.host = s_rq_broker_ip;
+    cfg.port = RQ_BROKER_PORT;
+    strcpy(cfg.user, "ha");
+    strcpy(cfg.pass, "secret");
+    TEST_ASSERT(mqtt_set_config(&cfg, s_rq_now), "settings saved");
+    uint32_t v = 0U;
+    char sv[MQTT_PASS_MAX_LEN + 1U];
+    TEST_ASSERT(nvs_get_u32(MQTT_NVS_KEY_HOST, &v) == NVS_OK && v == s_rq_broker_ip &&
+                nvs_get_str(MQTT_NVS_KEY_PASS, sv, sizeof(sv)) == NVS_OK && strcmp(sv, "secret") == 0, "settings in NVS");
+
+    /* Link down: waits */
+    rq_advance(1000U, false);
+    rq_advance(1000U, false);
+    mqtt_get_status(&st);
+    TEST_ASSERT(st.state == MQTT_ST_WAIT_LINK && s_rq_n == 0U, "no link: waits, sends nothing");
+
+    /* ARP first (broker unknown), retried each second */
+    uint8_t mac[ETH_ADDR_LEN];
+    TEST_ASSERT(arp_lookup(s_rq_broker_ip, mac) != NET_OK, "broker not in the ARP cache yet");
+    rq_advance(1000U, true);
+    mqtt_get_status(&st);
+    TEST_ASSERT(st.state == MQTT_ST_ARP && s_rq_n == 1U && s_rq[0].arp && s_rq[0].arp_target == s_rq_broker_ip,
+                "who-has for the broker");
+    rq_advance(MQTT_ARP_RETRY_US, true);
+    mqtt_get_status(&st);
+    TEST_ASSERT(s_rq_n == 2U && st.arp_requests == 2U, "who-has retried after 1 s");
+    arp_frame_t rep;
+    memset(&rep, 0, sizeof(rep));
+    rep.eth.ethertype = NET_HTONS(ETHERTYPE_ARP);
+    rep.arp.hw_type = NET_HTONS(ARP_HW_TYPE_ETHERNET);
+    rep.arp.proto_type = NET_HTONS(ARP_PROTO_IPV4);
+    rep.arp.hw_size = ETH_ADDR_LEN;
+    rep.arp.proto_size = IPV4_ADDR_LEN;
+    rep.arp.opcode = NET_HTONS(ARP_OPCODE_REPLY);
+    const uint8_t bmac[ETH_ADDR_LEN] = {0x02, 0xBB, 0, 0, 0, 0x63};
+    memcpy(rep.arp.sender_mac, bmac, ETH_ADDR_LEN);
+    rep.arp.sender_ip = NET_HTONL(s_rq_broker_ip);
+    rep.arp.target_ip = NET_HTONL(s_rq_our_ip);
+    uint8_t scratch[sizeof(arp_frame_t)];
+    uint16_t slen = 0U;
+    (void)arp_process_packet((const uint8_t *)&rep, sizeof(rep), scratch, sizeof(scratch), &slen);
+
+    /* TCP + CONNECT (byte-exact) */
+    TEST_ASSERT(rq_open_tcp(), "TCP handshake, then CONNECT");
+    uint8_t want[MQTT_TX_BUF_LEN];
+    size_t wn = mqtt_encode_connect(want, sizeof(want), mqtt_device_id(), "ha", "secret", MQTT_KEEPALIVE_S,
+                                    mqtt_topic_availability(), MQTT_PAYLOAD_OFFLINE, true);
+    TEST_ASSERT(s_rq_stream_len == wn && memcmp(s_rq_stream, want, wn) == 0,
+                "CONNECT: client id, clean session, keepalive 180, Will offline QoS 1 retained, login");
+    mqtt_get_status(&st);
+    TEST_ASSERT(st.state == MQTT_ST_CONNACK, "waiting for CONNACK");
+
+    /* CONNACK -> availability, discovery, state, SUBSCRIBE */
+    const uint8_t connack[] = {0x20, 0x02, 0x00, 0x00};
+    s_rq_stream_len = 0U;
+    rq_bk_send(TCP_FLAG_ACK | TCP_FLAG_PSH, connack, sizeof(connack));
+    rq_bk_ack();
+    rq_pkt_t pk[16];
+    uint32_t np = rq_packets(pk, 16U);
+    TEST_ASSERT(np == 4U, "four packets after CONNACK");
+    TEST_ASSERT(np >= 4U && pk[0].first == 0x33U && rq_pkt_topic_is(&pk[0], mqtt_topic_availability()) &&
+                memcmp(pk[0].body + pk[0].len - 6U, "online", 6U) == 0, "availability online, QoS 1, retained");
+    TEST_ASSERT(np >= 4U && pk[1].first == 0x33U && rq_pkt_topic_is(&pk[1], mqtt_topic_discovery()),
+                "discovery, QoS 1, retained");
+    if (np >= 4U)
+    {
+        const char *d = (const char *)pk[1].body;
+        snprintf(topic, sizeof(topic), "\"command_topic\":\"%s\"", mqtt_topic_set());
+        TEST_ASSERT(rq_find(d, pk[1].len, topic) != NULL && rq_find(d, pk[1].len, "\"schema\":\"json\"") != NULL &&
+                    rq_find(d, pk[1].len, "\"brightness_scale\":100") != NULL &&
+                    rq_find(d, pk[1].len, "\"supported_color_modes\":[\"rgb\"]") != NULL &&
+                    rq_find(d, pk[1].len, "\"payload_not_available\":\"offline\"") != NULL,
+                    "discovery document per spec section 4");
+        TEST_ASSERT(pk[1].len < TCP_DEFAULT_SEGMENT_MSS, "discovery fits one segment");
+        char sj[LIGHT_STATE_JSON_MAX];
+        light_state_t ls;
+        light_get(&ls);
+        size_t sl = light_state_to_json(&ls, sj, sizeof(sj));
+        TEST_ASSERT(pk[2].first == 0x33U && rq_pkt_topic_is(&pk[2], mqtt_topic_state()) &&
+                    memcmp(pk[2].body + pk[2].len - sl, sj, sl) == 0, "state, QoS 1, retained");
+        TEST_ASSERT(pk[3].first == MQTT_PKT_SUBSCRIBE && pk[3].body[pk[3].len - 1U] == MQTT_QOS1 &&
+                    rq_find((const char *)pk[3].body, pk[3].len, mqtt_topic_set()) != NULL, "SUBSCRIBE set topic QoS 1");
+    }
+    mqtt_get_status(&st);
+    TEST_ASSERT(st.state == MQTT_ST_ONLINE && st.sessions == 1U && st.publishes == 3U, "online");
+    const uint8_t acks[] = {0x90, 0x03, 0x00, 0x00, 0x01, 0x40, 0x02, 0x00, 0x01};
+    rq_bk_send(TCP_FLAG_ACK | TCP_FLAG_PSH, acks, sizeof(acks));
+    mqtt_get_status(&st);
+    TEST_ASSERT(st.pubacks == 1U, "PUBACK counted");
+
+    /* Command: PUBACK, LED, coalesced state report */
+    uint8_t pkt[160];
+    const char *c_on = "{\"state\":\"ON\",\"brightness\":40}";
+    size_t pn = mqtt_encode_publish(pkt, sizeof(pkt), mqtt_topic_set(), c_on, strlen(c_on), MQTT_QOS1, false, 7U);
+    s_rq_stream_len = 0U;
+    rq_bk_send(TCP_FLAG_ACK | TCP_FLAG_PSH, pkt, (uint16_t)pn);
+    rq_bk_ack();
+    light_state_t ls;
+    light_get(&ls);
+    uint8_t r, g, b;
+    rgb_led_host_last(&r, &g, &b);
+    TEST_ASSERT(ls.on && ls.brightness == 40U && r == 102U, "command applied to the LED");
+    TEST_ASSERT(s_rq_stream_len == 4U && s_rq_stream[0] == 0x40U && s_rq_stream[3] == 7U, "PUBACK for the command");
+    s_rq_stream_len = 0U;
+    rq_advance(LIGHT_STATE_COALESCE_US, true);
+    rq_bk_ack();
+    np = rq_packets(pk, 16U);
+    TEST_ASSERT(np == 1U && rq_pkt_topic_is(&pk[0], mqtt_topic_state()) &&
+                rq_find((const char *)pk[0].body, pk[0].len, "\"brightness\":40") != NULL, "state reported after the change");
+
+    /* Retained command dropped; bad command rejected; neither changes or reports */
+    const char *c_off = "{\"state\":\"OFF\"}";
+    pn = mqtt_encode_publish(pkt, sizeof(pkt), mqtt_topic_set(), c_off, strlen(c_off), MQTT_QOS1, true, 8U);
+    s_rq_stream_len = 0U;
+    rq_bk_send(TCP_FLAG_ACK | TCP_FLAG_PSH, pkt, (uint16_t)pn);
+    const char *c_bad = "{\"brightness\":500}";
+    pn = mqtt_encode_publish(pkt, sizeof(pkt), mqtt_topic_set(), c_bad, strlen(c_bad), MQTT_QOS0, false, 0U);
+    rq_bk_send(TCP_FLAG_ACK | TCP_FLAG_PSH, pkt, (uint16_t)pn);
+    rq_advance(LIGHT_STATE_COALESCE_US, true);
+    rq_bk_ack();
+    light_get(&ls);
+    mqtt_get_status(&st);
+    TEST_ASSERT(ls.on && st.retained_dropped == 1U && st.commands_rejected == 1U && st.commands == 3U,
+                "retained command dropped, bad one rejected");
+    TEST_ASSERT(s_rq_stream_len == 4U && s_rq_stream[0] == 0x40U, "only the PUBACK for the QoS 1 one");
+
+    /* Local change (BOOT short press) is reported */
+    light_toggle_local(s_rq_now);
+    s_rq_stream_len = 0U;
+    rq_advance(LIGHT_STATE_COALESCE_US, true);
+    rq_bk_ack();
+    np = rq_packets(pk, 16U);
+    TEST_ASSERT(np == 1U && rq_find((const char *)pk[0].body, pk[0].len, "\"state\":\"OFF\"") != NULL,
+                "device-side change published");
+
+    /* Keepalive: PINGREQ after 180 s of silence, PINGRESP clears it */
+    s_rq_stream_len = 0U;
+    rq_advance(MQTT_KEEPALIVE_US - 1000000ULL, true);
+    rq_bk_ack();
+    TEST_ASSERT(s_rq_stream_len == 0U, "silent before the keepalive");
+    rq_advance(1000000ULL, true);
+    rq_bk_ack();
+    TEST_ASSERT(s_rq_stream_len == 2U && s_rq_stream[0] == MQTT_PKT_PINGREQ, "PINGREQ at 180 s idle");
+    const uint8_t pingresp[] = {0xD0, 0x00};
+    rq_bk_send(TCP_FLAG_ACK | TCP_FLAG_PSH, pingresp, sizeof(pingresp));
+    rq_advance(MQTT_PINGRESP_TIMEOUT_US, true);
+    mqtt_get_status(&st);
+    TEST_ASSERT(st.state == MQTT_ST_ONLINE && st.pings == 1U, "answered ping keeps the session");
+
+    /* Unanswered ping: session dropped (RST), backoff 1 s +/- 20 % after a long session */
+    s_rq_stream_len = 0U;
+    rq_advance(MQTT_KEEPALIVE_US, true);
+    rq_bk_ack();
+    TEST_ASSERT(s_rq_stream_len == 2U && s_rq_stream[0] == MQTT_PKT_PINGREQ, "second PINGREQ");
+    s_rq_n = 0U;
+    rq_advance(MQTT_PINGRESP_TIMEOUT_US, true);
+    mqtt_get_status(&st);
+    bool rst = false;
+    for (uint32_t i = 0U; i < s_rq_n; i++)
+    {
+        rst = rst || ((s_rq[i].flags & TCP_FLAG_RST) != 0U);
+    }
+    TEST_ASSERT(st.state == MQTT_ST_BACKOFF && st.last_error == MQTT_ERR_PING_TIMEOUT && st.reconnects == 1U && rst,
+                "no PINGRESP within 30 s: dropped with RST");
+    uint64_t wait = st.next_retry_us - s_rq_now;
+    TEST_ASSERT(st.retry_delay_us == 1000000ULL && wait >= 800000ULL && wait <= 1200000ULL, "first retry after 1 s +/- 20 %");
+    light_get(&ls);
+    TEST_ASSERT(!ls.on, "broker loss leaves the light as it was");
+
+    /* Reconnect (ARP cached): refused CONNACK -> backoff doubles */
+    s_rq_n = 0U;
+    rq_advance(wait, true);
+    TEST_ASSERT(rq_open_tcp(), "reconnect without ARP");
+    const uint8_t refused[] = {0x20, 0x02, 0x00, 0x05};
+    rq_bk_send(TCP_FLAG_ACK | TCP_FLAG_PSH, refused, sizeof(refused));
+    rq_advance(1000U, true);
+    mqtt_get_status(&st);
+    TEST_ASSERT(st.state == MQTT_ST_BACKOFF && st.last_error == MQTT_ERR_REFUSED && st.last_refusal == 5U &&
+                st.retry_delay_us == 2000000ULL, "refused (not authorized): backoff 2 s");
+
+    /* CONNACK timeout */
+    s_rq_n = 0U;
+    rq_advance(st.next_retry_us - s_rq_now, true);
+    TEST_ASSERT(rq_open_tcp(), "third attempt");
+    rq_advance(MQTT_CONNACK_TIMEOUT_US, true);
+    mqtt_get_status(&st);
+    TEST_ASSERT(st.state == MQTT_ST_BACKOFF && st.last_error == MQTT_ERR_CONNACK_TIMEOUT && st.retry_delay_us == 4000000ULL,
+                "no CONNACK in 10 s: backoff 4 s");
+
+    /* Settings change skips the wait; disabling ends the session politely */
+    TEST_ASSERT(mqtt_set_config(&cfg, s_rq_now), "re-save settings");
+    s_rq_n = 0U;
+    rq_advance(1000U, true);
+    TEST_ASSERT(rq_open_tcp(), "new settings: reconnects at once");
+    s_rq_stream_len = 0U;
+    rq_bk_send(TCP_FLAG_ACK | TCP_FLAG_PSH, connack, sizeof(connack));
+    rq_bk_ack();
+    mqtt_get_status(&st);
+    TEST_ASSERT(st.state == MQTT_ST_ONLINE && st.sessions == 2U, "online again");
+    cfg.enabled = false;
+    TEST_ASSERT(mqtt_set_config(&cfg, s_rq_now), "disable");
+    s_rq_stream_len = 0U;
+    s_rq_n = 0U;
+    rq_advance(1000U, true);
+    bool fin = false;
+    for (uint32_t i = 0U; i < s_rq_n; i++)
+    {
+        fin = fin || ((s_rq[i].flags & TCP_FLAG_FIN) != 0U);
+    }
+    rq_collect();
+    np = rq_packets(pk, 16U);
+    mqtt_get_status(&st);
+    TEST_ASSERT(np == 2U && rq_pkt_topic_is(&pk[0], mqtt_topic_availability()) && pk[0].first == 0x33U &&
+                memcmp(pk[0].body + pk[0].len - 7U, "offline", 7U) == 0 && pk[1].first == MQTT_PKT_DISCONNECT && fin,
+                "disable: offline (retained), DISCONNECT, FIN");
+    TEST_ASSERT(st.state == MQTT_ST_OFF, "off");
+
+    /* The stack re-initialised under a live session (do-test runs tcp_init()): the slot now belongs
+     * to someone else and must not be touched; the client starts over */
+    cfg.enabled = true;
+    TEST_ASSERT(mqtt_set_config(&cfg, s_rq_now), "enable again");
+    s_rq_n = 0U;
+    rq_advance(1000U, true);
+    rq_advance(1000U, true);
+    TEST_ASSERT(rq_open_tcp(), "reconnect");
+    s_rq_stream_len = 0U;
+    rq_bk_send(TCP_FLAG_ACK | TCP_FLAG_PSH, connack, sizeof(connack));
+    rq_bk_ack();
+    mqtt_get_status(&st);
+    TEST_ASSERT(st.state == MQTT_ST_ONLINE, "online before the wipe");
+    tcp_init();
+    tcp_pcb_t *other = tcp_new();
+    TEST_ASSERT(other != NULL && tcp_bind(other, 8081U) == TCP_OK && tcp_listen(other, NULL) == TCP_OK, "slot reused");
+    rq_advance(1000U, true);
+    mqtt_get_status(&st);
+    TEST_ASSERT(st.state == MQTT_ST_BACKOFF && st.last_error == MQTT_ERR_PEER_CLOSED, "lost session noticed");
+    TEST_ASSERT(other->in_use && other->state == TCP_STATE_LISTEN, "the other connection was left alone");
+    (void)tcp_close(other);
+    cfg.enabled = false;
+    (void)mqtt_set_config(&cfg, s_rq_now);
+    rq_advance(1000U, true);
+
+    wifi_host_set_tx_hook(NULL);
+    nvs_mock_reset();
+}
+
+static bool rq_http(const char *req, char *resp, size_t max, http_status_t want)
+{
+    size_t len = 0U;
+    resp[0] = '\0';
+    return http_process_request(req, strlen(req), resp, max, &len) == want;
+}
+
+static void test_rest_v1(void)
+{
+    printf("  [TEST] REST v1: light, device, MQTT settings (REV-23)...\n");
+    nvs_mock_reset();
+    light_init(400000000ULL);
+    mqtt_init();
+    TEST_ASSERT(http_server_init() == HTTP_OK, "http init");
+    static char resp[HTTP_RESPONSE_BUF_SIZE];
+
+    TEST_ASSERT(rq_http("GET /api/v1/light HTTP/1.1\r\n\r\n", resp, sizeof(resp), HTTP_OK) &&
+                strstr(resp, "200 OK") != NULL && strstr(resp, "\"state\":\"OFF\"") != NULL, "GET light");
+    TEST_ASSERT(rq_http("POST /api/v1/light HTTP/1.1\r\nContent-Length: 39\r\n\r\n{\"state\":\"ON\",\"color\":{\"r\":0,\"g\":0,\"b\":9}}",
+                        resp, sizeof(resp), HTTP_OK) && strstr(resp, "\"state\":\"ON\"") != NULL &&
+                strstr(resp, "\"b\":9") != NULL, "POST light: new state");
+    TEST_ASSERT(rq_http("POST /api/v1/light HTTP/1.1\r\n\r\n{\"brightness\":101}", resp, sizeof(resp), HTTP_ERR_MALFORMED) &&
+                strstr(resp, "400 Bad Request") != NULL && strstr(resp, "{\"error\":\"range\"}") != NULL,
+                "POST light out of range: 400 with the reason");
+    TEST_ASSERT(rq_http("POST /api/v1/light HTTP/1.1\r\n\r\n{\"state\":\"TOGGLE\"}", resp, sizeof(resp), HTTP_ERR_MALFORMED) &&
+                strstr(resp, "\"state\"") != NULL, "no toggle over the network");
+    light_state_t ls;
+    light_get(&ls);
+    TEST_ASSERT(ls.on && ls.b == 9U, "rejected commands changed nothing");
+
+    TEST_ASSERT(rq_http("GET /api/v1/device HTTP/1.1\r\n\r\n", resp, sizeof(resp), HTTP_OK) &&
+                strstr(resp, mqtt_device_id()) != NULL && strstr(resp, "\"mqtt\":{\"state\":\"off\"") != NULL,
+                "GET device");
+
+    TEST_ASSERT(rq_http("GET /api/v1/mqtt HTTP/1.1\r\n\r\n", resp, sizeof(resp), HTTP_OK) &&
+                strstr(resp, "{\"enabled\":false,\"host\":\"\",\"port\":1883,\"user\":\"\",\"has_password\":false}") != NULL,
+                "GET mqtt defaults");
+    TEST_ASSERT(rq_http("POST /api/v1/mqtt HTTP/1.1\r\n\r\n{\"enabled\":true}", resp, sizeof(resp), HTTP_ERR_MALFORMED) &&
+                strstr(resp, "host_required") != NULL, "enable without a broker: 400");
+    TEST_ASSERT(rq_http("POST /api/v1/mqtt HTTP/1.1\r\n\r\n{\"host\":\"broker.lan\"}", resp, sizeof(resp), HTTP_ERR_MALFORMED) &&
+                strstr(resp, "\"host\"") != NULL, "host name rejected (no DNS)");
+    TEST_ASSERT(rq_http("POST /api/v1/mqtt HTTP/1.1\r\n\r\n{\"port\":70000}", resp, sizeof(resp), HTTP_ERR_MALFORMED),
+                "bad port: 400");
+    TEST_ASSERT(rq_http("POST /api/v1/mqtt HTTP/1.1\r\n\r\n{\"enabled\":true,\"host\":\"192.168.1.10\",\"user\":\"h\\\"a\",\"password\":\"pw\"}",
+                        resp, sizeof(resp), HTTP_OK) &&
+                strstr(resp, "\"enabled\":true,\"host\":\"192.168.1.10\",\"port\":1883,\"user\":\"h\\\"a\",\"has_password\":true") != NULL &&
+                strstr(resp, "pw") == NULL, "POST mqtt saved; password never echoed, user escaped");
+    mqtt_config_t mc;
+    mqtt_get_config(&mc);
+    TEST_ASSERT(mc.enabled && mc.host == NET_IP4_ADDR(192, 168, 1, 10) && strcmp(mc.pass, "pw") == 0, "settings applied");
+    nvs_mock_reset();
+}
+
 int main(void)
 {
     printf("======================================================================\n");
@@ -6953,6 +7807,14 @@ int main(void)
     test_wpa_ie_parsing();
     test_wpa2_handshake();
     test_wpa2_replay_capture();
+    test_light_model();
+    test_rgb_led_encoding();
+    test_setup_button_short_press();
+    test_mqtt_codec();
+    test_mqtt_rx_reassembly();
+    test_arp_request_and_merge();
+    test_mqtt_session();
+    test_rest_v1();
 
     /* Hardened cross-module integration and edge case tests */
     test_coroutine_systimer_dpc_integration();

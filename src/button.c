@@ -36,6 +36,11 @@ button_event_t button_update(button_t *b, bool pressed, uint64_t now_us)
             b->long_fired = false;
             b->presses++;
         }
+        else if (!b->long_fired && (b->raw_since_us - b->pressed_since_us) < BUTTON_SHORT_PRESS_MAX_US)
+        {
+            b->short_presses++;
+            return BUTTON_EVENT_SHORT_PRESS;
+        }
     }
     if (b->pressed && !b->long_fired && (now_us - b->pressed_since_us) >= BUTTON_LONG_PRESS_US)
     {

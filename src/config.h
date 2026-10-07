@@ -205,6 +205,11 @@
 #define CONFIG_SETUP_BUTTON_GPIO            9U
 #endif
 
+/* Light (REV-23): the DevKitC-1's addressable RGB LED (WS2812-class) on GPIO8, driven by RMT */
+#ifndef CONFIG_LIGHT_LED_GPIO
+#define CONFIG_LIGHT_LED_GPIO               8U
+#endif
+
 #ifndef CONFIG_SETUP_AP_IDLE_TIMEOUT_S
 #define CONFIG_SETUP_AP_IDLE_TIMEOUT_S      600U
 #endif

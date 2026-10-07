@@ -1506,8 +1506,13 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None):
     companion_flash_syms = [
         "http_handler_health",
         "http_handler_speedtest",
-        "http_handler_gpio",
-        "http_register_default_routes"
+        "http_register_default_routes",
+        # REV-23: /api/gpio removed; the REST v1, light and MQTT code runs from flash
+        "api_v1_light_post",
+        "api_v1_mqtt_post",
+        "light_command",
+        "mqtt_tick",
+        "rgb_led_write"
     ]
     found_comp_syms = [s for s in companion_flash_syms if s in symbols]
     all_comp_found = len(found_comp_syms) == len(companion_flash_syms)

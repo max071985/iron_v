@@ -21,7 +21,7 @@
 /* Server Sizing & Protocol Constants (Zero Dynamic Heap Allocation)         */
 /* ========================================================================= */
 #define HTTP_SERVER_DEFAULT_PORT         CONFIG_TCP_DEFAULT_HTTP_PORT
-#define HTTP_MAX_ROUTES                  24U
+#define HTTP_MAX_ROUTES                  28U   /* 25 used after REV-23 (v1 API) */
 #define HTTP_MAX_PATH_LEN                64U
 #define HTTP_MAX_QUERY_LEN               256U
 #define HTTP_REQUEST_BUF_SIZE            1536U   /* one assembled request: phone headers + JSON body */
@@ -39,6 +39,7 @@
 /* Captive portal: OS connectivity probes are redirected to the setup page so phones
  * report "sign in to network" instead of believing the SoftAP has internet access. */
 #define HTTP_STATUS_LINE_302             "HTTP/1.1 302 Found\r\n"
+#define HTTP_STATUS_LINE_400             "HTTP/1.1 400 Bad Request\r\n"
 #define HTTP_STATUS_LINE_404             "HTTP/1.1 404 Not Found\r\n"
 #define HTTP_CAPTIVE_PORTAL_PATH         "/setup"
 #define HTTP_MIME_JSON                   "application/json"
@@ -118,6 +119,8 @@ bool http_server_is_running(void);
 
 /* Static Route Registration & Lookup */
 http_status_t http_route_register(const char *path, http_method_t method, http_route_handler_t handler);
+/* Called by a handler to answer with another status than 200 (REV-23: 400 for rejected input) */
+void http_response_set_status(http_status_code_t code);
 const http_route_t *http_route_find(const char *path, http_method_t method, bool *out_path_matched);
 
 /* Request & Response Processing */

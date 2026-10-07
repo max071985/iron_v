@@ -22,6 +22,7 @@ typedef enum {
     LOOP_CLIENT_BUTTON,
     LOOP_CLIENT_PROV,
     LOOP_CLIENT_MDNS,
+    LOOP_CLIENT_MQTT,                    /* light (LED, NVS settle) and the MQTT client (REV-23) */
     LOOP_CLIENT_NVS,
     LOOP_CLIENT_WIFI_POLL,               /* blob timers, PHY tracking, RX drain */
     LOOP_CLIENT_RX,

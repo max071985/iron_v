@@ -487,8 +487,15 @@ net_status_t arp_process_packet(const uint8_t *in_frame, uint16_t in_len,
     uint32_t sender_ip = NET_NTOHL(frame->arp.sender_ip);
     uint32_t target_ip = NET_NTOHL(frame->arp.target_ip);
 
-    /* Update ARP cache with sender details */
-    arp_insert(sender_ip, frame->arp.sender_mac);
+    /* RFC 826 merge rule: refresh an entry we already have from any ARP frame, but add a new one
+     * only when the frame is aimed at us. Learning every sender on a busy LAN evicted the
+     * entries in use (8 slots, FIFO), e.g. the MQTT broker's (REV-23). */
+    uint8_t known_mac[ETH_ADDR_LEN];
+    if (arp_lookup(sender_ip, known_mac) == NET_OK ||
+        (target_ip == s_net_config.ip && s_net_config.ip != 0U))
+    {
+        arp_insert(sender_ip, frame->arp.sender_mac);
+    }
 
     s_net_telemetry.arp_requests_rx++;
 
@@ -836,6 +843,51 @@ net_status_t net_send_udp(uint32_t dest_ip, uint16_t src_port, uint16_t dest_por
     }
 
     return NET_ERR_QUEUE_FULL;
+}
+
+/* ========================================================================= */
+/* ARP Requests (REV-23: the MQTT client is the first outgoing connection)   */
+/* ========================================================================= */
+
+uint32_t net_next_hop(uint32_t dest_ip)
+{
+    if (s_net_config.netmask != 0U &&
+        (dest_ip & s_net_config.netmask) == (s_net_config.ip & s_net_config.netmask))
+    {
+        return dest_ip;
+    }
+    return s_net_config.gateway;
+}
+
+net_status_t net_arp_request(uint32_t target_ip)
+{
+    if (target_ip == 0U || s_net_config.ip == 0U)
+    {
+        return NET_ERR_INVALID_ARG;
+    }
+
+    arp_frame_t req;
+    memset(&req, 0, sizeof(req));
+    memset(req.eth.dest_mac, ARP_BROADCAST_OCTET, ETH_ADDR_LEN);
+    memcpy(req.eth.src_mac, s_net_config.mac, ETH_ADDR_LEN);
+    req.eth.ethertype = NET_HTONS(ETHERTYPE_ARP);
+    req.arp.hw_type    = NET_HTONS(ARP_HW_TYPE_ETHERNET);
+    req.arp.proto_type = NET_HTONS(ARP_PROTO_IPV4);
+    req.arp.hw_size    = ETH_ADDR_LEN;
+    req.arp.proto_size = IPV4_ADDR_LEN;
+    req.arp.opcode     = NET_HTONS(ARP_OPCODE_REQUEST);
+    memcpy(req.arp.sender_mac, s_net_config.mac, ETH_ADDR_LEN);
+    req.arp.sender_ip  = NET_HTONL(s_net_config.ip);
+    req.arp.target_ip  = NET_HTONL(target_ip);   /* target MAC stays zero */
+
+    if (wifi_tx_packet(wifi_get_ip_tx_if(), (const uint8_t *)&req, (uint16_t)sizeof(req)) != WIFI_OK)
+    {
+        return NET_ERR_QUEUE_FULL;
+    }
+    s_net_telemetry.tx_packets++;
+    s_net_telemetry.tx_bytes += (uint32_t)sizeof(req);
+    s_net_telemetry.arp_requests_tx++;
+    return NET_OK;
 }
 
 /* ========================================================================= */

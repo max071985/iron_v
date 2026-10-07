@@ -92,6 +92,11 @@ SECTIONS
         _flash_rodata_start = .;
         *(.flash.rodata .flash.rodata.*)
         *shell.o*(.rodata .rodata.* .srodata .srodata.*)
+        /* REV-23 light/MQTT/REST v1: main-loop code only, never runs with the flash cache off */
+        *light.o(.rodata .rodata.* .srodata .srodata.*)
+        *mqtt.o(.rodata .rodata.* .srodata .srodata.*)
+        *api_v1.o(.rodata .rodata.* .srodata .srodata.*)
+        *json_lite.o(.rodata .rodata.* .srodata .srodata.*)
         *test.o(.rodata.str* .srodata.str*)
         . = ALIGN(16);
         _eflash_xip = .;

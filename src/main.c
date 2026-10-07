@@ -43,6 +43,8 @@
 #include "mdns.h"
 #include "button.h"
 #include "looptime.h"
+#include "light.h"
+#include "mqtt.h"
 
 void main(void)
 {
@@ -151,6 +153,10 @@ void main(void)
     /* Setup button (BOOT, GPIO9): long press opens the setup SoftAP (REV-15) */
     button_setup_init();
 
+    /* Light (onboard RGB LED, last state from NVS) and the MQTT client to the bridge's broker (REV-23) */
+    light_init(systimer_get_us());
+    mqtt_init();
+
     /* NVS sector rewrites wait while a Wi-Fi join is in flight (REV-16) */
     nvs_set_commit_gate(provisioning_join_busy);
 
@@ -175,15 +181,23 @@ void main(void)
         looptime_mark(LOOP_CLIENT_TCP, systimer_get_us());
         dhcp_client_tick();
         looptime_mark(LOOP_CLIENT_DHCP, systimer_get_us());
-        if (button_setup_poll(now_us) == BUTTON_EVENT_LONG_PRESS)
+        button_event_t button_ev = button_setup_poll(now_us);
+        if (button_ev == BUTTON_EVENT_LONG_PRESS)
         {
             provisioning_on_setup_button(now_us);
+        }
+        else if (button_ev == BUTTON_EVENT_SHORT_PRESS)
+        {
+            light_toggle_local(now_us);   /* the device-side change for REV-26 */
         }
         looptime_mark(LOOP_CLIENT_BUTTON, systimer_get_us());
         provisioning_tick(now_us);
         looptime_mark(LOOP_CLIENT_PROV, systimer_get_us());
         mdns_tick(now_us);
         looptime_mark(LOOP_CLIENT_MDNS, systimer_get_us());
+        light_tick(now_us);
+        mqtt_tick(now_us, mqtt_link_usable());
+        looptime_mark(LOOP_CLIENT_MQTT, systimer_get_us());
         nvs_tick(now_us);
         looptime_mark(LOOP_CLIENT_NVS, systimer_get_us());
         wifi_os_adapter_poll();

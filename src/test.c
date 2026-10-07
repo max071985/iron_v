@@ -2500,16 +2500,19 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     int method_err_ok = (st_method_err == HTTP_ERR_METHOD_NOT_ALLOWED) &&
                         (strstr(resp_method_err, "405 Method Not Allowed") != NULL);
 
-    /* 6. Watchdog Supervisor Feed via POST /api/wdt/feed */
+    /* 6. REV-23: raw GPIO / remote watchdog feed removed (404); REST v1 light state readable */
     const char req_wdt[] = "POST /api/wdt/feed HTTP/1.1\r\nHost: iron-v\r\n\r\n";
     char resp_wdt[512];
     size_t resp_wdt_len = 0U;
     http_status_t st_wdt = http_process_request(req_wdt, strlen(req_wdt),
                                                 resp_wdt, sizeof(resp_wdt),
                                                 &resp_wdt_len);
-    int wdt_feed_ok = (st_wdt == HTTP_OK) &&
-                      (strstr(resp_wdt, "200 OK") != NULL) &&
-                      (strstr(resp_wdt, "\"fed\":true") != NULL);
+    const char req_v1[] = "GET /api/v1/light HTTP/1.1\r\nHost: iron-v\r\n\r\n";
+    char resp_v1[512];
+    size_t resp_v1_len = 0U;
+    http_status_t st_v1 = http_process_request(req_v1, strlen(req_v1), resp_v1, sizeof(resp_v1), &resp_v1_len);
+    int wdt_feed_ok = (st_wdt == HTTP_ERR_NOT_FOUND) && (strstr(resp_wdt, "404 Not Found") != NULL) &&
+                      (st_v1 == HTTP_OK) && (strstr(resp_v1, "\"color_mode\":\"rgb\"") != NULL);
 
     /* 7. Start HTTP Server & Query Telemetry */
     int srv_start_ok = (http_server_start(HTTP_SERVER_DEFAULT_PORT) == HTTP_OK) &&
@@ -2527,7 +2530,7 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
                    post_unknown_ok && get_root_ok && method_err_ok &&
                    wdt_feed_ok && srv_start_ok && http_telem_ok;
 
-    uart_puts("  Expected:    Init=1, Routes=1, Status200=1, Unk404=1, RootHTML=1, Method405=1, WdtFeed=1, SrvStart=1, Telem=1\r\n");
+    uart_puts("  Expected:    Init=1, Routes=1, Status200=1, Unk404=1, RootHTML=1, Method405=1, Removed404+V1=1, SrvStart=1, Telem=1\r\n");
     uart_puts("  Actual:      Init=");
     put_dec(http_init_ok);
     uart_puts(", Routes=");
@@ -2540,7 +2543,7 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     put_dec(get_root_ok);
     uart_puts(", Method405=");
     put_dec(method_err_ok);
-    uart_puts(", WdtFeed=");
+    uart_puts(", Removed404+V1=");
     put_dec(wdt_feed_ok);
     uart_puts(", SrvStart=");
     put_dec(srv_start_ok);

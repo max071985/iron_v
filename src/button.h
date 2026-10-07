@@ -2,7 +2,8 @@
  * Iron V - Setup Button (REV-15)
  *
  * The BOOT button (GPIO9 on the ESP32-C6 DevKit, active low) held for BUTTON_LONG_PRESS_US
- * asks for the setup SoftAP (review 7.2: SoftAP only by a physical button). Polled from the
+ * asks for the setup SoftAP (review 7.2: SoftAP only by a physical button). Released before
+ * BUTTON_SHORT_PRESS_MAX_US it toggles the light (REV-23); a press in between does nothing. Polled from the
  * main loop; the debounce/long-press state machine takes the pin level as an argument so it
  * can be host-tested.
  */
@@ -17,10 +18,12 @@
 #define BUTTON_ACTIVE_LEVEL              0         /* pressed pulls the pin low */
 #define BUTTON_DEBOUNCE_US               50000ULL  /* level must hold this long to count */
 #define BUTTON_LONG_PRESS_US             3000000ULL
+#define BUTTON_SHORT_PRESS_MAX_US        1000000ULL  /* released before this: short press (REV-23) */
 
 typedef enum {
     BUTTON_EVENT_NONE = 0,
-    BUTTON_EVENT_LONG_PRESS              /* once per press, when the hold time is reached */
+    BUTTON_EVENT_LONG_PRESS,             /* once per press, when the hold time is reached */
+    BUTTON_EVENT_SHORT_PRESS             /* on release, if held less than BUTTON_SHORT_PRESS_MAX_US */
 } button_event_t;
 
 typedef struct {
@@ -31,6 +34,7 @@ typedef struct {
     uint64_t pressed_since_us;           /* start of the current debounced press */
     uint32_t presses;                    /* debounced presses since boot */
     uint32_t long_presses;
+    uint32_t short_presses;
 } button_t;
 
 void           button_reset(button_t *b);

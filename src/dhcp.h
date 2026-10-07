@@ -38,7 +38,6 @@
 #define DHCP_LEASE_INFINITE             0xFFFFFFFFU  /* RFC 2132 9.2 */
 #define DHCP_US_PER_SEC                 1000000ULL
 #define DHCP_CLIENT_TIME_NEVER          UINT64_MAX   /* T1/T2/expiry of an infinite lease */
-#define DHCP_CLIENT_XID_SEED            0x5A4F0001U  /* fixed until REV-20 (HW RNG) */
 #define DNS_SERVER_PORT                 53U
 
 /* ========================================================================= */

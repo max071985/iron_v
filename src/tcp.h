@@ -24,12 +24,11 @@
 
 #define TCP_DEFAULT_WINDOW_BYTES         CONFIG_TCP_DEFAULT_WINDOW
 #define TCP_DEFAULT_SEGMENT_MSS          CONFIG_TCP_DEFAULT_MSS
-#define TCP_INITIAL_SEQ_NUM              0x10000000U   /* deterministic ISN until REV-20 */
-#define TCP_ISN_SLOT_STRIDE              0x01000000U   /* ISN distance between PCB slots */
 #define TCP_HDR_WORD_BYTES               4U            /* data offset / IHL unit */
 #define TCP_HDR_NIBBLE_MASK              0x0FU
 #define TCP_EPHEMERAL_PORT_MIN           49152U        /* RFC 6335 dynamic range */
 #define TCP_EPHEMERAL_PORT_MAX           65535U
+#define TCP_EPHEMERAL_PORT_COUNT         (TCP_EPHEMERAL_PORT_MAX - TCP_EPHEMERAL_PORT_MIN + 1U)
 #define TCP_ETH_BROADCAST_OCTET          0xFFU         /* no ARP entry for peer or gateway */
 #define TCP_DEBUG_NO_PCB_STATE           99U           /* debug log: segment matched no PCB */
 
@@ -184,6 +183,7 @@ typedef struct {
     uint32_t rtt_samples;
     uint32_t tx_blocked;           /* segments the driver refused (no TX buffer), resent shortly */
     uint32_t rx_deferred;          /* segments the application refused (NET_ERR_BUSY), left unacknowledged */
+    uint32_t last_isn;             /* ISN of the newest connection (HW RNG, REV-20) */
 } tcp_telemetry_t;
 
 /* ========================================================================= */

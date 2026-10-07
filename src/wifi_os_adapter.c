@@ -23,11 +23,11 @@
 #include "utils.h"
 #include "io_constants.h"
 #include "regs/efuse.h"
-#include "regs/lp_peri.h"
 #include "regs/modem_rf.h"
 #include "wifi_phy_data.h"
 #include "wifi_vendor_types.h"
 #include "wdt.h"
+#include "hw_rng.h"
 #include "wpa2_client.h"
 #include "wpa_ie.h"
 #include "wpa_driver.h"
@@ -1371,30 +1371,21 @@ static int64_t esp_timer_get_time_wrapper(void) { return (int64_t)systimer_get_u
 static uint32_t log_timestamp_wrapper(void) { return (uint32_t)systimer_get_ms(); }
 static uint32_t slowclk_cal_get_wrapper(void) { return 0U; }
 
+/* IDF maps these to esp_random()/esp_fill_random(); hw_rng.c is the port of those */
 static uint32_t rand_wrapper(void)
 {
-    /* Enable LP_PERI RNG clock and read true physical random number */
-    *LP_PERI_CLK_EN_REG |= LP_PERI_CLK_EN_RNG_CK_EN_M;
-    return *LP_PERI_RNG_DATA_REG;
+    return hw_rng_u32();
 }
 
 static unsigned long random_wrapper(void)
 {
-    return (unsigned long)rand_wrapper();
+    return (unsigned long)hw_rng_u32();
 }
 
 static int get_random_wrapper(uint8_t *buf, size_t len)
 {
     if (buf == NULL) return -1;
-    *LP_PERI_CLK_EN_REG |= LP_PERI_CLK_EN_RNG_CK_EN_M;
-    for (size_t i = 0U; i < len; i += 4U)
-    {
-        uint32_t r = *LP_PERI_RNG_DATA_REG;
-        for (size_t j = 0U; j < 4U && (i + j) < len; j++)
-        {
-            buf[i + j] = (uint8_t)(r >> (j * 8U));
-        }
-    }
+    hw_rng_fill(buf, len);
     return 0;
 }
 
@@ -1912,7 +1903,7 @@ int wpa_drv_tx_eapol(const uint8_t *eth_frame, uint16_t len)
 
 void wpa_drv_random(uint8_t *buf, size_t len)
 {
-    (void)get_random_wrapper(buf, len);
+    hw_rng_fill(buf, len);
 }
 
 void wpa_drv_get_sta_mac(uint8_t mac[6])

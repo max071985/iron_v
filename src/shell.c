@@ -41,6 +41,7 @@
 #include "provisioning.h"
 #include "wpa2_client.h"
 #include "mdns.h"
+#include "hw_rng.h"
 
 
 /* ========================================================================= */
@@ -248,6 +249,7 @@ void shell_print_help(void)
     console_puts("  net [status|ip|mask|gw|arp|tcp|reset] - Show or control IPv4 network interface & TCP state machine\r\n");
     console_puts("  net trace [on|off]  - Per-segment TCP/HTTP console log (off by default)\r\n");
     console_puts("  dhcp [status]       - Show the DHCP client (STA lease) and SoftAP DHCP server\r\n");
+    console_puts("  rng [n]             - Draw n hardware random words: bit balance, repeats, time per word\r\n");
     console_puts("  http [status|routes|start|stop] - Show or control zero-allocation local REST/HTTP server\r\n");
     console_puts("  speedtest [run|burst|udp|status|reset] - Run or inspect LAN network & Wi-Fi throughput benchmark\r\n");
     console_puts("  efuse [status|summary|security|mac] - Silicon eFuse controller & security seal state\r\n");
@@ -295,6 +297,8 @@ static void shell_print_dhcp_client(void)
     char s[NET_IP_STR_BUF_LEN];
     console_puts("  State:               ");
     console_puts(dhcp_client_state_name(dcli.state));
+    console_puts("\r\n  Transaction ID:      ");
+    put_hex(dcli.xid);
     net_ip_to_str(dcli.assigned_ip, s, sizeof(s));
     console_puts("\r\n  Assigned IP:         ");
     console_puts(s);
@@ -1283,6 +1287,48 @@ void shell_execute(char *input_buffer)
     else if (strcmp(input_buffer, "loop") == 0)
     {
         looptime_print();
+    }
+    else if (strncmp(input_buffer, "rng", 3) == 0 && (input_buffer[3] == ' ' || input_buffer[3] == '\0'))
+    {
+        char *arg = input_buffer + 3;
+        uint32_t n = HW_RNG_SHELL_DEFAULT_WORDS;
+        if (!parse_uint(&arg, &n) || n == 0U || n > HW_RNG_SHELL_MAX_WORDS)
+        {
+            n = HW_RNG_SHELL_DEFAULT_WORDS;
+        }
+        uint32_t ones = 0U;
+        uint32_t repeats = 0U;
+        uint32_t prev = 0U;
+        uint64_t t0 = systimer_get_us();
+        for (uint32_t i = 0U; i < n; i++)
+        {
+            uint32_t w = hw_rng_u32();
+            if (i < HW_RNG_SHELL_PRINT_WORDS)
+            {
+                console_puts("  ");
+                put_hex(w);
+                console_puts("\r\n");
+            }
+            if (i > 0U && w == prev)
+            {
+                repeats++;
+            }
+            prev = w;
+            for (uint32_t v = w; v != 0U; v &= v - 1U)
+            {
+                ones++;
+            }
+        }
+        uint64_t dt = systimer_get_us() - t0;
+        console_puts("Words: ");
+        put_dec(n);
+        console_puts(" | ones: ");
+        put_dec((uint32_t)(((uint64_t)ones * HW_RNG_PERMILLE) / ((uint64_t)n * HW_RNG_BITS_PER_WORD)));
+        console_puts(" permille (expect ~500) | repeats: ");
+        put_dec(repeats);
+        console_puts(" | ");
+        put_dec((uint32_t)(dt / n));
+        console_puts(" us/word\r\n");
     }
     else if (strcmp(input_buffer, "loop pbkdf2") == 0)
     {
@@ -2691,6 +2737,9 @@ void shell_execute(char *input_buffer)
             console_puts(" B free, full ");
             put_dec(tt.sndbuf_full);
             console_puts("x\r\n");
+            console_puts("  Last ISN:          ");
+            put_hex(tt.last_isn);
+            console_puts("\r\n");
             for (uint32_t i = 0; i < TCP_MAX_PCBS; i++)
             {
                 const tcp_pcb_t *p = tcp_get_pcb(i);

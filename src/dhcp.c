@@ -15,7 +15,7 @@
 #include "config.h"
 #include "mdns.h"
 #include "systimer.h"
-#include "wpa_driver.h"
+#include "hw_rng.h"
 
 #if defined(__riscv)
 #include "console.h"
@@ -77,7 +77,7 @@ static dhcp_status_t dhcp_send_udp_frame_from(wifi_tx_if_t ifx, const uint8_t *d
     ip->ver_ihl           = IPV4_VER_IHL_DEFAULT;
     ip->tos               = IPV4_TOS_DEFAULT;
     ip->total_len         = NET_HTONS(IPV4_MIN_HDR_LEN + UDP_HDR_LEN + payload_len);
-    ip->identification    = 0x4321U;
+    ip->identification    = net_ip_next_id();
     ip->flags_frag_offset = NET_HTONS(IPV4_FLAGS_DF);
     ip->ttl               = IPV4_TTL_DEFAULT;
     ip->protocol          = IPV4_PROTO_UDP;
@@ -753,11 +753,21 @@ static void dhcp_client_log_ip(const char *label, uint32_t ip)
 }
 #endif
 
+/* A fresh random transaction ID for each exchange (RFC 2131 4.1), never the previous one */
+static void dhcp_client_new_xid(void)
+{
+    uint32_t xid = hw_rng_u32();
+    if (xid == s_dhcp_client_telem.xid)
+    {
+        xid++;
+    }
+    s_dhcp_client_telem.xid = xid;
+}
+
 /* The wait before a retransmission: delay +/- DHCP_CLIENT_BACKOFF_JITTER_US, uniform (RFC 2131 4.1) */
 static uint64_t dhcp_client_jittered(uint64_t delay_us)
 {
-    uint32_t rand32 = 0U;
-    wpa_drv_random((uint8_t *)&rand32, sizeof(rand32));
+    uint32_t rand32 = hw_rng_u32();
     uint64_t span = (2ULL * DHCP_CLIENT_BACKOFF_JITTER_US) + 1ULL;
     return delay_us - DHCP_CLIENT_BACKOFF_JITTER_US + ((uint64_t)rand32 % span);
 }
@@ -906,7 +916,7 @@ static dhcp_status_t dhcp_client_transmit(uint64_t now)
 static void dhcp_client_enter_init(uint64_t now, uint64_t delay_us)
 {
     s_dhcp_client_telem.state = DHCP_CLIENT_STATE_DISCOVERING;
-    s_dhcp_client_telem.xid++;
+    dhcp_client_new_xid();
     s_tries = 0U;
     s_next_tx_us = now + delay_us;
 }
@@ -940,7 +950,6 @@ dhcp_status_t dhcp_client_init(void)
 {
     memset(&s_dhcp_client_telem, 0, sizeof(s_dhcp_client_telem));
     s_dhcp_client_telem.state = DHCP_CLIENT_STATE_IDLE;
-    s_dhcp_client_telem.xid = DHCP_CLIENT_XID_SEED;
     s_lease_valid = false;
     s_lease_t1_us = 0ULL;
     s_lease_t2_us = 0ULL;
@@ -965,7 +974,7 @@ dhcp_status_t dhcp_client_start(void)
 
     uint64_t now = systimer_get_us();
     s_discover_backoff_us = DHCP_CLIENT_BACKOFF_INITIAL_US;
-    s_dhcp_client_telem.xid++;
+    dhcp_client_new_xid();
 
     if (s_lease_valid && now < s_lease_end_us)
     {
@@ -1043,7 +1052,7 @@ void dhcp_client_tick(void)
             if (now >= s_lease_t1_us)
             {
                 /* T1: one unicast REQUEST to the server that leased the address */
-                s_dhcp_client_telem.xid++;
+                dhcp_client_new_xid();
                 (void)dhcp_client_start_request(now, DHCP_CLIENT_STATE_RENEWING);
             }
             break;

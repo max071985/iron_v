@@ -16,8 +16,8 @@
 #include "wifi.h"
 #include "wifi_vendor_types.h"
 #include "wpa2_client.h"
-#include "wpa_driver.h"
 #include "wifi_link.h"
+#include "hw_rng.h"
 #include "dhcp.h"
 #include "net.h"
 #include "config.h"
@@ -663,8 +663,7 @@ void provisioning_boot(void)
 /* Waits the current backoff (with jitter, HW RNG) before the next STA-only attempt */
 static void prov_join_schedule_retry(uint64_t now_us)
 {
-    uint32_t rand32 = 0U;
-    wpa_drv_random((uint8_t *)&rand32, sizeof(rand32));
+    uint32_t rand32 = hw_rng_u32();
     s_prov_join.state = PROV_JOIN_RETRY_WAIT;
     s_prov_join.next_event_us = now_us + wifi_link_jitter_us(s_prov_join.retry_delay_us, rand32);
 }

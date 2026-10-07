@@ -18,6 +18,7 @@
 #include "net.h"
 #include "wifi.h"
 #include "string.h"
+#include "hw_rng.h"
 
 _Static_assert(ETH_HDR_LEN + IPV4_MIN_HDR_LEN + TCP_MIN_HDR_LEN + TCP_DEFAULT_SEGMENT_MSS <= NET_MAX_FRAME_SIZE,
                "one MSS segment must fit a frame");
@@ -59,7 +60,6 @@ void tcp_host_set_time_ms(uint32_t now_ms)
 static tcp_pcb_t s_tcp_pcbs[TCP_MAX_PCBS];
 static tcp_telemetry_t s_tcp_telemetry;
 static bool s_tcp_initialized = false;
-static uint16_t s_tcp_next_port = TCP_EPHEMERAL_PORT_MIN;
 /* Inside tcp_input's callbacks: writes/closes are flushed once the callback returns, so a response, its FIN
  * and the ACK of the request leave in one frame (HTTP: write + close inside recv_cb) */
 static bool s_tcp_in_callback = false;
@@ -228,7 +228,7 @@ static tcp_status_t tcp_send_segment(tcp_pcb_t *pcb, uint8_t flags, uint32_t seq
     ip->ver_ihl           = IPV4_VER_IHL_DEFAULT;
     ip->tos               = IPV4_TOS_DEFAULT;
     ip->total_len         = NET_HTONS(IPV4_MIN_HDR_LEN + tcp_len);
-    ip->identification    = (uint16_t)seq;
+    ip->identification    = net_ip_next_id();
     ip->flags_frag_offset = NET_HTONS(IPV4_FLAGS_DF);
     ip->ttl               = IPV4_TTL_DEFAULT;
     ip->protocol          = IPV4_PROTO_TCP;
@@ -469,7 +469,8 @@ static tcp_pcb_t *tcp_pcb_claim(uint32_t i, uint32_t now)
     pcb->state            = TCP_STATE_CLOSED;
     pcb->rcv_wnd          = TCP_DEFAULT_WINDOW_BYTES;
     pcb->snd_wnd          = TCP_DEFAULT_WINDOW_BYTES;
-    pcb->snd_nxt          = TCP_INITIAL_SEQ_NUM + (i * TCP_ISN_SLOT_STRIDE);
+    pcb->snd_nxt          = hw_rng_u32();          /* random ISN per connection (RFC 6528) */
+    s_tcp_telemetry.last_isn = pcb->snd_nxt;
     pcb->snd_una          = pcb->snd_nxt;
     pcb->snd_max          = pcb->snd_nxt;
     pcb->cwnd             = TCP_INITIAL_CWND_BYTES;
@@ -515,13 +516,16 @@ static void tcp_set_established(tcp_pcb_t *pcb)
     s_tcp_telemetry.active_connections++;
 }
 
+/* RFC 6056 algorithm 1: random port in the dynamic range, probing upward past ports in use */
 static uint16_t tcp_next_ephemeral_port(void)
 {
-    for (uint32_t tries = 0U; tries <= (TCP_EPHEMERAL_PORT_MAX - TCP_EPHEMERAL_PORT_MIN); tries++)
+    uint16_t port = (uint16_t)(TCP_EPHEMERAL_PORT_MIN + (hw_rng_u32() % TCP_EPHEMERAL_PORT_COUNT));
+    for (uint32_t tries = 0U; tries < TCP_EPHEMERAL_PORT_COUNT; tries++)
     {
-        uint16_t port = s_tcp_next_port;
-        s_tcp_next_port = (port >= TCP_EPHEMERAL_PORT_MAX) ? (uint16_t)TCP_EPHEMERAL_PORT_MIN
-                                                           : (uint16_t)(port + 1U);
+        if (tries > 0U)
+        {
+            port = (port >= TCP_EPHEMERAL_PORT_MAX) ? (uint16_t)TCP_EPHEMERAL_PORT_MIN : (uint16_t)(port + 1U);
+        }
         bool busy = false;
         for (uint32_t i = 0U; i < TCP_MAX_PCBS; i++)
         {
@@ -554,7 +558,6 @@ tcp_status_t tcp_init(void)
         s_tcp_pcbs[i].snd_wnd = TCP_DEFAULT_WINDOW_BYTES;
     }
     memset(s_sndbuf_used, 0, sizeof(s_sndbuf_used));
-    s_tcp_next_port = TCP_EPHEMERAL_PORT_MIN;
 
     memset(&s_tcp_telemetry, 0, sizeof(s_tcp_telemetry));
     s_tcp_initialized = true;

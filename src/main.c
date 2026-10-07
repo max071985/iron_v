@@ -24,6 +24,7 @@
 #include "gdma.h"
 #include "modem.h"
 #include "wifi.h"
+#include "hw_rng.h"
 #include "wifi_os_adapter.h"
 #include "ieee802154.h"
 #include "net.h"
@@ -111,6 +112,9 @@ void main(void)
 
     /* Initialize Modem Clock & Power Control (MODEM_SYSCON / MODEM_LPCON) */
     modem_init();
+
+    /* Hardware RNG clock (REV-20): the Wi-Fi blob draws random numbers from wifi_init on */
+    hw_rng_init();
 
     /* Initialize 802.11ax Wi-Fi 6 MAC Driver & Zero-Copy Packet Ring */
     wifi_init();

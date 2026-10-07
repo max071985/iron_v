@@ -54,6 +54,7 @@
 #include "mdns.h"
 #include "button.h"
 #include "looptime.h"
+#include "hw_rng.h"
 
 /* Host test stubs for hardware-specific functions */
 void wdt_feed(void)
@@ -103,6 +104,58 @@ uint64_t systimer_get_ticks(void)
 }
 
 static uint64_t s_host_now_us = 10000000ULL;   /* host clock; tests advance it */
+
+/* Host RNG (REV-20; the target reads the hardware in hw_rng.c). Default: xorshift32, values vary
+ * like the hardware's but every run is the same. Tests that need an exact value pin one. */
+#define HOST_RNG_XORSHIFT_SEED   0x2545F491U
+#define HOST_RNG_XORSHIFT_A      13U
+#define HOST_RNG_XORSHIFT_B      17U
+#define HOST_RNG_XORSHIFT_C      5U
+static uint32_t s_host_rng_state = HOST_RNG_XORSHIFT_SEED;
+static bool     s_host_rng_pinned = false;
+static uint32_t s_host_rng_value = 0U;      /* returned while pinned */
+static uint32_t s_host_rng_calls = 0U;
+
+static void host_rng_pin(uint32_t value)
+{
+    s_host_rng_pinned = true;
+    s_host_rng_value = value;
+}
+
+static void host_rng_unpin(void)
+{
+    s_host_rng_pinned = false;
+}
+
+void hw_rng_init(void) { }
+
+uint32_t hw_rng_u32(void)
+{
+    s_host_rng_calls++;
+    if (s_host_rng_pinned)
+    {
+        return s_host_rng_value;
+    }
+    uint32_t x = s_host_rng_state;
+    x ^= x << HOST_RNG_XORSHIFT_A;
+    x ^= x >> HOST_RNG_XORSHIFT_B;
+    x ^= x << HOST_RNG_XORSHIFT_C;
+    s_host_rng_state = x;
+    return x;
+}
+
+void hw_rng_fill(void *buf, size_t len)
+{
+    uint8_t *out = (uint8_t *)buf;
+    while (len > 0U)
+    {
+        uint32_t w = hw_rng_u32();
+        size_t n = (len < sizeof(w)) ? len : sizeof(w);
+        memcpy(out, &w, n);
+        out += n;
+        len -= n;
+    }
+}
 
 uint64_t systimer_get_us(void)
 {
@@ -3530,8 +3583,9 @@ static void test_tcp_reliability(void)
     tt_reset_capture();
     TEST_ASSERT(tcp_connect(cl, NET_IP4_ADDR(192, 168, 1, 50), 1883U) == TCP_OK && cl->state == TCP_STATE_SYN_SENT,
                 "connect sends SYN");
-    TEST_ASSERT(s_tt_frame_count == 1U && s_tt_frames[0].flags == TCP_FLAG_SYN && s_tt_frames[0].sport == TCP_EPHEMERAL_PORT_MIN,
-                "SYN from the first ephemeral port");
+    uint16_t first_port = s_tt_frames[0].sport;
+    TEST_ASSERT(s_tt_frame_count == 1U && s_tt_frames[0].flags == TCP_FLAG_SYN && first_port >= TCP_EPHEMERAL_PORT_MIN,
+                "SYN from an ephemeral port");
     rto = TCP_RTO_INITIAL_MS;
     for (uint32_t r = 0U; r < TCP_SYN_MAX_RETRIES; r++)
     {
@@ -3545,9 +3599,10 @@ static void test_tcp_reliability(void)
     cl = tcp_new();
     tt_reset_capture();
     (void)tcp_connect(cl, NET_IP4_ADDR(192, 168, 1, 50), 1883U);
-    TEST_ASSERT(s_tt_frames[0].sport == TCP_EPHEMERAL_PORT_MIN + 1U, "next connect uses the next ephemeral port");
+    uint16_t c_port = s_tt_frames[0].sport;
+    TEST_ASSERT(c_port >= TCP_EPHEMERAL_PORT_MIN && c_port != first_port, "next connect uses another ephemeral port");
     uint32_t c_isn = s_tt_frames[0].seq;
-    tt_peer_send(1883U, TCP_EPHEMERAL_PORT_MIN + 1U, 5000U, c_isn + 1U, TCP_FLAG_SYN | TCP_FLAG_ACK, TT_PEER_WINDOW, NULL, 0U);
+    tt_peer_send(1883U, c_port, 5000U, c_isn + 1U, TCP_FLAG_SYN | TCP_FLAG_ACK, TT_PEER_WINDOW, NULL, 0U);
     TEST_ASSERT(cl->state == TCP_STATE_ESTABLISHED && !cl->rtx_armed && cl->rcv_nxt == 5001U, "client handshake completes");
     tcp_abort(cl);
 
@@ -5154,10 +5209,7 @@ static void test_dhcp_client_rfc2131(void)
 
     net_config_t saved_net;
     net_get_config(&saved_net);
-    uint8_t saved_fill = g_wpa_drv_host.random_fill;
-    const uint8_t *saved_bytes = g_wpa_drv_host.random_bytes;
-    g_wpa_drv_host.random_bytes = NULL;
-    g_wpa_drv_host.random_fill = 0U;     /* rand 0: every wait is backoff - 1 s */
+    host_rng_pin(0U);                    /* rand 0: every wait is backoff - 1 s */
     wifi_host_set_tx_hook(dc_tx_hook);
     dhcp_client_telemetry_t t;
 
@@ -5187,7 +5239,7 @@ static void test_dhcp_client_rfc2131(void)
     TEST_ASSERT(t.retransmits == 6U && t.discovers_sent == 7U, "Retransmits counted");
 
     /* 1b. Jitter upper end: rand 0xFFFFFFFF gives backoff - 1 s + (0xFFFFFFFF mod 2000001) us */
-    g_wpa_drv_host.random_fill = 0xFFU;
+    host_rng_pin(0xFFFFFFFFU);
     dhcp_client_init();
     s_dc_count = 0U;
     dhcp_client_start();
@@ -5196,7 +5248,7 @@ static void test_dhcp_client_rfc2131(void)
     uint64_t want = DHCP_CLIENT_BACKOFF_INITIAL_US - DHCP_CLIENT_BACKOFF_JITTER_US + (0xFFFFFFFFULL % span);
     TEST_ASSERT(s_dc_count >= 2U && dc_near(s_dc_frames[1].at_us - s_dc_frames[0].at_us, want),
                 "Jitter stays within +/- 1 s of the backoff");
-    g_wpa_drv_host.random_fill = 0U;
+    host_rng_pin(0U);
 
     /* 2. OFFER -> REQUEST with requested IP + server id; unanswered: 3 sends, then DISCOVER with a new xid */
     dhcp_client_init();
@@ -5362,10 +5414,125 @@ static void test_dhcp_client_rfc2131(void)
                 "State names");
 
     wifi_host_set_tx_hook(NULL);
-    g_wpa_drv_host.random_fill = saved_fill;
-    g_wpa_drv_host.random_bytes = saved_bytes;
+    host_rng_unpin();
     dhcp_client_init();
     net_set_ip(saved_net.ip, saved_net.netmask, saved_net.gateway);
+}
+
+/* REV-20: every value that must not be predictable comes from hw_rng */
+#define RNG_TEST_CONNS          4U
+#define RNG_TEST_WRAP_ISN       0xFFFFFFF0U   /* first data byte 15 below the 2^32 wrap */
+#define RNG_TEST_WRAP_BYTES     100U
+#define RNG_TEST_PORT_OFFSET    1000U
+#define RNG_TEST_XID            0x6C8E9A21U
+
+static void test_hw_rng_consumers(void)
+{
+    printf("  [TEST] HW RNG: TCP ISN and ports, DHCP xid, IPv4 ID (REV-20)...\n");
+    host_rng_unpin();
+
+    /* 1. TCP: every connection draws its own ISN */
+    TEST_ASSERT(tcp_init() == TCP_OK, "tcp_init");
+    s_tt_now = 100000U;
+    tcp_host_set_time_ms(s_tt_now);
+    wifi_host_set_tx_hook(tt_tx_hook);
+    s_tt_reply = false;
+    s_tt_busy = false;
+    tcp_pcb_t *lst = tcp_new();
+    (void)tcp_bind(lst, TT_LISTEN_PORT);
+    (void)tcp_listen(lst, NULL);
+    tcp_set_recv_cb(lst, tt_recv_cb);
+    uint32_t isn[RNG_TEST_CONNS];
+    for (uint32_t i = 0U; i < RNG_TEST_CONNS; i++)
+    {
+        uint32_t calls0 = s_host_rng_calls;
+        isn[i] = tt_open((uint16_t)(TT_PEER_PORT + i)) - 1U;
+        TEST_ASSERT(s_host_rng_calls > calls0, "ISN drawn from the RNG");
+    }
+    bool distinct = true;
+    for (uint32_t i = 0U; i < RNG_TEST_CONNS; i++)
+    {
+        for (uint32_t j = i + 1U; j < RNG_TEST_CONNS; j++)
+        {
+            distinct = distinct && (isn[i] != isn[j]);
+        }
+    }
+    TEST_ASSERT(distinct, "connections get different ISNs");
+
+    /* 2. An ISN just below the 2^32 wrap: data and ACK across the wrap */
+    TEST_ASSERT(tcp_init() == TCP_OK, "fresh stack");
+    lst = tcp_new();
+    (void)tcp_bind(lst, TT_LISTEN_PORT);
+    (void)tcp_listen(lst, NULL);
+    host_rng_pin(RNG_TEST_WRAP_ISN);
+    uint32_t s1 = tt_open(TT_PEER_PORT);
+    host_rng_unpin();
+    TEST_ASSERT(s1 == RNG_TEST_WRAP_ISN + 1U, "pinned ISN used");
+    tcp_pcb_t *c = tt_find_conn(TT_PEER_PORT);
+    static uint8_t data[RNG_TEST_WRAP_BYTES];
+    memset(data, 'w', sizeof(data));
+    tt_reset_capture();
+    TEST_ASSERT(c != NULL && tcp_write(c, data, sizeof(data)) == TCP_OK && s_tt_frame_count == 1U &&
+                s_tt_frames[0].seq == s1 && s_tt_frames[0].len == RNG_TEST_WRAP_BYTES, "data sent from below the wrap");
+    uint32_t end = s1 + RNG_TEST_WRAP_BYTES;    /* wraps to a small number */
+    tt_peer_send(TT_PEER_PORT, TT_LISTEN_PORT, TT_PEER_ISN + 1U, end, TCP_FLAG_ACK, TT_PEER_WINDOW, NULL, 0U);
+    TEST_ASSERT(end < s1 && c->snd_una == end && !c->rtx_armed, "ACK past the wrap accepted, nothing in flight");
+    tt_reset_capture();
+    tt_advance(TCP_RTO_INITIAL_MS * 2U);
+    TEST_ASSERT(s_tt_frame_count == 0U, "no retransmission after the wrapped ACK");
+
+    /* 3. Ephemeral ports: random start, probe upward past ports in use, wrap to the range start */
+    TEST_ASSERT(tcp_init() == TCP_OK, "fresh stack");
+    host_rng_pin(RNG_TEST_PORT_OFFSET);
+    tcp_pcb_t *p1 = tcp_new();
+    tcp_pcb_t *p2 = tcp_new();
+    (void)tcp_connect(p1, NET_IP4_ADDR(192, 168, 1, 50), 1883U);
+    (void)tcp_connect(p2, NET_IP4_ADDR(192, 168, 1, 50), 1883U);
+    TEST_ASSERT(p1->local_port == TCP_EPHEMERAL_PORT_MIN + RNG_TEST_PORT_OFFSET &&
+                p2->local_port == p1->local_port + 1U, "port from the RNG; a port in use is skipped");
+    host_rng_pin(TCP_EPHEMERAL_PORT_COUNT - 1U);
+    tcp_pcb_t *p3 = tcp_new();
+    tcp_pcb_t *p4 = tcp_new();
+    (void)tcp_connect(p3, NET_IP4_ADDR(192, 168, 1, 50), 1883U);
+    (void)tcp_connect(p4, NET_IP4_ADDR(192, 168, 1, 50), 1883U);
+    TEST_ASSERT(p3->local_port == TCP_EPHEMERAL_PORT_MAX && p4->local_port == TCP_EPHEMERAL_PORT_MIN,
+                "probe wraps from the top of the range");
+    host_rng_unpin();
+    tcp_abort(p1);
+    tcp_abort(p2);
+    tcp_abort(p3);
+    tcp_abort(p4);
+    wifi_host_set_tx_hook(NULL);
+    TEST_ASSERT(tcp_init() == TCP_OK, "stack reset");
+
+    /* 4. DHCP: a random xid per exchange, never the previous one */
+    dhcp_client_telemetry_t t;
+    dhcp_client_init();
+    dhcp_client_start();
+    dhcp_client_get_telemetry(&t);
+    uint32_t x1 = t.xid;
+    dhcp_client_stop();
+    dhcp_client_start();
+    dhcp_client_get_telemetry(&t);
+    TEST_ASSERT(x1 != t.xid, "new exchange, new xid");
+    host_rng_pin(t.xid);
+    dhcp_client_stop();
+    dhcp_client_start();
+    uint32_t x_prev = t.xid;
+    dhcp_client_get_telemetry(&t);
+    TEST_ASSERT(t.xid != x_prev, "RNG repeating the previous xid still gives a new one");
+    host_rng_pin(RNG_TEST_XID);
+    dhcp_client_stop();
+    dhcp_client_start();
+    dhcp_client_get_telemetry(&t);
+    TEST_ASSERT(t.xid == RNG_TEST_XID, "xid drawn from the RNG");
+    host_rng_unpin();
+    dhcp_client_stop();
+    dhcp_client_init();
+
+    /* 5. IPv4 identification: consecutive per datagram */
+    uint16_t id0 = net_ip_next_id();
+    TEST_ASSERT(net_ip_next_id() == (uint16_t)(id0 + 1U), "IPv4 ID counts up from its random start");
 }
 
 static void test_wpa2_client_and_mdns_subsystem(void)
@@ -6782,6 +6949,7 @@ int main(void)
     test_scheduler_hardening();
     test_wpa2_client_and_mdns_subsystem();
     test_dhcp_client_rfc2131();
+    test_hw_rng_consumers();
     test_wpa_ie_parsing();
     test_wpa2_handshake();
     test_wpa2_replay_capture();

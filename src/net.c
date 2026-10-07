@@ -15,6 +15,7 @@
 #include "string.h"
 #include "speedtest.h"
 #include "mdns.h"
+#include "hw_rng.h"
 
 #if defined(__riscv)
 #include "systimer.h"
@@ -46,6 +47,8 @@ static arp_entry_t s_arp_table[ARP_TABLE_CAPACITY];
 static net_telemetry_t s_net_telemetry;
 static bool s_net_initialized = false;
 static bool s_net_trace = false;
+static uint16_t s_net_ip_id = 0U;
+static bool s_net_ip_id_seeded = false;
 
 void net_set_trace(bool on)
 {
@@ -242,6 +245,17 @@ uint16_t net_checksum(const void *data, size_t len)
 
     /* One's complement inversion */
     return (uint16_t)(~sum & 0xFFFFU);
+}
+
+uint16_t net_ip_next_id(void)
+{
+    /* Seeded on first use: the first datagram goes out over the radio, so the RF noise source is on */
+    if (!s_net_ip_id_seeded)
+    {
+        s_net_ip_id = (uint16_t)hw_rng_u32();
+        s_net_ip_id_seeded = true;
+    }
+    return s_net_ip_id++;
 }
 
 uint16_t net_ipv4_checksum(const ipv4_header_t *hdr)
@@ -790,7 +804,7 @@ net_status_t net_send_udp(uint32_t dest_ip, uint16_t src_port, uint16_t dest_por
     ip->ver_ihl           = IPV4_VER_IHL_DEFAULT;
     ip->tos               = IPV4_TOS_DEFAULT;
     ip->total_len         = NET_HTONS(IPV4_MIN_HDR_LEN + UDP_HDR_LEN + len);
-    ip->identification    = 0x1234U;
+    ip->identification    = net_ip_next_id();
     ip->flags_frag_offset = NET_HTONS(IPV4_FLAGS_DF);
     ip->ttl               = IPV4_TTL_DEFAULT;
     ip->protocol          = IPV4_PROTO_UDP;

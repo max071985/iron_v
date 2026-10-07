@@ -274,6 +274,8 @@ net_status_t net_get_config(net_config_t *out_config);
 net_status_t net_get_telemetry(net_telemetry_t *out_telemetry);
 net_status_t net_get_arp_entry(uint32_t index, arp_entry_t *out_entry);
 void net_notify_tx_packet(uint16_t frame_len, bool is_tcp);
+/* IPv4 identification for the next datagram: one counter for all senders, random start (REV-20) */
+uint16_t net_ip_next_id(void);
 
 /* RFC 1071 Internet Checksum Engines */
 uint16_t net_checksum(const void *data, size_t len);

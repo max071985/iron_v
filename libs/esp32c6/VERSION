@@ -12,8 +12,8 @@ libphy.a, libbtbb.a  (libbtbb.a is kept for provenance but not linked: no
   Commit:  5695f4f38108658bc4a33e4712c1ebcb34911434 (2026-07-22)
            "C6 phy_version: 345, 552b044, Jul 14 2026"
 
-License: Espressif binary libraries, distributed under the terms in the source
-repositories above.
+License: Apache License 2.0, copied unmodified to LICENSE from both source
+repositories (byte-identical at the commits above).
 
 Do not patch these files. Earlier copies carried two undocumented 4-byte
 binary patches (libpp.a hal_mac.o: hal_init MAC-ready wait removed; libphy.a

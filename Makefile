@@ -119,7 +119,7 @@ VENDOR_LIBS = $(wildcard libs/esp32c6/*.a)
 VENDOR_STAMP = $(BUILD)/vendor_libs.ok
 
 # Vendor libraries must match libs/esp32c6/SHA256SUMS (see libs/esp32c6/VERSION)
-$(VENDOR_STAMP): $(VENDOR_LIBS) libs/esp32c6/SHA256SUMS
+$(VENDOR_STAMP): $(VENDOR_LIBS) libs/esp32c6/SHA256SUMS libs/esp32c6/LICENSE
 	@mkdir -p $(@D)
 	@cd libs/esp32c6 && sha256sum --quiet -c SHA256SUMS
 	@touch $@

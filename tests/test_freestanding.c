@@ -3699,6 +3699,252 @@ static void test_tcp_reliability(void)
     TEST_ASSERT(tcp_init() == TCP_OK, "stack reset for later tests");
 }
 
+/* ------------------------------------------------------------------------- */
+/* REV-37: parallel page loads against the real HTTP server and TCP stack    */
+/* ------------------------------------------------------------------------- */
+#define HO_CONNS            6U       /* more page loads than the send pool holds (2 x 12 chunks) */
+#define HO_PORT_BASE        41000U
+#define HO_HTTP_PORT        80U
+#define HO_CLIENT_ISN       5000U
+#define HO_STEP_MS          50U
+#define HO_CLIENT_RTO_MS    250U     /* Linux minimum RTO is 200 ms */
+#define HO_RUN_MS           20000U
+#define HO_RX_MAX           4096U
+
+typedef struct {
+    uint16_t port;
+    bool     synack;
+    uint32_t rcv_next;        /* next server sequence number expected (the client's ACK) */
+    uint32_t acked_sent;      /* rcv_next value last acknowledged by the client */
+    uint32_t srv_ack;         /* highest acknowledgement number seen from the server */
+    bool     srv_ack_seen;
+    bool     fin;
+    bool     fin_sent;
+    uint32_t last_req_ms;
+    uint32_t req_sends;
+    const char *req;          /* request text; NULL = the page request */
+    uint32_t rx_len;
+    uint8_t  rx[HO_RX_MAX];
+} ho_conn_t;
+
+static ho_conn_t s_ho[HO_CONNS];
+static const char s_ho_req[] = "GET / HTTP/1.1\r\nHost: iron-v\r\n\r\n";
+static const char s_ho_req_light[] = "GET /api/v1/light HTTP/1.1\r\nHost: iron-v\r\n\r\n";
+
+static const char *ho_req(const ho_conn_t *c)
+{
+    return (c->req != NULL) ? c->req : s_ho_req;
+}
+
+static bool ho_seq_gt(uint32_t a, uint32_t b)
+{
+    return (int32_t)(a - b) > 0;
+}
+
+static bool ho_tx_hook(const uint8_t *frame, uint16_t len)
+{
+    if (len < ETH_HDR_LEN + IPV4_MIN_HDR_LEN + TCP_MIN_HDR_LEN)
+    {
+        return true;
+    }
+    const ipv4_header_t *ip = (const ipv4_header_t *)(frame + ETH_HDR_LEN);
+    const tcp_header_t *t = (const tcp_header_t *)(frame + ETH_HDR_LEN + IPV4_MIN_HDR_LEN);
+    uint16_t dport = NET_NTOHS(t->dest_port);
+    if (dport < HO_PORT_BASE || dport >= HO_PORT_BASE + HO_CONNS)
+    {
+        return true;
+    }
+    ho_conn_t *c = &s_ho[dport - HO_PORT_BASE];
+    uint32_t seq = NET_NTOHL(t->seq_num);
+    uint32_t ack = NET_NTOHL(t->ack_num);
+    uint16_t plen = (uint16_t)(NET_NTOHS(ip->total_len) - IPV4_MIN_HDR_LEN - TCP_MIN_HDR_LEN);
+    const uint8_t *payload = frame + ETH_HDR_LEN + IPV4_MIN_HDR_LEN + TCP_MIN_HDR_LEN;
+    if ((t->flags & TCP_FLAG_SYN) != 0U)
+    {
+        c->synack = true;
+        c->rcv_next = seq + 1U;
+        c->acked_sent = c->rcv_next;
+    }
+    if ((t->flags & TCP_FLAG_ACK) != 0U && (!c->srv_ack_seen || ho_seq_gt(ack, c->srv_ack)))
+    {
+        c->srv_ack = ack;
+        c->srv_ack_seen = true;
+    }
+    if (plen > 0U && seq == c->rcv_next && c->rx_len + plen <= HO_RX_MAX)
+    {
+        memcpy(&c->rx[c->rx_len], payload, plen);
+        c->rx_len += plen;
+        c->rcv_next += plen;
+    }
+    if ((t->flags & TCP_FLAG_FIN) != 0U && seq + plen == c->rcv_next)
+    {
+        c->fin = true;
+        c->rcv_next++;
+    }
+    return true;
+}
+
+static void ho_send(ho_conn_t *c, uint32_t seq, uint8_t flags, const void *data, uint16_t len)
+{
+    tt_peer_send(c->port, HO_HTTP_PORT, seq, c->rcv_next, flags, TT_PEER_WINDOW, data, len);
+}
+
+/* Run the simulated clients first..first+count-1: acknowledge what arrived, resend an unacknowledged request
+ * after HO_CLIENT_RTO_MS, answer the server's FIN */
+static void ho_pump(uint32_t first, uint32_t count, uint32_t run_ms)
+{
+    for (uint32_t t = 0U; t < run_ms; t += HO_STEP_MS)
+    {
+        tt_advance(HO_STEP_MS);
+        for (uint32_t i = first; i < first + count; i++)
+        {
+            ho_conn_t *c = &s_ho[i];
+            const uint32_t req_len = (uint32_t)strlen(ho_req(c));
+            const uint32_t after_req = HO_CLIENT_ISN + 1U + req_len;
+            bool req_acked = c->srv_ack_seen && !ho_seq_gt(after_req, c->srv_ack);
+            if (!req_acked && !c->fin && s_tt_now - c->last_req_ms >= HO_CLIENT_RTO_MS)
+            {
+                /* The board did not take (all of) the request: resend it, as the client's TCP would */
+                c->last_req_ms = s_tt_now;
+                c->req_sends++;
+                ho_send(c, HO_CLIENT_ISN + 1U, TCP_FLAG_ACK | TCP_FLAG_PSH, ho_req(c), (uint16_t)req_len);
+            }
+            if (c->fin && !c->fin_sent)
+            {
+                c->fin_sent = true;
+                ho_send(c, after_req, TCP_FLAG_FIN | TCP_FLAG_ACK, NULL, 0U);
+                c->acked_sent = c->rcv_next;
+            }
+            else if (c->rcv_next != c->acked_sent)
+            {
+                c->acked_sent = c->rcv_next;
+                ho_send(c, req_acked ? after_req : HO_CLIENT_ISN + 1U, TCP_FLAG_ACK, NULL, 0U);
+            }
+        }
+    }
+}
+
+static bool ho_complete(uint32_t i, const char *expect, size_t expect_len)
+{
+    const ho_conn_t *c = &s_ho[i];
+    return c->fin && c->rx_len == expect_len && memcmp(c->rx, expect, expect_len) == 0;
+}
+
+static void test_http_overload(void)
+{
+    printf("  [TEST] Parallel page loads with a full send pool (REV-37, O-57)...\n");
+    const uint32_t req_len = (uint32_t)(sizeof(s_ho_req) - 1U);
+
+    /* Expected answer: what the server builds for this request */
+    static char expect[HTTP_RESPONSE_BUF_SIZE];
+    size_t expect_len = 0U;
+    TEST_ASSERT(tcp_init() == TCP_OK && http_server_init() == HTTP_OK, "fresh TCP stack and HTTP server");
+    (void)http_process_request(s_ho_req, req_len, expect, sizeof(expect), &expect_len);
+    TEST_ASSERT(expect_len > TCP_SNDBUF_PCB_MAX_BYTES / 2U, "page response fills half the per-connection backlog");
+    TEST_ASSERT(http_server_start(HO_HTTP_PORT) == HTTP_OK, "HTTP server listening");
+
+    memset(s_ho, 0, sizeof(s_ho));
+    s_tt_now = 200000U;
+    tcp_host_set_time_ms(s_tt_now);
+    wifi_host_set_tx_hook(ho_tx_hook);
+    tcp_telemetry_t tt0;
+    tcp_get_telemetry(&tt0);
+
+    for (uint32_t i = 0U; i < HO_CONNS; i++)
+    {
+        ho_conn_t *c = &s_ho[i];
+        c->port = (uint16_t)(HO_PORT_BASE + i);
+        ho_send(c, HO_CLIENT_ISN, TCP_FLAG_SYN, NULL, 0U);
+        ho_send(c, HO_CLIENT_ISN + 1U, TCP_FLAG_ACK, NULL, 0U);
+    }
+    for (uint32_t i = 0U; i < HO_CONNS; i++)
+    {
+        ho_conn_t *c = &s_ho[i];
+        c->last_req_ms = s_tt_now;
+        c->req_sends++;
+        ho_send(c, HO_CLIENT_ISN + 1U, TCP_FLAG_ACK | TCP_FLAG_PSH, s_ho_req, (uint16_t)req_len);
+    }
+
+    ho_pump(0U, HO_CONNS, HO_RUN_MS);
+
+    uint32_t complete = 0U, resends = 0U;
+    for (uint32_t i = 0U; i < HO_CONNS; i++)
+    {
+        const ho_conn_t *c = &s_ho[i];
+        bool whole = ho_complete(i, expect, expect_len);
+        complete += whole ? 1U : 0U;
+        resends += c->req_sends - 1U;
+        if (!whole)
+        {
+            printf("    conn %u: synack=%d rx=%u of %u fin=%d request sent %u x\n", (unsigned)i, (int)c->synack,
+                   (unsigned)c->rx_len, (unsigned)expect_len, (int)c->fin, (unsigned)c->req_sends);
+        }
+    }
+    tcp_telemetry_t tt1;
+    tcp_get_telemetry(&tt1);
+    printf("    %u of %u page loads complete, %u request resends, %u deferred\n", (unsigned)complete,
+           (unsigned)HO_CONNS, (unsigned)resends, (unsigned)(tt1.rx_deferred - tt0.rx_deferred));
+    TEST_ASSERT(complete == HO_CONNS, "every parallel page load gets the whole page and a FIN");
+    TEST_ASSERT(tt1.rx_deferred > tt0.rx_deferred, "the full send pool made some requests wait (the case under test)");
+    TEST_ASSERT(tcp_sndbuf_free_chunks() == TCP_SNDBUF_CHUNKS, "send pool empty again");
+
+    /* No free request slot: two half-sent requests hold both slots; a third request must wait unacknowledged
+     * (it was accepted and answered with an empty reply before REV-37), then be served */
+    const uint16_t part1 = (uint16_t)(sizeof("GET / HTTP/1.1\r\n") - 1U);
+    memset(s_ho, 0, sizeof(s_ho));
+    for (uint32_t i = 0U; i < 3U; i++)
+    {
+        ho_conn_t *c = &s_ho[i];
+        c->port = (uint16_t)(HO_PORT_BASE + i);
+        ho_send(c, HO_CLIENT_ISN, TCP_FLAG_SYN, NULL, 0U);
+        ho_send(c, HO_CLIENT_ISN + 1U, TCP_FLAG_ACK, NULL, 0U);
+        c->last_req_ms = s_tt_now;
+        c->req_sends = 1U;
+    }
+    ho_send(&s_ho[0], HO_CLIENT_ISN + 1U, TCP_FLAG_ACK | TCP_FLAG_PSH, s_ho_req, part1);
+    ho_send(&s_ho[1], HO_CLIENT_ISN + 1U, TCP_FLAG_ACK | TCP_FLAG_PSH, s_ho_req, part1);
+    tcp_get_telemetry(&tt0);
+    ho_send(&s_ho[2], HO_CLIENT_ISN + 1U, TCP_FLAG_ACK | TCP_FLAG_PSH, s_ho_req, (uint16_t)req_len);
+    tcp_get_telemetry(&tt1);
+    TEST_ASSERT(!s_ho[2].fin && s_ho[2].rx_len == 0U && s_ho[2].srv_ack == HO_CLIENT_ISN + 1U &&
+                tt1.rx_deferred == tt0.rx_deferred + 1U, "both slots busy: request left unacknowledged, not closed");
+    ho_pump(0U, 3U, HO_RUN_MS);
+    TEST_ASSERT(ho_complete(0U, expect, expect_len) && ho_complete(1U, expect, expect_len) &&
+                ho_complete(2U, expect, expect_len), "half-sent requests completed by the resend, the waiting one served");
+
+    /* Mixed load: page requests waiting for send space give their slot back, so a small request that fits the
+     * free space is answered at once instead of waiting behind them */
+    memset(s_ho, 0, sizeof(s_ho));
+    for (uint32_t i = 0U; i < 5U; i++)
+    {
+        ho_conn_t *c = &s_ho[i];
+        c->port = (uint16_t)(HO_PORT_BASE + i);
+        c->req = (i == 1U || i == 4U) ? s_ho_req_light : NULL;
+        ho_send(c, HO_CLIENT_ISN, TCP_FLAG_SYN, NULL, 0U);
+        ho_send(c, HO_CLIENT_ISN + 1U, TCP_FLAG_ACK, NULL, 0U);
+    }
+    for (uint32_t i = 0U; i < 4U; i++)   /* page, light, page, page; nobody acknowledges yet */
+    {
+        ho_conn_t *c = &s_ho[i];
+        c->last_req_ms = s_tt_now;
+        c->req_sends = 1U;
+        ho_send(c, HO_CLIENT_ISN + 1U, TCP_FLAG_ACK | TCP_FLAG_PSH, ho_req(c), (uint16_t)strlen(ho_req(c)));
+    }
+    TEST_ASSERT(s_ho[0].rx_len > 0U && s_ho[1].rx_len > 0U && s_ho[2].rx_len == 0U && s_ho[3].rx_len == 0U,
+                "one page and one light answer in flight, two page requests waiting for send space");
+    s_ho[4].last_req_ms = s_tt_now;
+    s_ho[4].req_sends = 1U;
+    ho_send(&s_ho[4], HO_CLIENT_ISN + 1U, TCP_FLAG_ACK | TCP_FLAG_PSH, s_ho_req_light, (uint16_t)strlen(s_ho_req_light));
+    TEST_ASSERT(s_ho[4].rx_len > 0U && memcmp(s_ho[4].rx, "HTTP/1.1 200 OK", 15U) == 0,
+                "small request answered at once although two requests wait (their slots were freed)");
+    ho_pump(0U, 5U, HO_RUN_MS);
+    TEST_ASSERT(ho_complete(0U, expect, expect_len) && ho_complete(2U, expect, expect_len) &&
+                ho_complete(3U, expect, expect_len) && s_ho[1].fin && s_ho[4].fin, "everything completes");
+
+    wifi_host_set_tx_hook(NULL);
+    TEST_ASSERT(tcp_init() == TCP_OK, "stack reset for later tests");
+}
+
 static void test_wifi_link_policy(void)
 {
     printf("  [TEST] Wi-Fi link manager policy: backoff, jitter, fast path (REV-12)...\n");
@@ -7906,6 +8152,7 @@ int main(void)
     test_ieee802154_subsystem();
     test_tcpip_subsystem();
     test_tcp_reliability();
+    test_http_overload();
     test_http_server_subsystem();
     test_dhcp_dns_subsystem();
     test_softap_dns_modes();

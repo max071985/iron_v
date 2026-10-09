@@ -993,8 +993,10 @@ static net_status_t http_tcp_recv_cb(void *arg, tcp_pcb_t *pcb, const uint8_t *d
     http_req_slot_t *slot = http_req_slot_get(pcb);
     if (slot == NULL)
     {
-        tcp_close(pcb);
-        return NET_ERR_BUFFER_TOO_SMALL;
+        /* Every request slot is busy: leave the segment unacknowledged, the client resends it (REV-37, O-57;
+         * closing here answered an accepted request with an empty reply) */
+        s_http_telemetry.requests_deferred++;
+        return NET_ERR_BUSY;
     }
     size_t room = HTTP_REQUEST_BUF_SIZE - 1U - slot->len;
     size_t take = ((size_t)len < room) ? (size_t)len : room;
@@ -1057,6 +1059,12 @@ static net_status_t http_tcp_recv_cb(void *arg, tcp_pcb_t *pcb, const uint8_t *d
              * the client resends it once earlier responses are acknowledged */
             slot->len -= take;
             slot->buf[slot->len] = '\0';
+            if (slot->len == 0U)
+            {
+                /* The request began in this segment: free the slot for other connections while this one
+                 * waits; the resend fills a slot again (REV-37) */
+                http_req_slot_release(pcb);
+            }
             s_http_telemetry.requests_deferred++;
             arena_scratch_reset(mark);
             return NET_ERR_BUSY;

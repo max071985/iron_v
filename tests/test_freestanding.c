@@ -61,6 +61,8 @@
 #include "rgb_led.h"
 #include "mqtt.h"
 #include "api_v1.h"
+#include "module.h"
+#include "device.h"
 
 /* Host test stubs for hardware-specific functions */
 void wdt_feed(void)
@@ -200,9 +202,6 @@ void timer_get_status(timer_status_t *t) { if (t != NULL) memset(t, 0, sizeof(*t
 uint64_t timer_get_current_ticks(void) { return 0ULL; }
 void timer_stop(void) { }
 void timer_start(void) { }
-
-bool test_soak_run(uint32_t c, uint32_t d) { (void)c; (void)d; return true; }
-void test_soak_get_telemetry(test_soak_telemetry_t *t) { if (t != NULL) memset(t, 0, sizeof(*t)); }
 
 mem_access_t check_mem_access(uint32_t addr) { (void)addr; return MEM_ACCESS_READWRITE; }
 uint32_t trap_get_ecall_count(void) { return 0U; }
@@ -972,7 +971,7 @@ static void test_task_structures(void)
     TEST_ASSERT(TASK_MAX_COUNT == 8U, "Max tasks is 8");
     TEST_ASSERT(TASK_PRIORITY_MIN == 1U, "Min priority is 1");
     TEST_ASSERT(TASK_PRIORITY_MAX == 15U, "Max priority is 15");
-    TEST_ASSERT(TASK_DEFAULT_STACK_SIZE == 2048U, "Default stack size is 2048");
+    TEST_ASSERT(TASK_FRAME_SIZE + TASK_STACK_ALIGNMENT == 80U, "Smallest caller stack is 80 bytes (no fallback stacks, REV-33)");
 }
 
 static void test_pmp_apm_isolation(void)
@@ -2109,6 +2108,50 @@ static void test_tcpip_subsystem(void)
     TEST_ASSERT(net_reset_defaults() == NET_OK, "net_reset_defaults succeeds");
 }
 
+static uint32_t s_udp_handler_a_calls;
+static uint32_t s_udp_handler_b_calls;
+
+static void test_custom_udp_handler(const uint8_t *frame, const uint8_t *payload, uint16_t payload_len)
+{
+    (void)frame;
+    (void)payload;
+    (void)payload_len;
+    s_udp_handler_a_calls++;
+}
+
+static void test_custom_udp_handler_b(const uint8_t *frame, const uint8_t *payload, uint16_t payload_len)
+{
+    (void)frame;
+    (void)payload;
+    (void)payload_len;
+    s_udp_handler_b_calls++;
+}
+
+/* One IPv4/UDP frame with a 4-byte payload to the board's address, through net_input() */
+static void test_send_udp_to_board(uint16_t dest_port)
+{
+    uint8_t f[ETH_HDR_LEN + IPV4_MIN_HDR_LEN + UDP_HDR_LEN + 4U];
+    memset(f, 0, sizeof(f));
+    ethernet_header_t *eth = (ethernet_header_t *)f;
+    ipv4_header_t *ip = (ipv4_header_t *)(f + ETH_HDR_LEN);
+    udp_header_t *udp = (udp_header_t *)(f + ETH_HDR_LEN + IPV4_MIN_HDR_LEN);
+    net_config_t cfg;
+    net_get_config(&cfg);
+    memcpy(eth->dest_mac, cfg.mac, ETH_ADDR_LEN);
+    eth->ethertype = NET_HTONS(ETHERTYPE_IPV4);
+    ip->ver_ihl = IPV4_VER_IHL_DEFAULT;
+    ip->protocol = IPV4_PROTO_UDP;
+    ip->ttl = 64U;
+    ip->src_ip = NET_HTONL(NET_IP4_ADDR(192, 168, 1, 55));
+    ip->dest_ip = NET_HTONL(cfg.ip);
+    ip->total_len = NET_HTONS(IPV4_MIN_HDR_LEN + UDP_HDR_LEN + 4U);
+    ip->checksum = NET_HTONS(net_ipv4_checksum(ip));
+    udp->src_port = NET_HTONS(40000U);
+    udp->dest_port = NET_HTONS(dest_port);
+    udp->length = NET_HTONS(UDP_HDR_LEN + 4U);
+    (void)net_input(f, (uint16_t)sizeof(f), NET_IF_AP);
+}
+
 static void test_custom_http_handler(const char *qp, char *body, size_t max)
 {
     (void)qp;
@@ -2165,13 +2208,20 @@ static void test_http_server_subsystem(void)
     TEST_ASSERT(found != NULL && path_match == true, "Find custom route succeeds");
     TEST_ASSERT(http_route_find("/nonexistent", HTTP_METHOD_GET, &path_match) == NULL && path_match == false, "Non-existent route returns NULL");
 
-    /* 4. Request Processing: Valid GET /api/status */
-    const char req_status[] = "GET /api/status HTTP/1.1\r\nHost: 192.168.1.100\r\n\r\n";
+    /* 4. Request Processing: Valid GET /api/v1/device (/api/status and /api/info removed in REV-33) */
+    const char req_status[] = "GET /api/v1/device HTTP/1.1\r\nHost: 192.168.1.100\r\n\r\n";
     char resp[1536] = {0};
     size_t resp_len = 0U;
-    TEST_ASSERT(http_process_request(req_status, strlen(req_status), resp, sizeof(resp), &resp_len) == HTTP_OK, "Process GET /api/status succeeds");
+    TEST_ASSERT(http_process_request(req_status, strlen(req_status), resp, sizeof(resp), &resp_len) == HTTP_OK, "Process GET /api/v1/device succeeds");
     TEST_ASSERT(strstr(resp, "HTTP/1.1 200 OK") != NULL, "Status 200 OK in response");
-    TEST_ASSERT(strstr(resp, "uptime_ms") != NULL, "JSON contains uptime_ms");
+    TEST_ASSERT(strstr(resp, "\"uptime_s\":") != NULL && strstr(resp, "\"profile\":\"host\"") != NULL,
+                "JSON contains uptime_s and the build profile");
+    const char req_gone[] = "GET /api/status HTTP/1.1\r\n\r\n";
+    resp[0] = '\0';
+    TEST_ASSERT(http_process_request(req_gone, strlen(req_gone), resp, sizeof(resp), &resp_len) == HTTP_ERR_NOT_FOUND,
+                "GET /api/status is gone (404)");
+    resp[0] = '\0';
+    TEST_ASSERT(http_process_request(req_status, strlen(req_status), resp, sizeof(resp), &resp_len) == HTTP_OK, "GET /api/v1/device again");
     TEST_ASSERT(strstr(resp, "Content-Type: application/json") != NULL, "Content-Type is JSON");
     TEST_ASSERT(strstr(resp, "Access-Control-Allow-Origin: *") != NULL, "CORS header present");
 
@@ -2257,7 +2307,7 @@ static void test_http_server_subsystem(void)
     TEST_ASSERT(strstr(resp, "not_found") != NULL, "Response body contains not_found");
 
     /* 6. Request Processing: 405 Method Not Allowed */
-    const char req_405[] = "POST /api/status HTTP/1.1\r\n\r\n";
+    const char req_405[] = "POST /api/v1/device HTTP/1.1\r\n\r\n";
     resp[0] = '\0';
     TEST_ASSERT(http_process_request(req_405, strlen(req_405), resp, sizeof(resp), &resp_len) == HTTP_ERR_METHOD_NOT_ALLOWED, "Process POST to GET route returns 405");
     TEST_ASSERT(strstr(resp, "HTTP/1.1 405 Method Not Allowed") != NULL, "Response line is 405 Method Not Allowed");
@@ -2558,6 +2608,16 @@ static void test_speedtest_subsystem(void)
     sp_ip->checksum = NET_HTONS(net_ipv4_checksum(sp_ip));
 
     uint16_t sp_frame_len = (uint16_t)(ETH_HDR_LEN + IPV4_MIN_HDR_LEN + UDP_HDR_LEN + sp_payload_len);
+    speedtest_get_telemetry(&telem);
+    uint32_t rx_before = telem.total_packets_rx;
+    TEST_ASSERT(net_input(sp_frame, sp_frame_len, NET_IF_AP) == NET_OK, "net_input accepts a speedtest UDP packet");
+    speedtest_get_telemetry(&telem);
+    TEST_ASSERT(telem.total_packets_rx == rx_before, "Port not served before the dev module's init");
+
+    /* The dev module's init registers the speed-test port with the IP stack (REV-33) */
+    const module_t *dev_mod = module_find("dev");
+    TEST_ASSERT(dev_mod != NULL && dev_mod->init != NULL, "dev module registered with an init hook");
+    dev_mod->init(0U);
     TEST_ASSERT(net_input(sp_frame, sp_frame_len, NET_IF_AP) == NET_OK, "net_input handles inbound speedtest UDP packet");
 
     speedtest_get_telemetry(&telem);
@@ -5376,7 +5436,7 @@ static void test_memstat(void)
     TEST_ASSERT(wt.rx_ring_peak == 0U, "peak reset to the current fill");
 }
 
-/* REV-25: the light page is web/index.html, gzip-compressed at build time. Its content rules (no timers,
+/* REV-25: the light page is src/modules/light/index.html, gzip-compressed at build time. Its content rules (no timers,
  * REST v1 only, size) are checked by scripts/gen_web.py --self-test; this checks how it is served. */
 #define GZIP_MAGIC_0            0x1FU
 #define GZIP_MAGIC_1            0x8BU
@@ -8121,6 +8181,129 @@ static void test_rest_v1(void)
     nvs_mock_reset();
 }
 
+/* Module registry (REV-33): the host build links every module, so all four descriptors and their
+ * commands must be in the tables, in init order, unique, and wired to the core's hooks */
+static void test_module_registry(void)
+{
+    printf("  [TEST] Module registry: descriptors, order, commands, routes, events, UDP ports (REV-33)...\n");
+    static const char *const want[] = {"light", "mqtt", "ieee802154", "dev"};   /* order 10, 20, 30, 90 */
+    TEST_ASSERT(module_count() == sizeof(want) / sizeof(want[0]) && module_count() <= MODULE_MAX,
+                "every module of the host build registered once");
+    for (uint32_t i = 0U; i < module_count() && i < sizeof(want) / sizeof(want[0]); i++)
+    {
+        TEST_ASSERT(strcmp(module_at(i)->name, want[i]) == 0, "registry walks the modules in init order");
+        TEST_ASSERT(module_find(want[i]) == module_at(i), "module_find returns the registry entry");
+        for (uint32_t j = i + 1U; j < module_count(); j++)
+        {
+            TEST_ASSERT(module_at(i)->order <= module_at(j)->order, "orders ascend");
+        }
+    }
+    TEST_ASSERT(module_at(module_count()) == NULL && module_find("nosuch") == NULL && module_find(NULL) == NULL,
+                "out of range / unknown: NULL");
+    TEST_ASSERT(module_find("mqtt")->device_json != NULL && module_find("light")->event != NULL &&
+                module_find("ieee802154")->init == NULL, "hooks as declared (802.15.4 has no boot init)");
+
+    /* Shell commands: the host build has the light, mqtt, 15.4 and speedtest commands (do-test and
+     * soak live in test.c, on-target only) */
+    static const char *const cmds[] = {"light", "mqtt", "15.4", "speedtest"};
+    TEST_ASSERT(shell_command_count() == sizeof(cmds) / sizeof(cmds[0]), "four module commands on the host");
+    for (uint32_t i = 0U; i < sizeof(cmds) / sizeof(cmds[0]); i++)
+    {
+        const shell_command_t *c = shell_command_find(cmds[i], strlen(cmds[i]));
+        TEST_ASSERT(c != NULL && c->run != NULL && c->help != NULL && strncmp(c->help, cmds[i], strlen(cmds[i])) == 0,
+                    "command registered with a help line that starts with its name");
+    }
+    for (uint32_t i = 0U; i < shell_command_count(); i++)
+    {
+        for (uint32_t j = i + 1U; j < shell_command_count(); j++)
+        {
+            TEST_ASSERT(strcmp(shell_command_at(i)->name, shell_command_at(j)->name) != 0, "command names unique");
+        }
+    }
+    TEST_ASSERT(shell_command_find("lightx", 6U) == NULL && shell_command_find("ligh", 4U) == NULL,
+                "lookup matches whole words only");
+
+    /* Dispatch through shell_execute: a module command, then an unknown word */
+    nvs_mock_reset();
+    light_init(500000000ULL);
+    shell_telemetry_t before, after;
+    shell_get_telemetry(&before);
+    char line_on[] = "light on";
+    shell_execute(line_on);
+    char line_bri[] = "light   bri 40";
+    shell_execute(line_bri);
+    light_state_t ls;
+    light_get(&ls);
+    TEST_ASSERT(ls.on && ls.brightness == 40U, "`light on` and `light bri 40` reach the light module");
+    char line_bad[] = "lightx on";
+    shell_execute(line_bad);
+    shell_get_telemetry(&after);
+    TEST_ASSERT(after.unknown_commands == before.unknown_commands + 1U, "an unregistered word is unknown");
+
+    /* Events: the BOOT short press reaches the light through the registry */
+    modules_event(MODULE_EVENT_BUTTON_SHORT_PRESS, 500100000ULL);
+    light_get(&ls);
+    TEST_ASSERT(!ls.on, "BOOT short press event toggles the light off");
+    modules_event(MODULE_EVENT_BUTTON_SHORT_PRESS, 500200000ULL);
+    light_get(&ls);
+    TEST_ASSERT(ls.on, "and on again");
+
+    /* Routes: http_server_init() registers the core's routes and every module's routes */
+    TEST_ASSERT(http_server_init() == HTTP_OK, "http init");
+    bool matched = false;
+    TEST_ASSERT(http_route_find("/", HTTP_METHOD_GET, &matched) != NULL &&
+                http_route_find("/api/v1/light", HTTP_METHOD_POST, &matched) != NULL &&
+                http_route_find("/api/v1/mqtt", HTTP_METHOD_GET, &matched) != NULL &&
+                http_route_find("/api/speedtest", HTTP_METHOD_GET, &matched) != NULL &&
+                http_route_find("/api/v1/device", HTTP_METHOD_GET, &matched) != NULL, "module routes registered");
+    TEST_ASSERT(http_route_find("/api/status", HTTP_METHOD_GET, &matched) == NULL &&
+                http_route_find("/api/info", HTTP_METHOD_GET, &matched) == NULL, "legacy status/info routes gone");
+    for (uint16_t i = 0U; i < http_server_get_route_count(); i++)
+    {
+        TEST_ASSERT(http_route_at(i) != NULL && http_route_at(i)->path != NULL, "route table walkable");
+    }
+    TEST_ASSERT(http_route_at(http_server_get_route_count()) == NULL, "past the end: NULL");
+    TEST_ASSERT(http_server_get_route_count() <= HTTP_MAX_ROUTES, "routes fit the table");
+
+    /* UDP listeners: dispatch, replace, stop, capacity */
+    s_udp_handler_a_calls = 0U;
+    s_udp_handler_b_calls = 0U;
+    TEST_ASSERT(net_udp_listen(40001U, NULL) == NET_OK, "stopping an unknown port is a no-op");
+    TEST_ASSERT(net_udp_listen(40001U, test_custom_udp_handler) == NET_OK, "listen");
+    test_send_udp_to_board(40001U);
+    test_send_udp_to_board(40002U);
+    TEST_ASSERT(s_udp_handler_a_calls == 1U, "a frame to the port reaches its handler, other ports do not");
+    TEST_ASSERT(net_udp_listen(40001U, test_custom_udp_handler_b) == NET_OK, "re-listen");
+    test_send_udp_to_board(40001U);
+    TEST_ASSERT(s_udp_handler_a_calls == 1U && s_udp_handler_b_calls == 1U, "re-listen replaces the handler");
+    TEST_ASSERT(net_udp_listen(40001U, NULL) == NET_OK, "stop");
+    test_send_udp_to_board(40001U);
+    TEST_ASSERT(s_udp_handler_b_calls == 1U, "a stopped port is not served");
+    uint32_t used = 0U;
+    for (uint16_t port = 40001U; port < 40001U + NET_UDP_LISTENERS_MAX + 1U; port++)
+    {
+        if (net_udp_listen(port, test_custom_udp_handler) == NET_OK)
+        {
+            used++;
+        }
+    }
+    TEST_ASSERT(used >= 1U && used < NET_UDP_LISTENERS_MAX + 1U, "listener table is bounded");
+    for (uint16_t port = 40001U; port < 40001U + NET_UDP_LISTENERS_MAX + 1U; port++)
+    {
+        TEST_ASSERT(net_udp_listen(port, NULL) == NET_OK, "stop");
+    }
+
+    /* Pool masks for any profile size (the mask macro never shifts by 32) */
+    TEST_ASSERT(ARENA_BITMASK_FOR(0U) == 0U && ARENA_BITMASK_FOR(1U) == 1U && ARENA_BITMASK_FOR(16U) == 0xFFFFU &&
+                ARENA_BITMASK_FOR(31U) == 0x7FFFFFFFU && ARENA_BITMASK_FOR(32U) == 0xFFFFFFFFU, "pool masks");
+
+    /* Device id: core, shared with MQTT */
+    TEST_ASSERT(strncmp(device_id(), DEVICE_ID_PREFIX, strlen(DEVICE_ID_PREFIX)) == 0 &&
+                strlen(device_id()) == strlen(DEVICE_ID_PREFIX) + 2U * DEVICE_ID_MAC_BYTES &&
+                strcmp(device_id(), mqtt_device_id()) == 0, "device id ironv-xxxxxx, same for MQTT");
+    nvs_mock_reset();
+}
+
 int main(void)
 {
     printf("======================================================================\n");
@@ -8188,6 +8371,7 @@ int main(void)
     test_arp_request_and_merge();
     test_mqtt_session();
     test_rest_v1();
+    test_module_registry();
 
     /* Hardened cross-module integration and edge case tests */
     test_coroutine_systimer_dpc_integration();

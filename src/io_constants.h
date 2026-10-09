@@ -79,6 +79,12 @@
 #define PERIPHERAL_MMIO_END_ADDR    0x600D0000U
 #define INTERNAL_ROM_START_ADDR     0x40000000U
 #define INTERNAL_ROM_END_ADDR       0x40050000U
+/* Reserved holes in the peripheral space (TRM Tab 5.3-2), inclusive bounds: the first contains the
+ * legacy USB block at 0x60043000, the second surrounds MODEM_FE (0x600A0000 - 0x600A0FFF) */
+#define PERIPHERAL_MMIO_HOLE0_FIRST 0x60019000U
+#define PERIPHERAL_MMIO_HOLE0_LAST  0x6007FFFFU
+#define PERIPHERAL_MMIO_HOLE1_FIRST 0x6009A000U
+#define PERIPHERAL_MMIO_HOLE1_LAST  0x600A2FFFU
 
 /* ROM .bss/.data at the top of HP SRAM (0x4087E610 - 0x40880000, see ld/link.ld).
  * The ROM Wi-Fi/PHY variables (phy_param_rom .. g_osi_funcs_p) are zeroed at

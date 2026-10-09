@@ -72,10 +72,6 @@
 /* Buffers and names */
 #define MQTT_RX_BUF_LEN                  256U    /* largest inbound packet kept (a command) */
 #define MQTT_TX_BUF_LEN                  256U    /* CONNECT and PUBLISH headers; payloads go to TCP directly */
-#define MQTT_DEVICE_ID_LEN               16U     /* "ironv-" + 6 hex + NUL, rounded up */
-#define MQTT_DEVICE_ID_PREFIX            "ironv-"
-#define MQTT_DEVICE_ID_MAC_BYTES         3U      /* last three bytes of the factory MAC */
-#define MQTT_MAC_LEN                     6U
 #define MQTT_TOPIC_MAX                   48U     /* longest: homeassistant/light/<id>/config, 39 */
 #define MQTT_TOPIC_ROOT                  "ironv/"
 #define MQTT_TOPIC_AVAIL_SUFFIX          "/availability"

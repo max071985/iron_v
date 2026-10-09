@@ -312,6 +312,12 @@ net_status_t icmp_process_packet(const uint8_t *in_packet, uint16_t in_len,
                                  uint8_t *out_reply, uint16_t max_out_len,
                                  uint16_t *out_reply_len);
 
+/* UDP ports served by modules (REV-33; the core's DHCP/DNS/mDNS ports are dispatched directly).
+ * frame: the whole Ethernet frame, payload: the UDP payload. Registrations survive net_init(). */
+#define NET_UDP_LISTENERS_MAX            2U
+typedef void (*net_udp_handler_t)(const uint8_t *frame, const uint8_t *payload, uint16_t payload_len);
+net_status_t net_udp_listen(uint16_t port, net_udp_handler_t handler);   /* NULL handler = stop */
+
 /* Outbound Transport Transmission */
 net_status_t net_send_udp(uint32_t dest_ip, uint16_t src_port, uint16_t dest_port,
                           const void *data, uint16_t len);

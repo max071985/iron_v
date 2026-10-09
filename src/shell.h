@@ -46,6 +46,27 @@ typedef struct {
 /**
  * Initialize shell subsystem and telemetry tracking.
  */
+/* Console commands of modules (REV-33). A module registers its commands with SHELL_COMMAND_DEFINE();
+ * the shell looks the first word of a line up here after its built-in commands, and `help` lists
+ * every entry with a help line. Section name: a C identifier (see module.h). */
+#define SHELL_COMMAND_SECTION            "iron_shell_cmds"
+
+typedef struct {
+    const char *name;                    /* first word of the command line */
+    const char *help;                    /* `help` line after the indent; NULL = alias, not listed */
+    void (*run)(char *args);             /* rest of the line, leading spaces skipped ("" if none) */
+} shell_command_t;
+
+#define SHELL_COMMAND_DEFINE(ident, ...) \
+    static const shell_command_t ident __attribute__((used, section(SHELL_COMMAND_SECTION), aligned(sizeof(void *)))) = __VA_ARGS__
+
+uint32_t shell_command_count(void);
+const shell_command_t *shell_command_at(uint32_t index);
+const shell_command_t *shell_command_find(const char *name, size_t name_len);
+
+/* Decimal or 0x-hex number after optional spaces; advances *str. 1 = parsed. */
+int shell_parse_uint(char **str, uint32_t *out);
+
 void shell_init(void);
 
 /**

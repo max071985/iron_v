@@ -4,7 +4,6 @@
 #include "io_constants.h"
 #include "utils.h"
 #include "string.h"
-#include "test.h"
 #include "clock.h"
 #include "mmu.h"
 #include "wdt.h"
@@ -27,15 +26,12 @@
 #include "modem.h"
 #include "wifi.h"
 #include "wifi_os_adapter.h"
-#include "ieee802154.h"
 #include "net.h"
 #include "tcp.h"
 #include "http_server.h"
 #include "dhcp.h"
 #include "wifi_vendor_types.h"
-#include "speedtest.h"
 #include "efuse.h"
-#include "soak.h"
 #include "ota.h"
 #include "nvs.h"
 #include "memstat.h"
@@ -43,8 +39,7 @@
 #include "wpa2_client.h"
 #include "mdns.h"
 #include "hw_rng.h"
-#include "light.h"
-#include "mqtt.h"
+#include "module.h"
 
 
 /* ========================================================================= */
@@ -249,23 +244,55 @@ void shell_print_help(void)
     console_puts("  coex [status|diag|on|off] - Show or control 3-wire RF coexistence arbiter & LP clock\r\n");
     console_puts("  wifi [status|mac|ring|init|scan|sniffer|ap] - Show or control 802.11ax Wi-Fi 6 MAC driver & SoftAP\r\n");
     console_puts("  mmu [status|map]    - Show MSPI MMU Flash XIP mapping & cache status\r\n");
-    console_puts("  15.4 [status|chan|pan|short|rx|tx|stop] - Show or control IEEE 802.15.4 radio transceiver\r\n");
     console_puts("  net [status|ip|mask|gw|arp|tcp|reset] - Show or control IPv4 network interface & TCP state machine\r\n");
     console_puts("  net trace [on|off]  - Per-segment TCP/HTTP console log (off by default)\r\n");
     console_puts("  dhcp [status]       - Show the DHCP client (STA lease) and SoftAP DHCP server\r\n");
     console_puts("  rng [n]             - Draw n hardware random words: bit balance, repeats, time per word\r\n");
     console_puts("  http [status|routes|start|stop] - Show or control zero-allocation local REST/HTTP server\r\n");
-    console_puts("  speedtest [run|burst|udp|status|reset] - Run or inspect LAN network & Wi-Fi throughput benchmark\r\n");
     console_puts("  efuse [status|summary|security|mac] - Silicon eFuse controller & security seal state\r\n");
-    console_puts("  soak [status|audit|cycles] - 24/7 stability soak, memory leak audit & anti-starvation telemetry\r\n");
     console_puts("  ota [status|partitions|switch|rollback|mark-valid|verify] - Dual-slot Flash OTA upgrade & rollback\r\n");
     console_puts("  nvs [status|list|get|set|erase|format] - Non-Volatile Flash Key-Value storage\r\n");
     console_puts("  prov [status|scan|set|get|clear|setup [on|off]] - Wi-Fi provisioning; setup = setup SoftAP (BOOT long press)\r\n");
-    console_puts("  light [on|off|bri <1-100>|rgb <r> <g> <b>] - Onboard RGB LED (BOOT short press toggles)\r\n");
-    console_puts("  mqtt [on|off|set host|port|user|pass <v>] - MQTT client to the bridge's broker\r\n");
     console_puts("  sta [status|connect|disconnect|mdns|eapol] - WPA2 Station & mDNS Client\r\n");
     console_puts("  seal                - Run Golden Master system-wide integrity seal audit\r\n");
-    console_puts("  do-test             - Run full baseline validation test suite\r\n");
+
+    /* Commands of the modules linked into this image (REV-33) */
+    for (uint32_t i = 0U; i < shell_command_count(); i++)
+    {
+        const shell_command_t *cmd = shell_command_at(i);
+        if (cmd->help != NULL)
+        {
+            console_puts("  ");
+            console_puts(cmd->help);
+            console_puts("\r\n");
+        }
+    }
+}
+
+/* Module command table: bounds from ld/link.ld on the target, from the host linker in host tests */
+extern const shell_command_t __start_iron_shell_cmds[];
+extern const shell_command_t __stop_iron_shell_cmds[];
+
+uint32_t shell_command_count(void)
+{
+    return (uint32_t)(__stop_iron_shell_cmds - __start_iron_shell_cmds);
+}
+
+const shell_command_t *shell_command_at(uint32_t index)
+{
+    return (index < shell_command_count()) ? &__start_iron_shell_cmds[index] : NULL;
+}
+
+const shell_command_t *shell_command_find(const char *name, size_t name_len)
+{
+    for (const shell_command_t *cmd = __start_iron_shell_cmds; cmd < __stop_iron_shell_cmds; cmd++)
+    {
+        if (strncmp(cmd->name, name, name_len) == 0 && cmd->name[name_len] == '\0')
+        {
+            return cmd;
+        }
+    }
+    return NULL;
 }
 
 /* aa:bb:cc:dd:ee:ff */
@@ -362,6 +389,7 @@ void shell_print_info(void)
     console_puts(" Hostname: ");
     console_puts(CONFIG_DEVICE_HOSTNAME);
     console_puts("\r\n");
+    console_puts(" Profile: " CONFIG_PROFILE " (modules: " CONFIG_MODULES ")\r\n");
     console_puts(" Target:  ESP32-C6 (RV32IMAC)\r\n");
     console_puts(" Mode:    Bare Metal / No ESP-IDF\r\n");
     console_puts(" CPU:     ");
@@ -563,25 +591,6 @@ void shell_print_info(void)
     put_dec(wtel.rx_ring_capacity);
     console_puts(" x 1536B\r\n");
 
-    ieee802154_telemetry_t ztel;
-    ieee802154_get_telemetry(&ztel);
-    console_puts(" 15.4:    State: ");
-    if (ztel.state == IEEE802154_STATE_DISABLE) console_puts("DISABLE");
-    else if (ztel.state == IEEE802154_STATE_IDLE) console_puts("IDLE");
-    else if (ztel.state == IEEE802154_STATE_TRX_OFF) console_puts("TRX_OFF");
-    else if (ztel.state == IEEE802154_STATE_RX) console_puts("RX");
-    else if (ztel.state == IEEE802154_STATE_TX) console_puts("TX");
-    else console_puts("CCA");
-    console_puts(", Channel: ");
-    put_dec(ztel.channel);
-    console_puts(" (");
-    put_dec(ztel.freq_mhz);
-    console_puts(" MHz), PAN: ");
-    put_hex(ztel.pan_id);
-    console_puts(", Short: ");
-    put_hex(ztel.short_addr);
-    console_puts("\r\n");
-
     net_config_t ncfg;
     net_get_config(&ncfg);
     char ip_buf[NET_IP_STR_BUF_LEN];
@@ -608,16 +617,6 @@ void shell_print_info(void)
     put_dec(htel.requests_total);
     console_puts("\r\n");
 
-    speedtest_telemetry_t sptel;
-    speedtest_get_telemetry(&sptel);
-    console_puts(" Diag:    Port: ");
-    put_dec(SPEEDTEST_DEFAULT_PORT);
-    console_puts(", Bursts: ");
-    put_dec(sptel.bursts_run);
-    console_puts(", Last: ");
-    put_dec(sptel.last_throughput_mbps);
-    console_puts(" Mbps\r\n");
-
     uint8_t efuse_mac[EFUSE_MAC_LEN];
     efuse_get_mac(efuse_mac);
     uint32_t wafer_maj = 0U, wafer_min = 0U;
@@ -634,18 +633,6 @@ void shell_print_info(void)
     put_dec(wafer_maj); console_putc('.'); put_dec(wafer_min);
     console_puts(", SecBoot: "); console_puts(efuse_is_secure_boot_enabled() ? "ON" : "OFF");
     console_puts(", FlashCrypt: "); console_puts(efuse_is_flash_encryption_enabled() ? "ON" : "OFF");
-    console_puts("\r\n");
-
-    soak_telemetry_t soak_tel;
-    soak_get_telemetry(&soak_tel);
-    console_puts(" Soak:    Cycles: ");
-    put_dec(soak_tel.completed_cycles);
-    console_puts(", Streak: ");
-    put_dec(soak_tel.clean_streak);
-    console_puts(", LeakFree: ");
-    console_puts(!soak_tel.mem_leak_detected ? "YES" : "NO");
-    console_puts(", Drops: ");
-    put_dec(dpc_get_drop_count());
     console_puts("\r\n");
 
     ota_status_report_t ota_rep;
@@ -672,10 +659,11 @@ void shell_print_info(void)
     golden_master_report_t gm_rep;
     bool gm_ok = golden_master_verify(&gm_rep);
     console_puts(gm_ok ? "CERTIFIED (0x5A5A5A5A)\r\n" : "UNCERTIFIED\r\n");
+    modules_print_info();
     console_puts("========================================\r\n");
 }
 
-static int parse_uint(char **str, uint32_t *out)
+int shell_parse_uint(char **str, uint32_t *out)
 {
     if (!str || !*str || !out) return 0;
     skip_space(str);
@@ -730,44 +718,6 @@ void shell_execute(char *input_buffer)
     else if (strcmp(input_buffer, "top") == 0)
     {
         shell_print_top();
-    }
-    else if (strcmp(input_buffer, "do-test") == 0 || strcmp(input_buffer, "test") == 0)
-    {
-        run_validation_suite();
-    }
-    else if (strncmp(input_buffer, "soak", 4) == 0 && (input_buffer[4] == ' ' || input_buffer[4] == '\0'))
-    {
-        char *subcmd = input_buffer + 4;
-        while (*subcmd == ' ') subcmd++;
-
-        if (strncmp(subcmd, "status", 6) == 0)
-        {
-            soak_print_status();
-        }
-        else if (strncmp(subcmd, "audit", 5) == 0)
-        {
-            soak_print_audit();
-        }
-        else
-        {
-            uint32_t cycles = TEST_SOAK_DEFAULT_CYCLES;
-            if (*subcmd != '\0')
-            {
-                if (strncmp(subcmd, "cont", 4) == 0 || strncmp(subcmd, "24/7", 4) == 0)
-                {
-                    cycles = 0U;
-                }
-                else
-                {
-                    uint32_t c_in = 0U;
-                    if (parse_uint(&subcmd, &c_in))
-                    {
-                        cycles = c_in;
-                    }
-                }
-            }
-            test_soak_run(cycles, TEST_SOAK_DEFAULT_DELAY_MS);
-        }
     }
     else if (strncmp(input_buffer, "ota", 3) == 0 && (input_buffer[3] == ' ' || input_buffer[3] == '\0'))
     {
@@ -967,7 +917,7 @@ void shell_execute(char *input_buffer)
             {
                 uint32_t val_u32 = 0U;
                 char *temp_p = p;
-                if (parse_uint(&temp_p, &val_u32))
+                if (shell_parse_uint(&temp_p, &val_u32))
                 {
                     rc = nvs_set_u32(key, val_u32);
                 }
@@ -1302,7 +1252,7 @@ void shell_execute(char *input_buffer)
     {
         char *arg = input_buffer + 3;
         uint32_t n = HW_RNG_SHELL_DEFAULT_WORDS;
-        if (!parse_uint(&arg, &n) || n == 0U || n > HW_RNG_SHELL_MAX_WORDS)
+        if (!shell_parse_uint(&arg, &n) || n == 0U || n > HW_RNG_SHELL_MAX_WORDS)
         {
             n = HW_RNG_SHELL_DEFAULT_WORDS;
         }
@@ -1689,10 +1639,10 @@ void shell_execute(char *input_buffer)
             char *args = subcmd + 3;
             while (*args == ' ') args++;
             uint32_t pin = 0U;
-            if (parse_uint(&args, &pin))
+            if (shell_parse_uint(&args, &pin))
             {
                 uint32_t val = 0U;
-                if (parse_uint(&args, &val))
+                if (shell_parse_uint(&args, &val))
                 {
                     gpio_set_level(pin, val);
                     console_puts("GPIO ");
@@ -1716,7 +1666,7 @@ void shell_execute(char *input_buffer)
             char *args = subcmd + 3;
             while (*args == ' ') args++;
             uint32_t pin = 0U;
-            if (parse_uint(&args, &pin))
+            if (shell_parse_uint(&args, &pin))
             {
                 int lvl = gpio_get_level(pin);
                 console_puts("GPIO ");
@@ -1735,7 +1685,7 @@ void shell_execute(char *input_buffer)
             char *args = subcmd + 3;
             while (*args == ' ') args++;
             uint32_t pin = 0U;
-            if (parse_uint(&args, &pin))
+            if (shell_parse_uint(&args, &pin))
             {
                 while (*args == ' ') args++;
                 if (strcmp(args, "out") == 0)
@@ -1767,7 +1717,7 @@ void shell_execute(char *input_buffer)
             char *args = subcmd + 4;
             while (*args == ' ') args++;
             uint32_t pin = 0U;
-            if (parse_uint(&args, &pin))
+            if (shell_parse_uint(&args, &pin))
             {
                 while (*args == ' ') args++;
                 if (strcmp(args, "up") == 0)
@@ -2415,141 +2365,6 @@ void shell_execute(char *input_buffer)
         console_puts("  MMU Page Size:     64 KB\r\n");
         console_puts("  L1 ICache:         Operational (32 KB 4-way set associative)\r\n");
     }
-    else if (strncmp(input_buffer, "15.4", 4) == 0 && (input_buffer[4] == ' ' || input_buffer[4] == '\0'))
-    {
-        char *subcmd = input_buffer + 4;
-        while (*subcmd == ' ') subcmd++;
-
-        if (strncmp(subcmd, "chan", 4) == 0)
-        {
-            char *arg = subcmd + 4;
-            while (*arg == ' ') arg++;
-            uint32_t chan = 0;
-            if (parse_uint(&arg, &chan))
-            {
-                ieee802154_status_t cst = ieee802154_set_channel((uint8_t)chan);
-                if (cst == IEEE802154_OK)
-                {
-                    console_puts("IEEE 802.15.4 channel set to ");
-                    put_dec(chan);
-                    console_puts(" (");
-                    put_dec(ieee802154_get_freq_mhz((uint8_t)chan));
-                    console_puts(" MHz).\r\n");
-                }
-                else
-                {
-                    console_puts("Error: Invalid channel (allowed 11-26).\r\n");
-                }
-            }
-            else
-            {
-                console_puts("Usage: 15.4 chan <11-26>\r\n");
-            }
-        }
-        else if (strncmp(subcmd, "pan", 3) == 0)
-        {
-            char *arg = subcmd + 3;
-            while (*arg == ' ') arg++;
-            uint32_t pan = 0;
-            if (parse_uint(&arg, &pan))
-            {
-                ieee802154_set_pan_id((uint16_t)pan);
-                console_puts("IEEE 802.15.4 PAN ID set to ");
-                put_hex(pan);
-                console_puts(".\r\n");
-            }
-            else
-            {
-                console_puts("Usage: 15.4 pan <hex_pan_id>\r\n");
-            }
-        }
-        else if (strncmp(subcmd, "short", 5) == 0)
-        {
-            char *arg = subcmd + 5;
-            while (*arg == ' ') arg++;
-            uint32_t saddr = 0;
-            if (parse_uint(&arg, &saddr))
-            {
-                ieee802154_set_short_address((uint16_t)saddr);
-                console_puts("IEEE 802.15.4 Short Address set to ");
-                put_hex(saddr);
-                console_puts(".\r\n");
-            }
-            else
-            {
-                console_puts("Usage: 15.4 short <hex_short_addr>\r\n");
-            }
-        }
-        else if (strncmp(subcmd, "rx", 2) == 0)
-        {
-            ieee802154_cmd(IEEE802154_CMD_RX_START);
-            console_puts("IEEE 802.15.4 Transceiver entered RX state.\r\n");
-        }
-        else if (strncmp(subcmd, "tx", 2) == 0)
-        {
-            ieee802154_cmd(IEEE802154_CMD_TX_START);
-            console_puts("IEEE 802.15.4 Transceiver entered TX state.\r\n");
-        }
-        else if (strncmp(subcmd, "stop", 4) == 0)
-        {
-            ieee802154_cmd(IEEE802154_CMD_FORCE_TRX_OFF);
-            console_puts("IEEE 802.15.4 Transceiver entered TRX_OFF standby state.\r\n");
-        }
-        else
-        {
-            ieee802154_telemetry_t zt;
-            ieee802154_get_telemetry(&zt);
-            console_puts("IEEE 802.15.4 (Zigbee / Thread) Radio Transceiver Status:\r\n");
-            console_puts("  State:             ");
-            if (zt.state == IEEE802154_STATE_DISABLE) console_puts("DISABLE");
-            else if (zt.state == IEEE802154_STATE_IDLE) console_puts("IDLE");
-            else if (zt.state == IEEE802154_STATE_TRX_OFF) console_puts("TRX_OFF");
-            else if (zt.state == IEEE802154_STATE_RX) console_puts("RX");
-            else if (zt.state == IEEE802154_STATE_TX) console_puts("TX");
-            else console_puts("CCA");
-            console_puts("\r\n");
-            console_puts("  Channel:           ");
-            put_dec(zt.channel);
-            console_puts(" (");
-            put_dec(zt.freq_mhz);
-            console_puts(" MHz, 2.4 GHz ISM)\r\n");
-            console_puts("  PAN ID:            ");
-            put_hex(zt.pan_id);
-            console_puts("\r\n");
-            console_puts("  Short Address:     ");
-            put_hex(zt.short_addr);
-            console_puts("\r\n");
-            console_puts("  Extended EUI-64:   ");
-            for (int i = 0; i < 8; i++)
-            {
-                uint8_t byte = zt.ext_addr[i];
-                const char hex_chars[] = "0123456789abcdef";
-                console_putc(hex_chars[(byte >> 4) & 0x0F]);
-                console_putc(hex_chars[byte & 0x0F]);
-                if (i < 7) console_putc(':');
-            }
-            console_puts("\r\n");
-            console_puts("  TX Power Level:    ");
-            put_dec(zt.tx_power);
-            console_puts(" / 31\r\n");
-            console_puts("  Auto-ACK TX / RX:  ");
-            console_puts(zt.auto_ack_tx ? "ENABLED" : "DISABLED");
-            console_puts(" / ");
-            console_puts(zt.auto_ack_rx ? "ENABLED" : "DISABLED");
-            console_puts("\r\n");
-            console_puts("  Promiscuous Mode:  ");
-            console_puts(zt.promiscuous ? "ENABLED" : "DISABLED");
-            console_puts("\r\n");
-            console_puts("  Hardware Version:  ");
-            put_hex(zt.date_version);
-            console_puts("\r\n");
-            console_puts("  Transceiver Cmds:  TX=");
-            put_dec(zt.tx_count);
-            console_puts(", RX=");
-            put_dec(zt.rx_count);
-            console_puts("\r\n");
-        }
-    }
     else if (strncmp(input_buffer, "net", 3) == 0 && (input_buffer[3] == ' ' || input_buffer[3] == '\0'))
     {
         char *subcmd = input_buffer + 3;
@@ -2900,13 +2715,14 @@ void shell_execute(char *input_buffer)
         }
         else if (strncmp(subcmd, "routes", 6) == 0)
         {
-            console_puts("Registered HTTP Routes:\r\n");
-            console_puts("  1. GET  /               (Embedded Web UI Dashboard)\r\n");
-            console_puts("  2. GET  /index.html     (Embedded Web UI Dashboard)\r\n");
-            console_puts("  3. GET  /api/status     (System Status JSON)\r\n");
-            console_puts("  4. GET  /api/info       (Device Info JSON)\r\n");
-            console_puts("  5. GET  /api/telemetry  (Telemetry Metrics JSON)\r\n");
-            console_puts("  6. POST /api/wdt/feed   (Watchdog Supervisor Feed)\r\n");
+            console_puts("Registered HTTP routes:\r\n");
+            for (uint16_t i = 0U; i < http_server_get_route_count(); i++)
+            {
+                const http_route_t *r = http_route_at(i);
+                console_puts((r->method == HTTP_METHOD_POST) ? "  POST " : "  GET  ");
+                console_puts(r->path);
+                console_puts("\r\n");
+            }
         }
         else
         {
@@ -2947,149 +2763,6 @@ void shell_execute(char *input_buffer)
             console_puts("\r\n");
         }
     }
-    else if (strncmp(input_buffer, "speedtest", 9) == 0 && (input_buffer[9] == ' ' || input_buffer[9] == '\0'))
-    {
-        char *subcmd = input_buffer + 9;
-        while (*subcmd == ' ') subcmd++;
-
-        if (strncmp(subcmd, "reset", 5) == 0)
-        {
-            speedtest_reset();
-            console_puts("Speed-Test engine statistics reset.\r\n");
-        }
-        else if (strncmp(subcmd, "udp", 3) == 0)
-        {
-            char *arg = subcmd + 3;
-            while (*arg == ' ') arg++;
-
-            uint32_t target_ip = 0U;
-            uint32_t count = SPEEDTEST_DEFAULT_BURST_COUNT;
-            uint32_t size = SPEEDTEST_DEFAULT_PACKET_SIZE;
-
-            if (*arg != '\0')
-            {
-                char ip_tok[32];
-                size_t tok_len = 0U;
-                while (*arg != ' ' && *arg != '\0' && tok_len < (sizeof(ip_tok) - 1U))
-                {
-                    ip_tok[tok_len++] = *arg++;
-                }
-                ip_tok[tok_len] = '\0';
-                target_ip = net_str_to_ip(ip_tok);
-                while (*arg == ' ') arg++;
-                if (*arg != '\0')
-                {
-                    uint32_t c_in = 0U;
-                    if (parse_uint(&arg, &c_in)) count = c_in;
-                    while (*arg == ' ') arg++;
-                    if (*arg != '\0')
-                    {
-                        uint32_t s_in = 0U;
-                        if (parse_uint(&arg, &s_in)) size = s_in;
-                    }
-                }
-            }
-
-            if (target_ip == 0U)
-            {
-                net_config_t cfg;
-                net_get_config(&cfg);
-                target_ip = cfg.gateway;
-            }
-
-            char ip_s[NET_IP_STR_BUF_LEN];
-            net_ip_to_str(target_ip, ip_s, sizeof(ip_s));
-            console_puts("Executing UDP Speed-Test Benchmark Burst to ");
-            console_puts(ip_s);
-            console_puts(" (");
-            put_dec(count);
-            console_puts(" packets, ");
-            put_dec(size);
-            console_puts(" B each)...\r\n");
-
-            speedtest_result_t res;
-            speedtest_status_t st = speedtest_run_udp_tx(target_ip, SPEEDTEST_DEFAULT_PORT, count, size, &res);
-            if (st == SPEEDTEST_OK)
-            {
-                uint32_t dur_us = (res.end_time_us > res.start_time_us) ? (res.end_time_us - res.start_time_us) : 1U;
-                uint32_t mbps = speedtest_calculate_throughput_mbps(res.total_bytes_transferred, dur_us);
-                console_puts("UDP Benchmark Completed:\r\n");
-                console_puts("  Bytes Transferred: "); put_dec(res.total_bytes_transferred); console_puts(" B\r\n");
-                console_puts("  Duration:          "); put_dec(dur_us / 1000U); console_puts(" ms ("); put_dec(dur_us); console_puts(" us)\r\n");
-                console_puts("  Throughput:        "); put_dec(res.throughput_kbps); console_puts(" kbps ("); put_dec(mbps); console_puts(" Mbps)\r\n");
-                console_puts("  Latency Min/Max:   "); put_dec(res.latency_min_us); console_puts(" us / "); put_dec(res.latency_max_us); console_puts(" us\r\n");
-                console_puts("  Packet Loss:       "); put_dec(res.packet_loss_count); console_puts("\r\n");
-            }
-            else
-            {
-                console_puts("UDP Benchmark Failed (error code: ");
-                put_dec((uint32_t)st);
-                console_puts(")\r\n");
-            }
-        }
-        else if (strncmp(subcmd, "status", 6) == 0)
-        {
-            speedtest_telemetry_t st;
-            speedtest_get_telemetry(&st);
-            console_puts("Speed-Test Benchmark Engine Telemetry:\r\n");
-            console_puts("  Bursts Executed:   "); put_dec(st.bursts_run); console_puts("\r\n");
-            console_puts("  Packets TX / RX:   "); put_dec(st.total_packets_tx); console_puts(" / "); put_dec(st.total_packets_rx); console_puts("\r\n");
-            console_puts("  Bytes TX / RX:     "); put_dec(st.total_bytes_tx); console_puts(" / "); put_dec(st.total_bytes_rx); console_puts("\r\n");
-            console_puts("  Last Throughput:   "); put_dec(st.last_throughput_kbps); console_puts(" kbps ("); put_dec(st.last_throughput_mbps); console_puts(" Mbps)\r\n");
-            console_puts("  Last Latency:      Min="); put_dec(st.last_latency_min_us); console_puts(" us, Max="); put_dec(st.last_latency_max_us);
-            console_puts(" us, Avg="); put_dec(st.last_latency_avg_us); console_puts(" us\r\n");
-            console_puts("  Last Packet Loss:  "); put_dec(st.last_packet_loss); console_puts("\r\n");
-        }
-        else
-        {
-            uint32_t count = SPEEDTEST_DEFAULT_BURST_COUNT;
-            uint32_t size = SPEEDTEST_DEFAULT_PACKET_SIZE;
-
-            if (strncmp(subcmd, "run", 3) == 0 || strncmp(subcmd, "burst", 5) == 0)
-            {
-                if (strncmp(subcmd, "run", 3) == 0) subcmd += 3;
-                else subcmd += 5;
-                while (*subcmd == ' ') subcmd++;
-                if (*subcmd != '\0')
-                {
-                    uint32_t c_in = 0U;
-                    if (parse_uint(&subcmd, &c_in)) count = c_in;
-                    while (*subcmd == ' ') subcmd++;
-                    if (*subcmd != '\0')
-                    {
-                        uint32_t s_in = 0U;
-                        if (parse_uint(&subcmd, &s_in)) size = s_in;
-                    }
-                }
-            }
-
-            console_puts("Running Synthetic Speed-Test Burst Benchmark (");
-            put_dec(count);
-            console_puts(" packets, ");
-            put_dec(size);
-            console_puts(" B each)...\r\n");
-
-            speedtest_result_t res;
-            speedtest_status_t st = speedtest_run_synthetic_burst(count, size, &res);
-            if (st == SPEEDTEST_OK)
-            {
-                uint32_t dur_us = (res.end_time_us > res.start_time_us) ? (res.end_time_us - res.start_time_us) : 1U;
-                uint32_t mbps = speedtest_calculate_throughput_mbps(res.total_bytes_transferred, dur_us);
-                console_puts("Synthetic Benchmark Result:\r\n");
-                console_puts("  Total Transferred: "); put_dec(res.total_bytes_transferred); console_puts(" B ("); put_dec(res.total_bytes_transferred / 1024U); console_puts(" KB)\r\n");
-                console_puts("  Duration:          "); put_dec(dur_us / 1000U); console_puts(" ms ("); put_dec(dur_us); console_puts(" us)\r\n");
-                console_puts("  Throughput:        "); put_dec(res.throughput_kbps); console_puts(" kbps ("); put_dec(mbps); console_puts(" Mbps)\r\n");
-                console_puts("  Latency Min/Max:   "); put_dec(res.latency_min_us); console_puts(" us / "); put_dec(res.latency_max_us); console_puts(" us\r\n");
-                console_puts("  Packet Loss:       0\r\n");
-            }
-            else
-            {
-                console_puts("Synthetic Benchmark Failed (error code: ");
-                put_dec((uint32_t)st);
-                console_puts(")\r\n");
-            }
-        }
-    }
     else if (strncmp(input_buffer, "efuse", 5) == 0 && (input_buffer[5] == ' ' || input_buffer[5] == '\0'))
     {
         char *subcmd = input_buffer + 5;
@@ -3124,14 +2797,6 @@ void shell_execute(char *input_buffer)
         {
             console_puts("Usage: efuse [status|summary|security|mac]\r\n");
         }
-    }
-    else if (strncmp(input_buffer, "light", 5) == 0 && (input_buffer[5] == ' ' || input_buffer[5] == '\0'))
-    {
-        light_shell(input_buffer + 5, systimer_get_us());
-    }
-    else if (strncmp(input_buffer, "mqtt", 4) == 0 && (input_buffer[4] == ' ' || input_buffer[4] == '\0'))
-    {
-        mqtt_shell(input_buffer + 4, systimer_get_us());
     }
     else if (strncmp(input_buffer, "prov", 4) == 0 && (input_buffer[4] == ' ' || input_buffer[4] == '\0'))
     {
@@ -3362,7 +3027,20 @@ void shell_execute(char *input_buffer)
     }
     else
     {
-
+        /* Commands registered by the modules in this image (REV-33) */
+        size_t name_len = 0U;
+        while (input_buffer[name_len] != '\0' && input_buffer[name_len] != ' ')
+        {
+            name_len++;
+        }
+        const shell_command_t *cmd = shell_command_find(input_buffer, name_len);
+        if (cmd != NULL)
+        {
+            char *args = input_buffer + name_len;
+            skip_space(&args);
+            cmd->run(args);
+            return;
+        }
         s_shell_telemetry.unknown_commands++;
         console_puts("Unknown command. Type 'help' for available commands.\r\n");
     }

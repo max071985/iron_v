@@ -36,7 +36,7 @@ MEMORY
  *   0x4087e610 - 0x40880000  ROM .bss/.data, used by ROM functions at run time */
 ROM_DATA_START          = 0x4087E610;
 MAIN_STACK_ROM_GAP      = 0x3200;   /* main stack starts this far below the end of SRAM */
-MAIN_STACK_MIN_SIZE     = 32K;
+/* MAIN_STACK_MIN_SIZE: the build profile's MAIN_STACK_MIN (Makefile: --defsym, REV-33) */
 IRAM_MIN_FREE           = 16K;
 
 SECTIONS
@@ -99,6 +99,18 @@ SECTIONS
         *json_lite.o(.rodata .rodata.* .srodata .srodata.*)
         /* REV-32 RAM budget (`mem`): shell only */
         *memstat.o(.rodata .rodata.* .srodata .srodata.*)
+        /* REV-33 module registry, module glue (*module.o) and device id: main loop and shell only.
+         * The tables are walked between their __start_/__stop_ symbols (module.h, shell.h). */
+        *module.o(.rodata .rodata.* .srodata .srodata.*)
+        *device.o(.rodata .rodata.* .srodata .srodata.*)
+        . = ALIGN(4);
+        __start_iron_modules = .;
+        KEEP(*(iron_modules))
+        __stop_iron_modules = .;
+        . = ALIGN(4);
+        __start_iron_shell_cmds = .;
+        KEEP(*(iron_shell_cmds))
+        __stop_iron_shell_cmds = .;
         *test.o(.rodata.str* .srodata.str*)
         . = ALIGN(16);
         _eflash_xip = .;

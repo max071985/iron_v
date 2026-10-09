@@ -274,4 +274,26 @@
 #define CONFIG_CONSOLE_DEFAULT_ECHO         1U
 #endif
 
+/* ========================================================================= */
+/* 7. Build Profile (REV-33): set by profiles/<name>.config via config_gen.h */
+/* ========================================================================= */
+
+/* Profile name and its module list (also CONFIG_MODULE_<NAME> 1U per selected module) */
+#ifndef CONFIG_PROFILE
+#define CONFIG_PROFILE                      "none"
+#endif
+
+#ifndef CONFIG_MODULES
+#define CONFIG_MODULES                      ""
+#endif
+
+/* Fixed-size block pools of src/arena.c: blocks of 64 B and 256 B (0 = no pool) */
+#ifndef CONFIG_POOL_SMALL_BLOCKS
+#define CONFIG_POOL_SMALL_BLOCKS            0U
+#endif
+
+#ifndef CONFIG_POOL_MEDIUM_BLOCKS
+#define CONFIG_POOL_MEDIUM_BLOCKS           0U
+#endif
+
 #endif /* IRON_V_CONFIG_H */

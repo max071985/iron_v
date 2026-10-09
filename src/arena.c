@@ -11,9 +11,22 @@
 #include "arena.h"
 #include "string.h"
 
-/* Static Memory Pools Residing in HP SRAM DRAM (.bss) */
+_Static_assert(ARENA_POOL_BLOCK_COUNT_SMALL <= ARENA_POOL_BLOCKS_MAX, "POOL_SMALL_BLOCKS: at most 32");
+_Static_assert(ARENA_POOL_BLOCK_COUNT_MEDIUM <= ARENA_POOL_BLOCKS_MAX, "POOL_MEDIUM_BLOCKS: at most 32");
+
+/* Static Memory Pools Residing in HP SRAM DRAM (.bss); a pool sized 0 by the profile has no memory */
+#if ARENA_POOL_BLOCK_COUNT_SMALL > 0U
 static uint8_t s_small_pool_mem[ARENA_POOL_TOTAL_SIZE_SMALL] __attribute__((aligned(ARENA_ALIGN_BYTES)));
+#define ARENA_SMALL_POOL_MEM            s_small_pool_mem
+#else
+#define ARENA_SMALL_POOL_MEM            NULL
+#endif
+#if ARENA_POOL_BLOCK_COUNT_MEDIUM > 0U
 static uint8_t s_medium_pool_mem[ARENA_POOL_TOTAL_SIZE_MEDIUM] __attribute__((aligned(ARENA_ALIGN_BYTES)));
+#define ARENA_MEDIUM_POOL_MEM           s_medium_pool_mem
+#else
+#define ARENA_MEDIUM_POOL_MEM           NULL
+#endif
 static uint8_t s_scratch_mem[ARENA_SCRATCH_TOTAL_SIZE] __attribute__((aligned(ARENA_ALIGN_BYTES)));
 
 /* Static Descriptors */
@@ -35,6 +48,14 @@ static void arena_init_pool_instance(arena_pool_t *pool,
     pool->high_watermark    = 0U;
     pool->total_alloc_count = 0U;
     pool->total_free_count  = 0U;
+    pool->free_head         = NULL;
+
+    if (mem == NULL || block_count == 0U)
+    {
+        pool->memory      = NULL;
+        pool->block_count = 0U;
+        return;
+    }
 
     /* Build intrusive singly linked free-list linking each block to the next */
     for (uint32_t i = 0U; i < (block_count - 1U); i++)
@@ -52,12 +73,12 @@ static void arena_init_pool_instance(arena_pool_t *pool,
 void arena_init(void)
 {
     arena_init_pool_instance(&s_small_pool,
-                             s_small_pool_mem,
+                             ARENA_SMALL_POOL_MEM,
                              ARENA_POOL_BLOCK_SIZE_SMALL,
                              ARENA_POOL_BLOCK_COUNT_SMALL);
 
     arena_init_pool_instance(&s_medium_pool,
-                             s_medium_pool_mem,
+                             ARENA_MEDIUM_POOL_MEM,
                              ARENA_POOL_BLOCK_SIZE_MEDIUM,
                              ARENA_POOL_BLOCK_COUNT_MEDIUM);
 
@@ -160,7 +181,7 @@ void *arena_alloc(size_t size)
 
 int arena_free(void *ptr)
 {
-    if (ptr == NULL || s_small_pool.memory == NULL || s_medium_pool.memory == NULL)
+    if (ptr == NULL)
     {
         return ARENA_FREE_FAIL;
     }
@@ -168,12 +189,12 @@ int arena_free(void *ptr)
     arena_pool_t *pool = NULL;
     uint8_t *p = (uint8_t *)ptr;
 
-    if ((p >= s_small_pool.memory) &&
+    if ((s_small_pool.memory != NULL) && (p >= s_small_pool.memory) &&
         (p < (s_small_pool.memory + ARENA_POOL_TOTAL_SIZE_SMALL)))
     {
         pool = &s_small_pool;
     }
-    else if ((p >= s_medium_pool.memory) &&
+    else if ((s_medium_pool.memory != NULL) && (p >= s_medium_pool.memory) &&
              (p < (s_medium_pool.memory + ARENA_POOL_TOTAL_SIZE_MEDIUM)))
     {
         pool = &s_medium_pool;

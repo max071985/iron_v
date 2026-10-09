@@ -41,10 +41,20 @@ iron-v/
 │   └── link.ld                                  # LP core memory map
 ├── libs/                                        # Vendor static libraries
 │   └── esp32c6/                                 # Static wireless and PHY libraries
-├── scripts/                                     # Automation & hardware validation scripts
-│   ├── board-validation.py                      # Physical silicon test runner via MCP server
+├── profiles/                                    # Build profiles: modules and memory sizes per image
+│   ├── light.config                             # Production light (default `make`)
+│   └── dev.config                               # Test build: every module + developer tools (do-test)
+├── scripts/                                     # Build generators
+│   ├── gen_config.py                            # Profile + .config -> config_gen.h / config.mk
+│   ├── gen_web.py                               # Page -> minified, gzip-compressed C array
 │   └── gen_headers.py                           # SVD-to-C header generation utility
-├── src/                                         # Kernel and peripheral drivers
+├── tools/bridge/                                # Optional: Mosquitto + Home Assistant (+ Google) bridge
+├── src/modules/                                 # Optional modules, one directory each (module.mk)
+│   ├── light/                                   # RGB LED light, its page at / and REST v1 /api/v1/light
+│   ├── mqtt/                                    # MQTT client + Home Assistant discovery (README.md)
+│   ├── ieee802154/                              # 802.15.4 transceiver driver (dev only)
+│   └── dev/                                     # do-test, speed test, soak, diagnostic routes
+├── src/                                         # The core: kernel, drivers, Wi-Fi, IP stack, HTTP, shell
 │   ├── crt0.S                                   # Reset vector, CSR initialization, and C runtime boot
 │   ├── trap_entry.S / trap.c                    # Machine-mode trap entry, exception decoding, panic dump
 │   ├── main.c                                   # Kernel initialization and interactive shell
@@ -57,7 +67,8 @@ iron-v/
 │   ├── task.c / task_switch.S                   # Cooperative coroutine task engine
 │   ├── pmp.c / power.c / lp_core.c              # RISC-V PMP isolation, sleep control, and LP mailbox
 │   ├── gpio.c / gdma.c                          # GPIO Matrix routing and multi-channel GDMA engine
-│   ├── modem.c / wifi.c / ieee802154.c          # Modem clocks, Wi-Fi (Espressif blob glue), 802.15.4
+│   ├── module.c / module.h                      # Module registry (init, routes, tick, events, commands)
+│   ├── modem.c / wifi.c                         # Modem clocks, Wi-Fi (Espressif blob glue)
 │   ├── net.c / tcp.c                            # Lightweight TCP/IP stack (IPv4, ARP, ICMP, UDP, TCP)
 │   ├── wifi_os_adapter.c                        # Freestanding OSAL for vendor Wi-Fi binary blobs
 │   ├── wifi_regulatory.c / wifi_regulatory.h    # Native 2.4 GHz regulatory rules and country mapping
@@ -108,30 +119,40 @@ sudo usermod -aG dialout,uucp $USER
 All lifecycle steps are managed through GNU Make:
 
 ### 1. Compile Firmware
+Iron-V is one core plus modules chosen per application. A build profile
+(`profiles/<name>.config`) selects the modules and sizes the memory; the untracked `.config`
+(see `config.example`) adds device settings and, with `MODULES_ADD`, extra modules.
 ```bash
 # Clean existing binaries
 make clean
 
-# Compile the LP firmware, kernel ELF, and final flashable image (build/firmware.bin)
+# Production light image (default profile): build/light/firmware.bin
 make all
+
+# Test build with every module and the developer tools (do-test): build/dev/firmware.bin
+make PROFILE=dev
+
+# Every profile
+make profiles
 ```
-All outputs go to `build/`; `make clean` removes that directory. Header and linker-script
-edits trigger the right rebuilds (`-MMD -MP` dependency tracking).
+All outputs go to `build/<profile>/` (`build/host/` for host tests); `make clean` removes `build/`.
+A module that a profile does not select is not compiled or linked. Header, linker-script and
+profile edits trigger the right rebuilds (`-MMD -MP` dependency tracking).
 
 ### 2. Run Test Suites
 Neither target needs connected hardware:
 ```bash
-# Host C unit tests + companion app tests (native gcc only, no RISC-V toolchain needed)
+# Host C unit tests of the core and every module (native gcc only, no RISC-V toolchain needed)
 make host-test
 
-# host-test plus static analysis of build/firmware.elf and build/firmware.bin
+# host-test, then every profile built and its ELF/BIN checked (modules linked, budgets)
 make test
 ```
 
 ### 3. Flash to Target
 Connect the ESP32-C6 board via USB and run:
 ```bash
-# Automatically detects /dev/ttyACM0 or /dev/ttyUSB0
+# Automatically detects /dev/ttyACM0 or /dev/ttyUSB0 (PROFILE=dev for the test build)
 make flash
 
 # Or specify a port manually:

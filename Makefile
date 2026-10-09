@@ -12,43 +12,78 @@ LD = $(CROSS_COMPILE)ld
 OBJCOPY = $(CROSS_COMPILE)objcopy
 OBJDUMP = $(CROSS_COMPILE)objdump
 
-# All build outputs live under $(BUILD)
+# Build profile (REV-33): profiles/<PROFILE>.config selects the modules (src/modules/<name>/) and
+# the memory sizes; the local .config (see config.example) overrides any key of it. Plain `make`
+# builds the production light image; the test build with the developer tools is PROFILE=dev.
+PROFILE ?= light
+PROFILES = $(sort $(basename $(notdir $(wildcard profiles/*.config))))
+PROFILE_FILE = profiles/$(PROFILE).config
+
+# All build outputs live under $(BUILD); each profile has its own directory
 BUILD ?= build
-OBJ_DIR = $(BUILD)/obj
-GEN_DIR = $(BUILD)/gen
+OUT = $(BUILD)/$(PROFILE)
+OBJ_DIR = $(OUT)/obj
+GEN_DIR = $(OUT)/gen
 LP_DIR = $(BUILD)/lp_core
 HOST_DIR = $(BUILD)/host
-ELF = $(BUILD)/firmware.elf
-BIN = $(BUILD)/firmware.bin
-LP_IMAGE_H = $(GEN_DIR)/lp_firmware_image.h
-# Local configuration: .config (untracked, see config.example) -> generated header
+ELF = $(OUT)/firmware.elf
+BIN = $(OUT)/firmware.bin
+MAP = $(OUT)/firmware.map
+LP_IMAGE_H = $(LP_DIR)/lp_firmware_image.h
+# Profile + local configuration -> generated header and make fragment (scripts/gen_config.py)
 CONFIG_FILE ?= .config
 CONFIG_GEN_H = $(GEN_DIR)/config_gen.h
+CONFIG_MK = $(GEN_DIR)/config.mk
 HOST_TEST_BIN = $(HOST_DIR)/test_freestanding
-# Light page (REV-25): web/index.html -> minified, gzip-compressed C array served at /
-WEB_SRC = web/index.html
+# Light page (REV-25): the light module's index.html -> minified, gzip-compressed C array served at /
+WEB_SRC = src/modules/light/index.html
 WEB_GEN_DIR = $(BUILD)/web
 WEB_GZ_H = $(WEB_GEN_DIR)/web_index_gz.h
 
-# Compiler flags
-CFLAGS = -march=rv32imac_zicsr_zifencei -mabi=ilp32 -ffreestanding -nostdlib -Os -g -Wall -Wextra -Werror -Isrc -I$(GEN_DIR) -I$(WEB_GEN_DIR)
+# Modules: each src/modules/<name>/module.mk sets MODULE_SRCS_<name>, MODULE_REQUIRES_<name> and
+# optionally MODULE_TARGET_ONLY_<name> (sources left out of the host tests)
+ALL_MODULES = $(sort $(notdir $(patsubst %/module.mk,%,$(wildcard src/modules/*/module.mk))))
+include $(wildcard src/modules/*/module.mk)
+
+# Goals that need no profile configuration; every other goal builds $(PROFILE)
+NO_PROFILE_GOALS = clean host-test test profiles monitor erase_flash
+ifneq ($(filter-out $(NO_PROFILE_GOALS),$(or $(MAKECMDGOALS),all)),)
+  ifeq ($(wildcard $(PROFILE_FILE)),)
+    $(error PROFILE=$(PROFILE): no $(PROFILE_FILE) (profiles: $(PROFILES)))
+  endif
+  # Runs on every make; both outputs are rewritten only when the configuration changes
+  GEN_CONFIG_STATUS := $(shell python3 scripts/gen_config.py --profile $(PROFILE) $(CONFIG_GEN_H) $(CONFIG_MK) $(PROFILE_FILE) $(wildcard $(CONFIG_FILE)) >&2; echo $$?)
+  ifneq ($(GEN_CONFIG_STATUS),0)
+    $(error scripts/gen_config.py failed for PROFILE=$(PROFILE))
+  endif
+  include $(CONFIG_MK)
+  $(foreach m,$(PROFILE_MODULES),$(foreach r,$(MODULE_REQUIRES_$(m)),$(if $(filter $(r),$(PROFILE_MODULES)),,$(error module $(m) needs module $(r) (MODULES=$(PROFILE_MODULES))))))
+endif
+
+# Compiler flags (module headers: only the selected modules, so the core cannot depend on one)
+MODULE_INC = $(foreach m,$(PROFILE_MODULES),-Isrc/modules/$(m))
+CFLAGS = -march=rv32imac_zicsr_zifencei -mabi=ilp32 -ffreestanding -nostdlib -Os -g -Wall -Wextra -Werror -Isrc $(MODULE_INC) -I$(GEN_DIR) -I$(LP_DIR) -I$(WEB_GEN_DIR)
 
 DEPFLAGS = -MMD -MP
 
-# Host test build: native compiler, stub LP image (tests/host/), no cross toolchain needed
+# Host test build: native compiler, stub LP image (tests/host/), no cross toolchain needed.
+# Host tests always build with the defaults and every module (tests/host/config_gen.h), never with .config
 HOST_CC ?= gcc
-HOST_CFLAGS = -O2 -fno-tree-loop-distribute-patterns -Wall -Wextra -Werror -Itests/host -Isrc -I$(WEB_GEN_DIR)
-# Host tests always build with the defaults (tests/host/config_gen.h), never with .config
+HOST_CFLAGS = -O2 -fno-tree-loop-distribute-patterns -Wall -Wextra -Werror -Itests/host -Isrc $(foreach m,$(ALL_MODULES),-Isrc/modules/$(m)) -I$(WEB_GEN_DIR)
 
-# Linker flags
-LDFLAGS = -T ld/link.ld -T ld/rom/esp32c6.rom.ld -T ld/rom/esp32c6.rom.phy.ld -T ld/rom/esp32c6.rom.pp.ld -T ld/rom/esp32c6.rom.net80211.ld -T ld/rom/esp32c6.rom.coexist.ld -Llibs/esp32c6 -nostdlib -Wl,--wrap=ram_set_chan_freq_sw_start
+# Linker flags; the main-stack budget comes from the profile (MAIN_STACK_MIN)
+LDFLAGS = -T ld/link.ld -T ld/rom/esp32c6.rom.ld -T ld/rom/esp32c6.rom.phy.ld -T ld/rom/esp32c6.rom.pp.ld -T ld/rom/esp32c6.rom.net80211.ld -T ld/rom/esp32c6.rom.coexist.ld -Llibs/esp32c6 -nostdlib -Wl,--wrap=ram_set_chan_freq_sw_start -Wl,--defsym=MAIN_STACK_MIN_SIZE=$(PROFILE_MAIN_STACK_MIN)
 
-SRCS = src/crt0.S src/trap_entry.S src/task_switch.S src/main.c src/string.c src/utils.c src/test.c src/clock.c src/mmu.c src/wdt.c src/trap.c src/panic.c src/interrupt.c src/dpc.c src/usb_serial.c src/uart.c src/console.c src/timer.c src/arena.c src/systimer.c src/task.c src/pmp.c src/lp_core.c src/power.c src/gpio.c src/gdma.c src/modem.c src/wifi.c src/ieee802154.c src/net.c src/tcp.c src/dhcp.c src/wifi_os_adapter.c src/wifi_regulatory.c src/wifi_ftm_cal.c src/wifi_phy_data.c src/http_server.c src/speedtest.c src/shell.c src/efuse.c src/soak.c src/ota.c src/nvs.c src/provisioning.c src/wpa2_client.c src/wpa_ie.c src/mdns.c src/wifi_link.c src/button.c src/looptime.c src/flash_rom.c src/sha1_hw.c src/hw_rng.c src/json_lite.c src/rgb_led.c src/light.c src/mqtt.c src/api_v1.c src/memstat.c
+# The core: in every image
+CORE_SRCS = src/crt0.S src/trap_entry.S src/task_switch.S src/main.c src/string.c src/utils.c src/clock.c src/mmu.c src/wdt.c src/trap.c src/panic.c src/interrupt.c src/dpc.c src/usb_serial.c src/uart.c src/console.c src/timer.c src/arena.c src/systimer.c src/task.c src/pmp.c src/lp_core.c src/power.c src/gpio.c src/gdma.c src/modem.c src/wifi.c src/net.c src/tcp.c src/dhcp.c src/wifi_os_adapter.c src/wifi_regulatory.c src/wifi_ftm_cal.c src/wifi_phy_data.c src/http_server.c src/shell.c src/efuse.c src/ota.c src/nvs.c src/provisioning.c src/wpa2_client.c src/wpa_ie.c src/mdns.c src/wifi_link.c src/button.c src/looptime.c src/flash_rom.c src/sha1_hw.c src/hw_rng.c src/json_lite.c src/api_v1.c src/memstat.c src/module.c src/device.c
 
 # Sources that only make sense on the target (startup, traps, console, timers, scheduler,
-# the on-board self-test). Everything else in SRCS is also compiled into the host tests.
-TARGET_ONLY_SRCS = src/crt0.S src/trap_entry.S src/task_switch.S src/main.c src/utils.c src/test.c src/clock.c src/wdt.c src/trap.c src/panic.c src/interrupt.c src/usb_serial.c src/uart.c src/console.c src/timer.c src/systimer.c src/task.c src/flash_rom.c src/sha1_hw.c src/hw_rng.c
-HOST_SRCS = $(filter-out $(TARGET_ONLY_SRCS),$(SRCS))
+# the on-board self-test). Everything else is also compiled into the host tests.
+TARGET_ONLY_SRCS = src/crt0.S src/trap_entry.S src/task_switch.S src/main.c src/utils.c src/clock.c src/wdt.c src/trap.c src/panic.c src/interrupt.c src/usb_serial.c src/uart.c src/console.c src/timer.c src/systimer.c src/task.c src/flash_rom.c src/sha1_hw.c src/hw_rng.c $(foreach m,$(ALL_MODULES),$(MODULE_TARGET_ONLY_$(m)))
+
+# Firmware: the core plus the profile's modules; host tests: the core plus every module
+SRCS = $(CORE_SRCS) $(foreach m,$(PROFILE_MODULES),$(MODULE_SRCS_$(m)))
+HOST_SRCS = $(filter-out $(TARGET_ONLY_SRCS),$(CORE_SRCS) $(foreach m,$(ALL_MODULES),$(MODULE_SRCS_$(m))))
 
 # Auto-detect hardware ports
 DETECTED_ACM ?= $(firstword $(wildcard /dev/ttyACM*))
@@ -79,12 +114,12 @@ else
   MONITOR_FLAGS ?= --noreset --lower-rts --lower-dtr
 endif
 
-.PHONY: all flash erase_flash monitor clean test host-test
+.PHONY: all flash erase_flash monitor clean test host-test elf-test profiles
 all: $(BIN)
 
-# The LP image header is generated into $(GEN_DIR); a leftover copy in src/ would shadow it
+# The LP image header is generated into $(LP_DIR) (shared by all profiles); a leftover copy in src/ would shadow it
 ifneq ($(wildcard src/lp_firmware_image.h),)
-  $(error src/lp_firmware_image.h is stale (now generated in $(GEN_DIR)); delete it)
+  $(error src/lp_firmware_image.h is stale (now generated in $(LP_DIR)); delete it)
 endif
 
 # LP Core Firmware Targets
@@ -100,17 +135,9 @@ $(LP_IMAGE_H): $(LP_DIR)/lp_firmware.bin
 	@python3 -c "with open('$<','rb') as f: d=f.read(); \
 	open('$@','w').write('/* Auto-generated */\n#ifndef LP_FIRMWARE_IMAGE_H\n#define LP_FIRMWARE_IMAGE_H\n#include <stdint.h>\n#include <stddef.h>\nstatic const uint8_t g_lp_firmware_bin[] __attribute__((aligned(4))) = {' + ','.join(f'0x{b:02X}U' for b in d) + '};\nstatic const size_t g_lp_firmware_bin_len = ' + str(len(d)) + 'U;\n#endif\n')"
 
-# Regenerated on every make; the file only changes (and triggers rebuilds via the .d files)
-# when .config changes. A missing .config gives an empty header: defaults only.
-$(CONFIG_GEN_H): FORCE
-	@python3 scripts/gen_config.py $(CONFIG_FILE) $@
-
 # Rewritten only when the compressed page changes
 $(WEB_GZ_H): $(WEB_SRC) scripts/gen_web.py
 	@python3 scripts/gen_web.py $(WEB_SRC) $@
-
-.PHONY: FORCE
-FORCE:
 
 # Firmware
 OBJS = $(patsubst src/%,$(OBJ_DIR)/%.o,$(basename $(SRCS)))
@@ -132,9 +159,8 @@ $(VENDOR_STAMP): $(VENDOR_LIBS) libs/esp32c6/SHA256SUMS libs/esp32c6/LICENSE
 	@cd libs/esp32c6 && sha256sum --quiet -c SHA256SUMS
 	@touch $@
 
-MAP = $(BUILD)/firmware.map
-
-$(ELF): $(OBJS) $(wildcard ld/*.ld ld/rom/*.ld) $(VENDOR_STAMP)
+# Relinks when the module selection or the stack budget changes (config.mk is rewritten only then)
+$(ELF): $(OBJS) $(wildcard ld/*.ld ld/rom/*.ld) $(VENDOR_STAMP) $(CONFIG_MK)
 	$(CC) $(CFLAGS) $(LDFLAGS) $(OBJS) -Wl,--start-group -lnet80211 -lpp -lphy -lcore -Wl,--end-group -lgcc -Wl,-Map=$(MAP) -Wl,--print-memory-usage -o $@
 
 $(BIN): $(ELF)
@@ -190,10 +216,19 @@ host-test: $(HOST_TEST_BIN)
 	@python3 scripts/gen_config.py --self-test
 	@python3 scripts/gen_web.py --self-test $(WEB_SRC)
 	@./$(HOST_TEST_BIN)
-	@python3 tests/test_companion_app.py
 
-test: host-test $(ELF) $(BIN)
-	@python3 tests/test_runner.py --elf $(ELF) --bin $(BIN) --host-test $(HOST_TEST_BIN) --objdump $(OBJDUMP)
+# ELF/BIN checks of one profile's image (layout, budgets, which modules are linked)
+elf-test: $(ELF) $(BIN) $(HOST_TEST_BIN)
+	@python3 tests/test_runner.py --elf $(ELF) --bin $(BIN) --host-test $(HOST_TEST_BIN) --objdump $(OBJDUMP) \
+		--profile $(PROFILE) --modules "$(PROFILE_MODULES)" --main-stack-min $(PROFILE_MAIN_STACK_MIN)
+
+# Host tests, then every profile built and checked: the test build and the production builds
+test: host-test
+	@for p in $(PROFILES); do $(MAKE) --no-print-directory PROFILE=$$p elf-test || exit 1; done
+
+# Build every profile (build/<profile>/firmware.bin)
+profiles:
+	@for p in $(PROFILES); do $(MAKE) --no-print-directory PROFILE=$$p all || exit 1; done
 
 clean:
 	rm -rf $(BUILD)

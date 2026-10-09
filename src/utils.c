@@ -1,5 +1,7 @@
 #include "utils.h"
 #include "io_constants.h"
+#include "modem.h"
+#include "regs/plic.h"
 #include "wdt.h"
 #include "dpc.h"
 
@@ -306,4 +308,75 @@ int putchar(int c)
     return c;
 }
 
+/* Linker section bounds (ld/link.ld) */
+extern char _stext[], _etext[], _srodata[], _erodata[], _sdata[], _stack_top[];
 
+mem_access_t check_mem_access(uint32_t addr)
+{
+    /* 1. Unaligned addresses are strictly invalid for 32-bit word access */
+    if (addr & WORD_ALIGN_MASK)
+    {
+        return MEM_ACCESS_INVALID;
+    }
+
+    /* 2. Read-Only Code in HP IRAM */
+    if (addr >= (uint32_t)_stext && addr < (uint32_t)_etext)
+    {
+        return MEM_ACCESS_READONLY;
+    }
+
+    /* 3. Read-Only Constant Data (.rodata) in HP DRAM */
+    if (addr >= (uint32_t)_srodata && addr < (uint32_t)_erodata)
+    {
+        return MEM_ACCESS_READONLY;
+    }
+
+    /* 4. Read-Write Data, BSS, Heap, and Stack range in HP SRAM */
+    if (addr >= (uint32_t)_sdata && addr < (uint32_t)_stack_top)
+    {
+        return MEM_ACCESS_READWRITE;
+    }
+
+    /* 5. LP SRAM (16 KB @ 0x50000000) */
+    if (addr >= LP_SRAM_START_ADDR && addr < LP_SRAM_END_ADDR)
+    {
+        return MEM_ACCESS_READWRITE;
+    }
+
+    /* 6. Flash XIP Execution & Read-Only Space (0x42000000 - 0x42800000) */
+    if (addr >= FLASH_XIP_START_ADDR && addr < FLASH_XIP_END_ADDR)
+    {
+        return MEM_ACCESS_READONLY;
+    }
+
+    /* 7. Memory-Mapped I/O Peripheral Space (0x60000000 - 0x600D0000) */
+    if (addr >= PERIPHERAL_MMIO_START_ADDR && addr < PERIPHERAL_MMIO_END_ADDR)
+    {
+        /* Reject unmapped reserved peripheral holes (TRM Tab 5.3-2):
+         * 0x60019000 - 0x6007FFFF (412 KB reserved hole, containing legacy USB 0x60043000)
+         * 0x6009A000 - 0x600A2FFF (36 KB reserved hole, excluding MODEM_FE at 0x600A0000 - 0x600A0FFF)
+         */
+        if ((addr >= PERIPHERAL_MMIO_HOLE0_FIRST && addr <= PERIPHERAL_MMIO_HOLE0_LAST) ||
+            (addr >= PERIPHERAL_MMIO_HOLE1_FIRST && addr <= PERIPHERAL_MMIO_HOLE1_LAST &&
+             (addr < MODEM_FE_BASE_ADDR || addr >= MODEM_FE_END_ADDR)))
+        {
+            return MEM_ACCESS_INVALID;
+        }
+        return MEM_ACCESS_MMIO;
+    }
+
+    /* 8. Core-Local Interrupt & Timer Subsystem Space (PLIC/CLINT: 0x20000000 - 0x20002000) */
+    if (addr >= CORE_LOCAL_PERI_START_ADDR && addr < CORE_LOCAL_PERI_END_ADDR)
+    {
+        return MEM_ACCESS_MMIO;
+    }
+
+    /* 9. Internal ROM (0x40000000 - 0x40050000) */
+    if (addr >= INTERNAL_ROM_START_ADDR && addr < INTERNAL_ROM_END_ADDR)
+    {
+        return MEM_ACCESS_READONLY;
+    }
+
+    /* All other unmapped regions */
+    return MEM_ACCESS_INVALID;
+}

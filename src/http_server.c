@@ -11,30 +11,15 @@
 #include "http_server.h"
 #include "section.h"
 #include "config.h"
-#include "web_assets.h"
-#include "web_index_gz.h"   /* generated from web/index.html (scripts/gen_web.py) */
 #include "arena.h"
 #include "string.h"
-#include "wdt.h"
-#include "clock.h"
-#include "shell.h"
-#include "speedtest.h"
 #include "api_v1.h"
+#include "module.h"
 
 #if defined(__riscv)
 #include "systimer.h"
 #include "console.h"
 #include "utils.h"
-static inline uint64_t http_get_uptime_ms(void)
-{
-    return systimer_get_ms();
-}
-#else
-static inline uint64_t http_get_uptime_ms(void)
-{
-    static uint64_t s_mock_ms = 1000ULL;
-    return s_mock_ms += 100ULL;
-}
 #endif
 
 /* ========================================================================= */
@@ -49,8 +34,7 @@ static http_status_code_t s_http_handler_status = HTTP_STATUS_200_OK;   /* set b
 static const uint8_t *s_http_gzip_body = NULL;                          /* set by the running handler */
 static size_t s_http_gzip_body_len = 0U;
 
-/* The page goes out in one response: headers + compressed page <= buffer <= TCP backlog per connection */
-_Static_assert(WEB_INDEX_GZ_LEN + HTTP_HEADER_RESERVE <= HTTP_RESPONSE_BUF_SIZE, "web/index.html too large");
+/* A response (e.g. a module's gzip page plus headers) goes out from one TCP backlog per connection */
 _Static_assert(HTTP_RESPONSE_BUF_SIZE <= TCP_SNDBUF_PCB_MAX_BYTES, "a response must fit one TCP backlog");
 
 void http_response_set_status(http_status_code_t code)
@@ -103,41 +87,6 @@ static size_t http_u32_to_dec(uint32_t val, char *buf, size_t max_len)
     return digits;
 }
 
-static size_t http_u64_to_dec(uint64_t val, char *buf, size_t max_len)
-{
-    if (buf == NULL || max_len < 2U)
-    {
-        return 0U;
-    }
-
-    if (val == 0ULL)
-    {
-        buf[0] = '0';
-        buf[1] = '\0';
-        return 1U;
-    }
-
-    char temp[24];
-    size_t digits = 0U;
-    while (val > 0ULL && digits < sizeof(temp))
-    {
-        temp[digits++] = (char)('0' + (val % 10ULL));
-        val /= 10ULL;
-    }
-
-    if (digits >= max_len)
-    {
-        digits = max_len - 1U;
-    }
-
-    for (size_t i = 0U; i < digits; i++)
-    {
-        buf[i] = temp[digits - 1U - i];
-    }
-    buf[digits] = '\0';
-    return digits;
-}
-
 static size_t http_str_append(char *dest, size_t dest_max, const char *src)
 {
     if (dest == NULL || src == NULL || dest_max == 0U)
@@ -163,101 +112,6 @@ static size_t http_str_append(char *dest, size_t dest_max, const char *src)
 /* ========================================================================= */
 /* Default Built-In REST Handlers                                            */
 /* ========================================================================= */
-
-/* GET / and GET /index.html -> the light page (REV-25), gzip-compressed in flash */
-static void http_handler_root(const char *query_params, char *response_body, size_t max_len)
-{
-    (void)query_params;
-    if (response_body != NULL && max_len > 0U)
-    {
-        response_body[0] = '\0';
-    }
-    http_response_set_gzip_body(g_web_index_gz, WEB_INDEX_GZ_LEN);
-}
-
-/* GET /api/status -> Returns JSON with uptime_ms, cpu_mhz, hostname */
-static void http_handler_status(const char *query_params, char *response_body, size_t max_len)
-{
-    (void)query_params;
-    if (response_body == NULL || max_len == 0U)
-    {
-        return;
-    }
-
-    uint64_t uptime_ms = http_get_uptime_ms();
-    clock_config_t clk;
-    clock_get_config(&clk);
-
-    char num_buf[24];
-
-    response_body[0] = '\0';
-    http_str_append(response_body, max_len, "{\"status\":\"online\",\"hostname\":\"");
-    http_str_append(response_body, max_len, CONFIG_DEVICE_HOSTNAME);
-    http_str_append(response_body, max_len, "\",\"uptime_ms\":");
-    http_u64_to_dec(uptime_ms, num_buf, sizeof(num_buf));
-    http_str_append(response_body, max_len, num_buf);
-    http_str_append(response_body, max_len, ",\"cpu_mhz\":");
-    http_u32_to_dec(clk.cpu_mhz, num_buf, sizeof(num_buf));
-    http_str_append(response_body, max_len, num_buf);
-    http_str_append(response_body, max_len, ",\"firmware\":{\"name\":\"Iron V\",\"version\":\"");
-    http_str_append(response_body, max_len, CONFIG_FIRMWARE_REVISION);
-    http_str_append(response_body, max_len, "\"}}\r\n");
-}
-
-/* GET /api/info -> Returns device identification JSON */
-static void http_handler_info(const char *query_params, char *response_body, size_t max_len)
-{
-    (void)query_params;
-    if (response_body == NULL || max_len == 0U)
-    {
-        return;
-    }
-
-    response_body[0] = '\0';
-    http_str_append(response_body, max_len, "{\"hostname\":\"");
-    http_str_append(response_body, max_len, CONFIG_DEVICE_HOSTNAME);
-    http_str_append(response_body, max_len, "\",\"model\":\"");
-    http_str_append(response_body, max_len, CONFIG_DEVICE_MODEL_NUMBER);
-    http_str_append(response_body, max_len, "\",\"manufacturer\":\"");
-    http_str_append(response_body, max_len, CONFIG_DEVICE_MANUFACTURER);
-    http_str_append(response_body, max_len, "\",\"firmware_rev\":\"");
-    http_str_append(response_body, max_len, CONFIG_FIRMWARE_REVISION);
-    http_str_append(response_body, max_len, "\",\"hardware_rev\":\"");
-    http_str_append(response_body, max_len, CONFIG_HARDWARE_REVISION);
-    http_str_append(response_body, max_len, "\"}\r\n");
-}
-
-/* GET /api/telemetry -> Returns HTTP & TCP telemetry JSON */
-static void http_handler_telemetry(const char *query_params, char *response_body, size_t max_len)
-{
-    (void)query_params;
-    if (response_body == NULL || max_len == 0U)
-    {
-        return;
-    }
-
-    char num_buf[16];
-    response_body[0] = '\0';
-    http_str_append(response_body, max_len, "{\"http\":{\"requests_total\":");
-    http_u32_to_dec(s_http_telemetry.requests_total, num_buf, sizeof(num_buf));
-    http_str_append(response_body, max_len, num_buf);
-    http_str_append(response_body, max_len, ",\"requests_get\":");
-    http_u32_to_dec(s_http_telemetry.requests_get, num_buf, sizeof(num_buf));
-    http_str_append(response_body, max_len, num_buf);
-    http_str_append(response_body, max_len, ",\"requests_post\":");
-    http_u32_to_dec(s_http_telemetry.requests_post, num_buf, sizeof(num_buf));
-    http_str_append(response_body, max_len, num_buf);
-    http_str_append(response_body, max_len, ",\"responses_200\":");
-    http_u32_to_dec(s_http_telemetry.responses_200, num_buf, sizeof(num_buf));
-    http_str_append(response_body, max_len, num_buf);
-    http_str_append(response_body, max_len, ",\"responses_404\":");
-    http_u32_to_dec(s_http_telemetry.responses_404, num_buf, sizeof(num_buf));
-    http_str_append(response_body, max_len, num_buf);
-    http_str_append(response_body, max_len, ",\"responses_405\":");
-    http_u32_to_dec(s_http_telemetry.responses_405, num_buf, sizeof(num_buf));
-    http_str_append(response_body, max_len, num_buf);
-    http_str_append(response_body, max_len, "}}\r\n");
-}
 
 /* GET /favicon.ico -> Returns 200 OK empty response */
 static void http_handler_favicon(const char *query_params, char *response_body, size_t max_len)
@@ -309,36 +163,6 @@ static void http_append_portal_location(char *out, size_t max_len)
     http_str_append(out, max_len, HTTP_CAPTIVE_PORTAL_PATH "\r\n");
 }
 
-static bool http_param_contains(const char *buf, const char *key)
-{
-    if (buf == NULL || key == NULL) return false;
-    return strstr(buf, key) != NULL;
-}
-
-/* Flash read-only string constants to preserve 32KB DRAM stack headroom */
-static const char s_str_health_prefix[] FLASH_RODATA_ATTR = "{\"status\":\"healthy\",\"uptime_seconds\":";
-static const char s_str_arena_used[] FLASH_RODATA_ATTR = ",\"arena_bytes_used\":";
-static const char s_str_arena_free[] FLASH_RODATA_ATTR = ",\"arena_bytes_free\":";
-static const char s_str_dpc_drops[] FLASH_RODATA_ATTR = ",\"dpc_queue_drops\":";
-static const char s_str_wdt_feeds[] FLASH_RODATA_ATTR = ",\"wdt_feeds_total\":";
-static const char s_str_wifi_rx[] FLASH_RODATA_ATTR = ",\"wifi_packets_rx\":";
-static const char s_str_wifi_tx[] FLASH_RODATA_ATTR = ",\"wifi_packets_tx\":";
-static const char s_str_uart_active[] FLASH_RODATA_ATTR = ",\"uart_active\":";
-static const char s_str_usb_active[] FLASH_RODATA_ATTR = ",\"usb_active\":";
-
-static const char s_str_sp_bursts[] FLASH_RODATA_ATTR = "{\"status\":\"ok\",\"bursts_run\":";
-static const char s_str_sp_thru_k[] FLASH_RODATA_ATTR = ",\"last_throughput_kbps\":";
-static const char s_str_sp_thru_m[] FLASH_RODATA_ATTR = ",\"last_throughput_mbps\":";
-static const char s_str_sp_lat_avg[] FLASH_RODATA_ATTR = ",\"last_latency_avg_us\":";
-static const char s_str_sp_pkt_loss[] FLASH_RODATA_ATTR = ",\"last_packet_loss\":";
-static const char s_str_sp_run_thru_k[] FLASH_RODATA_ATTR = "{\"status\":\"ok\",\"throughput_kbps\":";
-static const char s_str_sp_run_thru_m[] FLASH_RODATA_ATTR = ",\"throughput_mbps\":";
-static const char s_str_sp_run_lat_min[] FLASH_RODATA_ATTR = ",\"latency_min_us\":";
-static const char s_str_sp_run_lat_max[] FLASH_RODATA_ATTR = ",\"latency_max_us\":";
-static const char s_str_sp_run_pkt_loss[] FLASH_RODATA_ATTR = ",\"packet_loss_count\":";
-
-
-static const char s_str_close_brace[] FLASH_RODATA_ATTR = "}\r\n";
 static const char s_cors_methods_hdr[] FLASH_RODATA_ATTR = "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n";
 static const char s_cors_headers_hdr[] FLASH_RODATA_ATTR = "Access-Control-Allow-Headers: Content-Type, Authorization\r\n";
 static const char s_cors_preflight_resp[] FLASH_RODATA_ATTR =
@@ -358,103 +182,8 @@ static const char s_too_large_resp[] FLASH_RODATA_ATTR =
     HTTP_CONN_CLOSE_HEADER
     "Content-Length: 0\r\n\r\n";
 
-/* GET /api/health -> Aggregated 24/7 system health telemetry */
-static void http_handler_health(const char *query_params, char *response_body, size_t max_len)
-{
-    (void)query_params;
-    if (response_body == NULL || max_len == 0U) return;
-
-    system_health_telemetry_t h;
-    shell_get_health_telemetry(&h);
-
-    char num_buf[24];
-    response_body[0] = '\0';
-    http_str_append(response_body, max_len, s_str_health_prefix);
-    http_u32_to_dec(h.uptime_seconds, num_buf, sizeof(num_buf));
-    http_str_append(response_body, max_len, num_buf);
-    http_str_append(response_body, max_len, s_str_arena_used);
-    http_u32_to_dec(h.arena_bytes_used, num_buf, sizeof(num_buf));
-    http_str_append(response_body, max_len, num_buf);
-    http_str_append(response_body, max_len, s_str_arena_free);
-    http_u32_to_dec(h.arena_bytes_free, num_buf, sizeof(num_buf));
-    http_str_append(response_body, max_len, num_buf);
-    http_str_append(response_body, max_len, s_str_dpc_drops);
-    http_u32_to_dec(h.dpc_queue_drops, num_buf, sizeof(num_buf));
-    http_str_append(response_body, max_len, num_buf);
-    http_str_append(response_body, max_len, s_str_wdt_feeds);
-    http_u32_to_dec(h.wdt_feeds_total, num_buf, sizeof(num_buf));
-    http_str_append(response_body, max_len, num_buf);
-    http_str_append(response_body, max_len, s_str_wifi_rx);
-    http_u32_to_dec(h.wifi_packets_rx, num_buf, sizeof(num_buf));
-    http_str_append(response_body, max_len, num_buf);
-    http_str_append(response_body, max_len, s_str_wifi_tx);
-    http_u32_to_dec(h.wifi_packets_tx, num_buf, sizeof(num_buf));
-    http_str_append(response_body, max_len, num_buf);
-    http_str_append(response_body, max_len, s_str_uart_active);
-    http_u32_to_dec(h.uart_active, num_buf, sizeof(num_buf));
-    http_str_append(response_body, max_len, num_buf);
-    http_str_append(response_body, max_len, s_str_usb_active);
-    http_u32_to_dec(h.usb_active, num_buf, sizeof(num_buf));
-    http_str_append(response_body, max_len, num_buf);
-    http_str_append(response_body, max_len, s_str_close_brace);
-}
-
-/* GET & POST /api/speedtest -> Diagnostics & throughput benchmark */
-static void http_handler_speedtest(const char *query_params, char *response_body, size_t max_len)
-{
-    if (response_body == NULL || max_len == 0U) return;
-
-    char num_buf[24];
-    response_body[0] = '\0';
-
-    if (query_params != NULL && (http_param_contains(query_params, "run") || http_param_contains(query_params, "burst")))
-    {
-        speedtest_result_t res;
-        speedtest_run_synthetic_burst(100U, 1024U, &res);
-        http_str_append(response_body, max_len, s_str_sp_run_thru_k);
-        http_u32_to_dec(res.throughput_kbps, num_buf, sizeof(num_buf));
-        http_str_append(response_body, max_len, num_buf);
-        http_str_append(response_body, max_len, s_str_sp_run_thru_m);
-        http_u32_to_dec(speedtest_kbps_to_mbps(res.throughput_kbps), num_buf, sizeof(num_buf));
-        http_str_append(response_body, max_len, num_buf);
-        http_str_append(response_body, max_len, s_str_sp_run_lat_min);
-        http_u32_to_dec(res.latency_min_us, num_buf, sizeof(num_buf));
-        http_str_append(response_body, max_len, num_buf);
-        http_str_append(response_body, max_len, s_str_sp_run_lat_max);
-        http_u32_to_dec(res.latency_max_us, num_buf, sizeof(num_buf));
-        http_str_append(response_body, max_len, num_buf);
-        http_str_append(response_body, max_len, s_str_sp_run_pkt_loss);
-        http_u32_to_dec(res.packet_loss_count, num_buf, sizeof(num_buf));
-        http_str_append(response_body, max_len, num_buf);
-        http_str_append(response_body, max_len, s_str_close_brace);
-    }
-    else
-    {
-        speedtest_telemetry_t telem;
-        speedtest_get_telemetry(&telem);
-        http_str_append(response_body, max_len, s_str_sp_bursts);
-        http_u32_to_dec(telem.bursts_run, num_buf, sizeof(num_buf));
-        http_str_append(response_body, max_len, num_buf);
-        http_str_append(response_body, max_len, s_str_sp_thru_k);
-        http_u32_to_dec(telem.last_throughput_kbps, num_buf, sizeof(num_buf));
-        http_str_append(response_body, max_len, num_buf);
-        http_str_append(response_body, max_len, s_str_sp_thru_m);
-        http_u32_to_dec(telem.last_throughput_mbps, num_buf, sizeof(num_buf));
-        http_str_append(response_body, max_len, num_buf);
-        http_str_append(response_body, max_len, s_str_sp_lat_avg);
-        http_u32_to_dec(telem.last_latency_avg_us, num_buf, sizeof(num_buf));
-        http_str_append(response_body, max_len, num_buf);
-        http_str_append(response_body, max_len, s_str_sp_pkt_loss);
-        http_u32_to_dec(telem.last_packet_loss, num_buf, sizeof(num_buf));
-        http_str_append(response_body, max_len, num_buf);
-        http_str_append(response_body, max_len, s_str_close_brace);
-    }
-}
-
 static __attribute__((noinline)) void http_register_default_routes(void)
 {
-    http_route_register("/", HTTP_METHOD_GET, http_handler_root);
-    http_route_register("/index.html", HTTP_METHOD_GET, http_handler_root);
     http_route_register("/favicon.ico", HTTP_METHOD_GET, http_handler_favicon);
     http_route_register("/generate_204", HTTP_METHOD_GET, http_handler_connectivity_probe);
     http_route_register("/gen_204", HTTP_METHOD_GET, http_handler_connectivity_probe);
@@ -462,14 +191,11 @@ static __attribute__((noinline)) void http_register_default_routes(void)
     http_route_register("/ncsi.txt", HTTP_METHOD_GET, http_handler_connectivity_probe);
     http_route_register("/connecttest.txt", HTTP_METHOD_GET, http_handler_connectivity_probe);
     http_route_register("/canonical.html", HTTP_METHOD_GET, http_handler_connectivity_probe);
-    http_route_register("/api/status", HTTP_METHOD_GET, http_handler_status);
-    http_route_register("/api/info", HTTP_METHOD_GET, http_handler_info);
-    http_route_register("/api/telemetry", HTTP_METHOD_GET, http_handler_telemetry);
-    http_route_register("/api/health", HTTP_METHOD_GET, http_handler_health);
-    http_route_register("/api/speedtest", HTTP_METHOD_GET, http_handler_speedtest);
-    http_route_register("/api/speedtest", HTTP_METHOD_POST, http_handler_speedtest);
-    /* Raw GPIO and remote watchdog feeding were removed in REV-23 (property-model-v1.md section 5) */
+    /* Raw GPIO and remote watchdog feeding were removed in REV-23 (property-model-v1.md section 5);
+     * /api/status and /api/info (companion app) in REV-33 */
     api_v1_register_routes();
+    /* The page at /, REST v1 resources and diagnostics come from the modules in this image (REV-33) */
+    modules_routes();
 }
 
 /* ========================================================================= */
@@ -1212,6 +938,11 @@ http_status_t http_server_get_telemetry(http_telemetry_t *out_telemetry)
 uint16_t http_server_get_route_count(void)
 {
     return s_http_route_count;
+}
+
+const http_route_t *http_route_at(uint16_t index)
+{
+    return (index < s_http_route_count) ? &s_http_routes[index] : NULL;
 }
 
 const char *http_method_to_str(http_method_t method)

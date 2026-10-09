@@ -23,6 +23,17 @@ int sprintf(char *buf, const char *fmt, ...);
 #define ASCII_PRINTABLE_MIN    ' '     /* Printable range start (0x20 Space) */
 #define ASCII_PRINTABLE_MAX    '~'     /* Printable range end (0x7E Tilde) */
 
+/* Address classes for `peek`/`poke` (32-bit word access) */
+typedef enum {
+    MEM_ACCESS_INVALID = 0,
+    MEM_ACCESS_READONLY,
+    MEM_ACCESS_READWRITE,
+    MEM_ACCESS_MMIO
+} mem_access_t;
+
+/* Classifies a word address against the memory map (linker sections, LP SRAM, flash, MMIO, ROM) */
+mem_access_t check_mem_access(uint32_t addr);
+
 /* Linker symbols for stack boundary tracking (main stack: _ebss .. _main_stack_top) */
 extern char _main_stack_top[];
 extern char _ebss[];

@@ -13,7 +13,6 @@
 #include "dhcp.h"
 #include "wifi.h"
 #include "string.h"
-#include "speedtest.h"
 #include "mdns.h"
 #include "hw_rng.h"
 
@@ -58,6 +57,54 @@ void net_set_trace(bool on)
 bool net_trace_enabled(void)
 {
     return s_net_trace;
+}
+
+/* UDP ports of the modules (REV-33): not cleared by net_init(), a module registers once at boot */
+typedef struct {
+    uint16_t          port;
+    net_udp_handler_t handler;
+} net_udp_listener_t;
+
+static net_udp_listener_t s_udp_listeners[NET_UDP_LISTENERS_MAX];
+
+net_status_t net_udp_listen(uint16_t port, net_udp_handler_t handler)
+{
+    net_udp_listener_t *free_slot = NULL;
+    for (uint32_t i = 0U; i < NET_UDP_LISTENERS_MAX; i++)
+    {
+        if (s_udp_listeners[i].handler != NULL && s_udp_listeners[i].port == port)
+        {
+            s_udp_listeners[i].handler = handler;   /* replace, or stop with NULL */
+            return NET_OK;
+        }
+        if (s_udp_listeners[i].handler == NULL && free_slot == NULL)
+        {
+            free_slot = &s_udp_listeners[i];
+        }
+    }
+    if (handler == NULL)
+    {
+        return NET_OK;
+    }
+    if (free_slot == NULL)
+    {
+        return NET_ERR_QUEUE_FULL;
+    }
+    free_slot->port = port;
+    free_slot->handler = handler;
+    return NET_OK;
+}
+
+static net_udp_handler_t net_udp_listener(uint16_t port)
+{
+    for (uint32_t i = 0U; i < NET_UDP_LISTENERS_MAX; i++)
+    {
+        if (s_udp_listeners[i].handler != NULL && s_udp_listeners[i].port == port)
+        {
+            return s_udp_listeners[i].handler;
+        }
+    }
+    return NULL;
 }
 
 /* ========================================================================= */
@@ -737,9 +784,13 @@ net_status_t net_input(const uint8_t *frame, uint16_t len, net_if_t rx_if)
                         mdns_process_query(payload, payload_len, NET_NTOHL(ip->src_ip),
                                            NET_NTOHS(udp->src_port));
                     }
-                    else if (dest_port == SPEEDTEST_DEFAULT_PORT)
+                    else
                     {
-                        speedtest_process_udp_packet(frame, payload, payload_len);
+                        net_udp_handler_t handler = net_udp_listener(dest_port);
+                        if (handler != NULL)
+                        {
+                            handler(frame, payload, payload_len);
+                        }
                     }
                 }
             }

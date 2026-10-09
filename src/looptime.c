@@ -171,7 +171,7 @@ const char *looptime_client_name(loop_client_t client)
         case LOOP_CLIENT_BUTTON:    return "button";
         case LOOP_CLIENT_PROV:      return "prov";
         case LOOP_CLIENT_MDNS:      return "mdns";
-        case LOOP_CLIENT_MQTT:      return "mqtt";
+        case LOOP_CLIENT_MODULES:   return "modules";
         case LOOP_CLIENT_NVS:       return "nvs";
         case LOOP_CLIENT_WIFI_POLL: return "wifi-poll";
         case LOOP_CLIENT_RX:        return "rx";

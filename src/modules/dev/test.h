@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include "utils.h"   /* check_mem_access() for the memory-map checks */
 
 /* Linker defined boundary symbols */
 extern char _stext[];
@@ -15,13 +16,6 @@ extern char _edata[];
 extern char _sbss[];
 extern char _ebss[];
 extern char _stack_top[];
-
-typedef enum {
-    MEM_ACCESS_INVALID = 0,
-    MEM_ACCESS_READONLY,
-    MEM_ACCESS_READWRITE,
-    MEM_ACCESS_MMIO
-} mem_access_t;
 
 #define TEST_SOAK_DEFAULT_CYCLES        5U
 #define TEST_SOAK_DEFAULT_DELAY_MS      50U
@@ -51,8 +45,6 @@ typedef struct {
     bool is_running;
 } test_soak_telemetry_t;
 
-/* Validates address accessibility and permission */
-mem_access_t check_mem_access(uint32_t addr);
 
 /* Executes full automated validation test suite (Tests 1 - 35) */
 void run_validation_suite(void);

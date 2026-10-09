@@ -136,6 +136,7 @@ http_status_t http_process_request(const char *raw_request, size_t req_len,
 /* Telemetry & Queries */
 http_status_t http_server_get_telemetry(http_telemetry_t *out_telemetry);
 uint16_t http_server_get_route_count(void);
+const http_route_t *http_route_at(uint16_t index);   /* NULL past the end */
 const char *http_method_to_str(http_method_t method);
 const char *http_status_to_str(http_status_code_t code);
 

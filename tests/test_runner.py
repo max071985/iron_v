@@ -13,10 +13,11 @@ Performs:
 7. Verification of external flash XIP section (.flash_xip) allocatable status.
 8. ESP32-C6 firmware.bin flash image header verification (Magic 0xE9, 8 MB flash geometry, entry 0x40800000).
 9. Execution of host-native freestanding C unit test binary (tests/test_freestanding).
-10. Architectural documentation that on-board hardware register reads/writes execute via src/test.c on physical silicon.
+10. Architectural documentation that on-board hardware register reads/writes execute via src/modules/dev/test.c (dev profile) on physical silicon.
 """
 import argparse
 import os
+import glob
 import re
 import shutil
 import struct
@@ -31,7 +32,9 @@ ROM_START = 0x40000000
 ROM_END = 0x40060000
 ROM_DATA_START = 0x4087E610      # ROM .bss/.data (ld/link.ld)
 IRAM_MIN_FREE = 16 * 1024        # budgets mirror the ASSERTs in ld/link.ld
-MAIN_STACK_MIN_SIZE = 32 * 1024
+MAIN_STACK_MIN_SIZE = 32 * 1024   # default; `make elf-test` passes the profile's MAIN_STACK_MIN
+MODULE_DESC_SIZE = 32            # sizeof(module_t) on RV32: name, order, six hooks (src/module.h)
+STT_FILE = 4
 
 # Code that must run without flash: before mmu_init() maps it, on trap/panic,
 # and the flash erase/write/read routines that run while flash is busy.
@@ -211,7 +214,23 @@ def print_result_line(num, title, desc, expected, actual, pass_cond):
     print(f"  Result:      [ {'PASS' if pass_cond else 'FAIL'} ]")
     return 1 if pass_cond else 0
 
-def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None):
+def module_sources():
+    """{module: [source basenames]} from src/modules/*/module.mk (MODULE_SRCS_<name> := ...)"""
+    out = {}
+    for mk in sorted(glob.glob(os.path.join(REPO_ROOT, "src", "modules", "*", "module.mk"))):
+        name = os.path.basename(os.path.dirname(mk))
+        with open(mk) as f:
+            for line in f:
+                m = re.match(r"^MODULE_SRCS_%s\s*:?=\s*(.*)$" % re.escape(name), line.strip())
+                if m:
+                    out[name] = [os.path.basename(x) for x in m.group(1).split()]
+    return out
+
+
+def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="dev", modules=None,
+              main_stack_min=MAIN_STACK_MIN_SIZE):
+    modules = list(modules or [])
+    has = lambda m: m in modules
 
     if not os.path.exists(elf_path):
         print(f"Error: {elf_path} not found. Run 'make' first.")
@@ -232,7 +251,10 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None):
 
     # Required linker boundary symbols
     boundary_names = ["_stext", "_etext", "_srodata", "_erodata", "_sdata", "_edata",
-                      "_sbss", "_ebss", "_stack_top", "g_test_data_var", "g_test_bss_var", "g_test_rodata_str"]
+                      "_sbss", "_ebss", "_stack_top", "__start_iron_modules", "__stop_iron_modules",
+                      "__start_iron_shell_cmds", "__stop_iron_shell_cmds"]
+    if has('dev'):   # test-pattern variables of do-test (src/modules/dev/test.c)
+        boundary_names += ["g_test_data_var", "g_test_bss_var", "g_test_rodata_str"]
     for b_name in boundary_names:
         if b_name not in symbols:
             print(f"Error: Required symbol '{b_name}' not found in {elf_path}")
@@ -285,57 +307,60 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None):
         t2_pass
     )
 
-    # TEST: RW Data Static Initial Value in ELF Binary
-    total += 1
-    sym_data = symbols["g_test_data_var"]
-    sec_data = sections[".data"]
-    data_file_offset = sec_data["offset"] + (sym_data["value"] - sec_data["addr"])
-    data_raw_bytes = raw[data_file_offset : data_file_offset + 4]
-    data_unpacked_word = struct.unpack("<I", data_raw_bytes)[0]
-    t3_pass = (data_unpacked_word == 0x12345678 and sym_data["value"] >= sdata and sym_data["value"] < edata)
-    passed += print_result_line(
-        total,
-        "RW Data Section Static Initial Value in ELF Binary",
-        "Unpack actual 4 bytes of g_test_data_var from .data section in firmware.elf",
-        "Static initialized value = 0x12345678 at VMA in DRAM [0x40829000, 0x40880000)",
-        f"File Offset=0x{data_file_offset:06x}, VMA=0x{sym_data['value']:08x}, Value=0x{data_unpacked_word:08x}",
-        t3_pass
-    )
+    if has('dev'):
+        # TEST: RW Data Static Initial Value in ELF Binary
+        total += 1
+        sym_data = symbols["g_test_data_var"]
+        sec_data = sections[".data"]
+        data_file_offset = sec_data["offset"] + (sym_data["value"] - sec_data["addr"])
+        data_raw_bytes = raw[data_file_offset : data_file_offset + 4]
+        data_unpacked_word = struct.unpack("<I", data_raw_bytes)[0]
+        t3_pass = (data_unpacked_word == 0x12345678 and sym_data["value"] >= sdata and sym_data["value"] < edata)
+        passed += print_result_line(
+            total,
+            "RW Data Section Static Initial Value in ELF Binary",
+            "Unpack actual 4 bytes of g_test_data_var from .data section in firmware.elf",
+            "Static initialized value = 0x12345678 at VMA in DRAM [0x40829000, 0x40880000)",
+            f"File Offset=0x{data_file_offset:06x}, VMA=0x{sym_data['value']:08x}, Value=0x{data_unpacked_word:08x}",
+            t3_pass
+        )
 
-    # TEST: BSS Section Allocation & SHT_NOBITS Verification
-    total += 1
-    sym_bss = symbols["g_test_bss_var"]
-    sec_bss = sections[".bss"]
-    bss_is_nobits = (sec_bss["type"] == SHT_NOBITS)
-    bss_has_flags = ((sec_bss["flags"] & (SHF_WRITE | SHF_ALLOC)) == (SHF_WRITE | SHF_ALLOC))
-    t4_pass = (bss_is_nobits and bss_has_flags and sym_bss["value"] >= sbss and sym_bss["value"] < ebss)
-    passed += print_result_line(
-        total,
-        "BSS Section Allocation & SHT_NOBITS Verification",
-        "Verify g_test_bss_var placement in SHT_NOBITS section with SHF_ALLOC | SHF_WRITE",
-        "Section type = SHT_NOBITS(8), Flags contain SHF_WRITE | SHF_ALLOC, symbol in [_sbss, _ebss)",
-        f"Section type={sec_bss['type']}, Flags=0x{sec_bss['flags']:x}, VMA=0x{sym_bss['value']:08x}",
-        t4_pass
-    )
+    if has('dev'):
+        # TEST: BSS Section Allocation & SHT_NOBITS Verification
+        total += 1
+        sym_bss = symbols["g_test_bss_var"]
+        sec_bss = sections[".bss"]
+        bss_is_nobits = (sec_bss["type"] == SHT_NOBITS)
+        bss_has_flags = ((sec_bss["flags"] & (SHF_WRITE | SHF_ALLOC)) == (SHF_WRITE | SHF_ALLOC))
+        t4_pass = (bss_is_nobits and bss_has_flags and sym_bss["value"] >= sbss and sym_bss["value"] < ebss)
+        passed += print_result_line(
+            total,
+            "BSS Section Allocation & SHT_NOBITS Verification",
+            "Verify g_test_bss_var placement in SHT_NOBITS section with SHF_ALLOC | SHF_WRITE",
+            "Section type = SHT_NOBITS(8), Flags contain SHF_WRITE | SHF_ALLOC, symbol in [_sbss, _ebss)",
+            f"Section type={sec_bss['type']}, Flags=0x{sec_bss['flags']:x}, VMA=0x{sym_bss['value']:08x}",
+            t4_pass
+        )
 
-    # TEST: Read-Only Memory (RODATA) Content & Flags Verification
-    total += 1
-    sym_rodata = symbols["g_test_rodata_str"]
-    sec_rodata = sections[".rodata"]
-    rodata_file_offset = sec_rodata["offset"] + (sym_rodata["value"] - sec_rodata["addr"])
-    rodata_raw_bytes = raw[rodata_file_offset : rodata_file_offset + sym_rodata["size"]]
-    rodata_str = rodata_raw_bytes.split(b"\x00")[0].decode("ascii", "replace")
-    rodata_first_word = struct.unpack("<I", rodata_raw_bytes[:4])[0]
-    rodata_alloc_only = ((sec_rodata["flags"] & SHF_ALLOC) != 0 and (sec_rodata["flags"] & SHF_WRITE) == 0)
-    t5_pass = (rodata_alloc_only and rodata_str == "IRON_V_RODATA_TEST_PATTERN" and rodata_first_word == 0x4e4f5249)
-    passed += print_result_line(
-        total,
-        "Read-Only Data (RODATA) Content & Flags Verification",
-        "Unpack actual bytes of g_test_rodata_str from firmware.elf and inspect section flags",
-        "Flags contain SHF_ALLOC (no SHF_WRITE), First Word=0x4e4f5249, String='IRON_V_RODATA_TEST_PATTERN'",
-        f"Flags=0x{sec_rodata['flags']:x}, First Word=0x{rodata_first_word:08x}, String='{rodata_str}'",
-        t5_pass
-    )
+    if has('dev'):
+        # TEST: Read-Only Memory (RODATA) Content & Flags Verification
+        total += 1
+        sym_rodata = symbols["g_test_rodata_str"]
+        sec_rodata = sections[".rodata"]
+        rodata_file_offset = sec_rodata["offset"] + (sym_rodata["value"] - sec_rodata["addr"])
+        rodata_raw_bytes = raw[rodata_file_offset : rodata_file_offset + sym_rodata["size"]]
+        rodata_str = rodata_raw_bytes.split(b"\x00")[0].decode("ascii", "replace")
+        rodata_first_word = struct.unpack("<I", rodata_raw_bytes[:4])[0]
+        rodata_alloc_only = ((sec_rodata["flags"] & SHF_ALLOC) != 0 and (sec_rodata["flags"] & SHF_WRITE) == 0)
+        t5_pass = (rodata_alloc_only and rodata_str == "IRON_V_RODATA_TEST_PATTERN" and rodata_first_word == 0x4e4f5249)
+        passed += print_result_line(
+            total,
+            "Read-Only Data (RODATA) Content & Flags Verification",
+            "Unpack actual bytes of g_test_rodata_str from firmware.elf and inspect section flags",
+            "Flags contain SHF_ALLOC (no SHF_WRITE), First Word=0x4e4f5249, String='IRON_V_RODATA_TEST_PATTERN'",
+            f"Flags=0x{sec_rodata['flags']:x}, First Word=0x{rodata_first_word:08x}, String='{rodata_str}'",
+            t5_pass
+        )
 
     # TEST: Harvard Segment Isolation & W^X Permission Safety
     total += 1
@@ -439,14 +464,14 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None):
     stack_vma_ok = (stack_top == 0x40880000) and (0 < main_stack_top <= ROM_DATA_START)
     stack_headroom = main_stack_top - ebss
     entry_ok = (start_sym == 0x40800000) and (elf["entry"] == 0x40800000)
-    t11_pass = stack_align_ok and stack_vma_ok and (stack_headroom >= MAIN_STACK_MIN_SIZE) and entry_ok
+    t11_pass = stack_align_ok and stack_vma_ok and (stack_headroom >= main_stack_min) and entry_ok
     t11_actual = (f"_main_stack_top=0x{main_stack_top:08x} (align16={stack_align_ok}), "
                   f"main stack={stack_headroom // 1024} KB, _start=0x{start_sym:08x}")
     passed += print_result_line(
         total,
         "Stack Boundary Geometry & CRT0 Entry Vector Topology",
-        "Verify the main stack (_ebss.._main_stack_top) stays below ROM .bss/.data, is 16-byte aligned and >= 32 KB, and entry at _start",
-        "_stack_top == 0x40880000, _main_stack_top <= 0x4087e610 and 16-byte aligned, main stack >= 32 KB, entry == 0x40800000",
+        "Verify the main stack (_ebss.._main_stack_top) stays below ROM .bss/.data, is 16-byte aligned and >= the profile budget, and entry at _start",
+        f"_stack_top == 0x40880000, _main_stack_top <= 0x4087e610 and 16-byte aligned, main stack >= {main_stack_min} B, entry == 0x40800000",
         t11_actual,
         t11_pass
     )
@@ -1024,44 +1049,45 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None):
         t30_pass
     )
 
-    # TEST: IEEE 802.15.4 Radio Transceiver Driver Linkage (Task 5.4)
-    total += 1
-    ieee_syms = [
-        "ieee802154_init",
-        "ieee802154_cmd",
-        "ieee802154_set_channel",
-        "ieee802154_get_channel",
-        "ieee802154_get_freq_mhz",
-        "ieee802154_set_short_address",
-        "ieee802154_get_short_address",
-        "ieee802154_set_pan_id",
-        "ieee802154_get_pan_id",
-        "ieee802154_set_extended_address",
-        "ieee802154_get_extended_address",
-        "ieee802154_set_auto_ack",
-        "ieee802154_set_promiscuous",
-        "ieee802154_set_tx_power",
-        "ieee802154_get_tx_power",
-        "ieee802154_get_state",
-        "ieee802154_get_telemetry",
-        "ieee802154_get_date_version"
-    ]
-    found_ieee_syms = [s for s in ieee_syms if s in symbols]
-    all_ieee_found = len(found_ieee_syms) == len(ieee_syms)
-    all_ieee_in_text = all(
-        in_exec(symbols[s]["value"])
-        for s in found_ieee_syms
-    )
-    t31_pass = all_ieee_found and all_ieee_in_text
-    t31_actual = f"Found {len(found_ieee_syms)}/{len(ieee_syms)} symbols, all executable"
-    passed += print_result_line(
-        total,
-        "IEEE 802.15.4 Radio Transceiver Driver Linkage",
-        "Verify ieee802154_init, cmd, channel, addressing, auto-ack, power, and telemetry symbols are linked (IRAM or flash)",
-        f"All {len(ieee_syms)} IEEE 802.15.4 driver symbols linked in executable memory (IRAM or flash XIP)",
-        t31_actual,
-        t31_pass
-    )
+    if has('ieee802154'):
+        # TEST: IEEE 802.15.4 Radio Transceiver Driver Linkage (Task 5.4)
+        total += 1
+        ieee_syms = [
+            "ieee802154_init",
+            "ieee802154_cmd",
+            "ieee802154_set_channel",
+            "ieee802154_get_channel",
+            "ieee802154_get_freq_mhz",
+            "ieee802154_set_short_address",
+            "ieee802154_get_short_address",
+            "ieee802154_set_pan_id",
+            "ieee802154_get_pan_id",
+            "ieee802154_set_extended_address",
+            "ieee802154_get_extended_address",
+            "ieee802154_set_auto_ack",
+            "ieee802154_set_promiscuous",
+            "ieee802154_set_tx_power",
+            "ieee802154_get_tx_power",
+            "ieee802154_get_state",
+            "ieee802154_get_telemetry",
+            "ieee802154_get_date_version"
+        ]
+        found_ieee_syms = [s for s in ieee_syms if s in symbols]
+        all_ieee_found = len(found_ieee_syms) == len(ieee_syms)
+        all_ieee_in_text = all(
+            in_exec(symbols[s]["value"])
+            for s in found_ieee_syms
+        )
+        t31_pass = all_ieee_found and all_ieee_in_text
+        t31_actual = f"Found {len(found_ieee_syms)}/{len(ieee_syms)} symbols, all executable"
+        passed += print_result_line(
+            total,
+            "IEEE 802.15.4 Radio Transceiver Driver Linkage",
+            "Verify ieee802154_init, cmd, channel, addressing, auto-ack, power, and telemetry symbols are linked (IRAM or flash)",
+            f"All {len(ieee_syms)} IEEE 802.15.4 driver symbols linked in executable memory (IRAM or flash XIP)",
+            t31_actual,
+            t31_pass
+        )
 
     # TEST: Bare-Metal TCP/IP Stack & Lightweight Protocol Engine Linkage (Task 5.5)
     total += 1
@@ -1144,36 +1170,37 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None):
         t33_pass
     )
 
-    # TEST: LAN Network Diagnostics & Wi-Fi Speed-Test Benchmark Linkage (Task 6.2)
-    total += 1
-    speedtest_syms = [
-        "speedtest_init",
-        "speedtest_reset",
-        "speedtest_calculate_throughput_kbps",
-        "speedtest_calculate_throughput_mbps",
-        "speedtest_kbps_to_mbps",
-        "speedtest_run_synthetic_burst",
-        "speedtest_run_udp_tx",
-        "speedtest_process_udp_packet",
-        "speedtest_get_last_result",
-        "speedtest_get_telemetry"
-    ]
-    found_speedtest_syms = [s for s in speedtest_syms if s in symbols]
-    all_speedtest_found = len(found_speedtest_syms) == len(speedtest_syms)
-    all_speedtest_in_text = all(
-        in_exec(symbols[s]["value"])
-        for s in found_speedtest_syms
-    )
-    t34_pass = all_speedtest_found and all_speedtest_in_text
-    t34_actual = f"Found {len(found_speedtest_syms)}/{len(speedtest_syms)} symbols, all executable"
-    passed += print_result_line(
-        total,
-        "LAN Network Diagnostics & Wi-Fi Speed-Test Benchmark Linkage",
-        "Verify speedtest_init, reset, bandwidth calculation, synthetic burst, UDP tx, and telemetry are linked (IRAM or flash)",
-        f"All {len(speedtest_syms)} Speed-Test benchmark symbols linked in executable memory (IRAM or flash XIP)",
-        t34_actual,
-        t34_pass
-    )
+    if has('dev'):
+        # TEST: LAN Network Diagnostics & Wi-Fi Speed-Test Benchmark Linkage (Task 6.2)
+        total += 1
+        speedtest_syms = [
+            "speedtest_init",
+            "speedtest_reset",
+            "speedtest_calculate_throughput_kbps",
+            "speedtest_calculate_throughput_mbps",
+            "speedtest_kbps_to_mbps",
+            "speedtest_run_synthetic_burst",
+            "speedtest_run_udp_tx",
+            "speedtest_process_udp_packet",
+            "speedtest_get_last_result",
+            "speedtest_get_telemetry"
+        ]
+        found_speedtest_syms = [s for s in speedtest_syms if s in symbols]
+        all_speedtest_found = len(found_speedtest_syms) == len(speedtest_syms)
+        all_speedtest_in_text = all(
+            in_exec(symbols[s]["value"])
+            for s in found_speedtest_syms
+        )
+        t34_pass = all_speedtest_found and all_speedtest_in_text
+        t34_actual = f"Found {len(found_speedtest_syms)}/{len(speedtest_syms)} symbols, all executable"
+        passed += print_result_line(
+            total,
+            "LAN Network Diagnostics & Wi-Fi Speed-Test Benchmark Linkage",
+            "Verify speedtest_init, reset, bandwidth calculation, synthetic burst, UDP tx, and telemetry are linked (IRAM or flash)",
+            f"All {len(speedtest_syms)} Speed-Test benchmark symbols linked in executable memory (IRAM or flash XIP)",
+            t34_actual,
+            t34_pass
+        )
 
     # TEST: Extended Interactive Console Shell & 24/7 Health Monitoring Linkage (Task 6.4)
     total += 1
@@ -1259,42 +1286,43 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None):
         t37_pass
     )
 
-    # TEST: 24/7 Stability Soak, Memory Leak & Anti-Starvation Linkage (Task 7.2)
-    total += 1
-    soak_iram_syms = [
-        "soak_init",
-        "soak_audit_memory",
-        "soak_audit_dpc",
-        "soak_audit_scheduler",
-        "soak_run_stability_cycle",
-        "soak_get_telemetry",
-        "soak_reset_telemetry",
-    ]
-    soak_flash_syms = [
-        "soak_print_status",
-        "soak_print_audit",
-    ]
-    all_soak_syms = soak_iram_syms + soak_flash_syms
-    found_soak_syms = [s for s in all_soak_syms if s in symbols]
-    all_soak_found = len(found_soak_syms) == len(all_soak_syms)
-    all_soak_iram_ok = all(
-        in_exec(symbols[s]["value"])
-        for s in soak_iram_syms if s in symbols
-    )
-    all_soak_flash_ok = all(
-        in_flash(symbols[s]["value"])
-        for s in soak_flash_syms if s in symbols
-    )
-    t38_pass = all_soak_found and all_soak_iram_ok and all_soak_flash_ok
-    t38_actual = f"Found {len(found_soak_syms)}/{len(all_soak_syms)} symbols (core executable={all_soak_iram_ok}, visualizers in flash={all_soak_flash_ok})"
-    passed += print_result_line(
-        total,
-        "24/7 Stability Soak, Memory Leak & Anti-Starvation Linkage",
-        "Verify soak_init, audit and stability APIs are linked and diagnostic visualizers run from flash XIP",
-        f"All {len(all_soak_syms)} Soak stability symbols linked, visualizers in flash XIP",
-        t38_actual,
-        t38_pass
-    )
+    if has('dev'):
+        # TEST: 24/7 Stability Soak, Memory Leak & Anti-Starvation Linkage (Task 7.2)
+        total += 1
+        soak_iram_syms = [
+            "soak_init",
+            "soak_audit_memory",
+            "soak_audit_dpc",
+            "soak_audit_scheduler",
+            "soak_run_stability_cycle",
+            "soak_get_telemetry",
+            "soak_reset_telemetry",
+        ]
+        soak_flash_syms = [
+            "soak_print_status",
+            "soak_print_audit",
+        ]
+        all_soak_syms = soak_iram_syms + soak_flash_syms
+        found_soak_syms = [s for s in all_soak_syms if s in symbols]
+        all_soak_found = len(found_soak_syms) == len(all_soak_syms)
+        all_soak_iram_ok = all(
+            in_exec(symbols[s]["value"])
+            for s in soak_iram_syms if s in symbols
+        )
+        all_soak_flash_ok = all(
+            in_flash(symbols[s]["value"])
+            for s in soak_flash_syms if s in symbols
+        )
+        t38_pass = all_soak_found and all_soak_iram_ok and all_soak_flash_ok
+        t38_actual = f"Found {len(found_soak_syms)}/{len(all_soak_syms)} symbols (core executable={all_soak_iram_ok}, visualizers in flash={all_soak_flash_ok})"
+        passed += print_result_line(
+            total,
+            "24/7 Stability Soak, Memory Leak & Anti-Starvation Linkage",
+            "Verify soak_init, audit and stability APIs are linked and diagnostic visualizers run from flash XIP",
+            f"All {len(all_soak_syms)} Soak stability symbols linked, visualizers in flash XIP",
+            t38_actual,
+            t38_pass
+        )
 
     # TEST: Dual-Slot Flash OTA Firmware Upgrade & Rollback Linkage (Task 7.3)
     total += 1
@@ -1491,46 +1519,49 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None):
         t42_pass
     )
 
-    # TEST: Dedicated Companion Application & Extended REST API Engine (Task 8.3)
+    # TEST: Modules linked = the profile's modules (REV-33)
     total += 1
-    app_files = [
-        "app/index.html",
-        "app/styles.css",
-        "app/app.js",
-        "app/manifest.json",
-        "app/sw.js",
-        "app/README.md"
-    ]
-    all_files_exist = all(os.path.isfile(os.path.join(REPO_ROOT, f)) and os.path.getsize(os.path.join(REPO_ROOT, f)) > 50 for f in app_files)
-
-    companion_flash_syms = [
-        "http_handler_health",
-        "http_handler_speedtest",
-        "http_register_default_routes",
-        # REV-23: /api/gpio removed; the REST v1, light and MQTT code runs from flash
-        "api_v1_light_post",
-        "api_v1_mqtt_post",
-        "light_command",
-        "mqtt_tick",
-        "rgb_led_write"
-    ]
-    found_comp_syms = [s for s in companion_flash_syms if s in symbols]
-    all_comp_found = len(found_comp_syms) == len(companion_flash_syms)
-    all_comp_flash_ok = all(
-        in_flash(symbols[s]["value"])
-        for s in companion_flash_syms if s in symbols
-    )
-
-    etext_ok = ("_etext" in symbols) and (symbols["_etext"]["value"] <= 0x40829000)
-    t43_pass = all_files_exist and all_comp_found and all_comp_flash_ok and etext_ok
-    t43_actual = f"ClientAssets={all_files_exist} ({len(app_files)}/6 files), Symbols={len(found_comp_syms)}/{len(companion_flash_syms)} in FlashXIP, _etext=0x{symbols.get('_etext', {}).get('value', 0):08x} <= 0x40829000"
+    mod_sources = module_sources()
+    file_syms = {n for n, v in symbols.items() if v["type"] == STT_FILE}
+    missing = [f"{m}:{src}" for m in modules for src in mod_sources.get(m, []) if src not in file_syms]
+    leaked = [f"{m}:{src}" for m in mod_sources if m not in modules for src in mod_sources[m] if src in file_syms]
+    unknown = [m for m in modules if m not in mod_sources]
+    reg_bytes = symbols["__stop_iron_modules"]["value"] - symbols["__start_iron_modules"]["value"]
+    reg_count = reg_bytes // MODULE_DESC_SIZE
+    reg_in_flash = in_flash(symbols["__start_iron_modules"]["value"]) and in_flash(symbols["__start_iron_shell_cmds"]["value"])
+    mod_pass = (not missing and not leaked and not unknown and reg_bytes % MODULE_DESC_SIZE == 0
+                and reg_count == len(modules) and reg_in_flash)
+    mod_actual = (f"profile {profile}: modules {' '.join(modules) or '-'}; registry {reg_count} descriptors in flash={reg_in_flash}; "
+                  f"missing {missing or 0}, unselected but linked {leaked or 0}, unknown {unknown or 0}")
     passed += print_result_line(
         total,
-        "Dedicated Companion Application & Extended REST API Engine Linkage",
-        "Verify PWA client assets integrity, extended REST route handlers linked in Flash XIP, and IRAM boundary",
-        "All client assets validated, REST handlers linked in Flash XIP, and _etext <= 0x40829000",
-        t43_actual,
-        t43_pass
+        "Profile Modules: Selected Modules Linked, Others Absent",
+        "Compare the ELF's source-file symbols with src/modules/*/module.mk and count the module registry",
+        "Every source of a selected module linked, none of an unselected one; one registry entry per module, in flash",
+        mod_actual,
+        mod_pass
+    )
+
+    # TEST: Main-loop module code and the HTTP route handlers run from flash (REV-23, REV-33)
+    total += 1
+    flash_syms = ["http_register_default_routes", "api_v1_device_get", "modules_tick", "shell_command_find"]
+    if has('light'):
+        flash_syms += ["light_command", "rgb_led_write", "light_api_post"]
+    if has('mqtt'):
+        flash_syms += ["mqtt_tick", "mqtt_api_post"]
+    if has('dev'):
+        flash_syms += ["dev_http_health", "dev_http_speedtest"]
+    found_fl = [s for s in flash_syms if s in symbols]
+    fl_ok = all(in_flash(symbols[s]["value"]) for s in found_fl)
+    etext_ok = ("_etext" in symbols) and (symbols["_etext"]["value"] <= 0x40829000)
+    fl_pass = len(found_fl) == len(flash_syms) and fl_ok and etext_ok
+    passed += print_result_line(
+        total,
+        "Module and REST Handler Code in Flash XIP",
+        "Verify the route registration, REST v1 and the profile's module handlers are linked and run from flash XIP",
+        "All listed symbols linked in flash XIP, _etext <= 0x40829000",
+        f"Symbols={len(found_fl)}/{len(flash_syms)} in FlashXIP={fl_ok}, _etext=0x{symbols.get('_etext', {}).get('value', 0):08x}",
+        fl_pass
     )
 
     # TEST: Code that must run without flash never calls into flash (REV-08)
@@ -1562,7 +1593,7 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None):
     iram_free = IRAM_END - etext
     main_stack = main_stack_top - ebss
     flash_used = symbols["_eflash_xip"]["value"] - symbols["_sflash_xip"]["value"]
-    bud_pass = (iram_free >= IRAM_MIN_FREE and main_stack >= MAIN_STACK_MIN_SIZE
+    bud_pass = (iram_free >= IRAM_MIN_FREE and main_stack >= main_stack_min
                 and 0 < main_stack_top <= ROM_DATA_START)
     bud_actual = (f"IRAM used {etext - stext} B, free {iram_free} B; main stack {main_stack} B; "
                   f"flash XIP {flash_used} B")
@@ -1570,7 +1601,7 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None):
         total,
         "Memory Budgets: IRAM Headroom, Main Stack, Flash XIP",
         "Report IRAM/stack/flash usage and enforce the headroom budgets",
-        f"IRAM free >= {IRAM_MIN_FREE} B, main stack >= {MAIN_STACK_MIN_SIZE} B, stack top <= 0x{ROM_DATA_START:08x}",
+        f"IRAM free >= {IRAM_MIN_FREE} B, main stack >= {main_stack_min} B (profile {profile}), stack top <= 0x{ROM_DATA_START:08x}",
         bud_actual,
         bud_pass
     )
@@ -1589,9 +1620,13 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Iron-V firmware artifact checks (run via 'make test')")
-    parser.add_argument("--elf", default="build/firmware.elf")
-    parser.add_argument("--bin", default="build/firmware.bin")
+    parser.add_argument("--elf", default="build/dev/firmware.elf")
+    parser.add_argument("--bin", default="build/dev/firmware.bin")
     parser.add_argument("--host-test", default="build/host/test_freestanding")
     parser.add_argument("--objdump", default=None, help="cross objdump (default: search PATH)")
+    parser.add_argument("--profile", default="dev", help="build profile of the image (profiles/<name>.config)")
+    parser.add_argument("--modules", default=None, help="the profile's modules, space separated (default: all)")
+    parser.add_argument("--main-stack-min", type=int, default=MAIN_STACK_MIN_SIZE, help="the profile's MAIN_STACK_MIN")
     args = parser.parse_args()
-    run_suite(args.elf, args.bin, args.host_test, args.objdump)
+    mods = args.modules.split() if args.modules is not None else sorted(module_sources())
+    run_suite(args.elf, args.bin, args.host_test, args.objdump, args.profile, mods, args.main_stack_min)

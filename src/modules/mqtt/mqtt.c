@@ -6,7 +6,7 @@
 #include "tcp.h"
 #include "net.h"
 #include "nvs.h"
-#include "efuse.h"
+#include "device.h"
 #include "wifi.h"
 #include "dhcp.h"
 #include "wifi_link.h"
@@ -22,9 +22,6 @@
 #endif
 
 #define MQTT_DISCOVERY_MAX               640U
-#define MQTT_HEX_DIGITS                  "0123456789abcdef"
-#define MQTT_NIBBLE_SHIFT                4U
-#define MQTT_NIBBLE_MASK                 0x0FU
 #define MQTT_DEC_BUF_LEN                 12U
 #define MQTT_DEC_BASE                    10U
 #define MQTT_PORT_MAX                    65535U
@@ -403,7 +400,6 @@ static bool          s_cfg_pending;         /* new settings wait for mqtt_tick (
 static mqtt_config_t s_cfg_next;
 static uint8_t       s_tx[MQTT_TX_BUF_LEN];
 
-static char s_device_id[MQTT_DEVICE_ID_LEN];
 static char s_topic_avail[MQTT_TOPIC_MAX];
 static char s_topic_state[MQTT_TOPIC_MAX];
 static char s_topic_set[MQTT_TOPIC_MAX];
@@ -788,7 +784,7 @@ void mqtt_tick(uint64_t now_us, bool link_up)
             }
             if (s_pcb->state == TCP_STATE_ESTABLISHED)
             {
-                size_t n = mqtt_encode_connect(s_tx, sizeof(s_tx), s_device_id, s_cfg.user, s_cfg.pass,
+                size_t n = mqtt_encode_connect(s_tx, sizeof(s_tx), device_id(), s_cfg.user, s_cfg.pass,
                                                MQTT_KEEPALIVE_S, s_topic_avail, MQTT_PAYLOAD_OFFLINE, true);
                 if (!mqtt_send(s_tx, n))
                 {
@@ -873,7 +869,7 @@ static void mqtt_build_topic(char *out, const char *prefix, const char *suffix)
     size_t pos = 0U;
     out[0] = '\0';
     (void)(mqtt_append(out, MQTT_TOPIC_MAX, &pos, prefix) &&
-           mqtt_append(out, MQTT_TOPIC_MAX, &pos, s_device_id) &&
+           mqtt_append(out, MQTT_TOPIC_MAX, &pos, device_id()) &&
            mqtt_append(out, MQTT_TOPIC_MAX, &pos, suffix));
 }
 
@@ -916,19 +912,6 @@ void mqtt_init(void)
     s_cfg_pending = false;
     s_next_packet_id = (uint16_t)hw_rng_u32();
 
-    uint8_t mac[MQTT_MAC_LEN];
-    memset(mac, 0, sizeof(mac));
-    (void)efuse_get_mac(mac);
-    size_t pos = 0U;
-    s_device_id[0] = '\0';
-    (void)mqtt_append(s_device_id, sizeof(s_device_id), &pos, MQTT_DEVICE_ID_PREFIX);
-    for (uint32_t i = MQTT_MAC_LEN - MQTT_DEVICE_ID_MAC_BYTES; i < MQTT_MAC_LEN; i++)
-    {
-        s_device_id[pos++] = MQTT_HEX_DIGITS[(mac[i] >> MQTT_NIBBLE_SHIFT) & MQTT_NIBBLE_MASK];
-        s_device_id[pos++] = MQTT_HEX_DIGITS[mac[i] & MQTT_NIBBLE_MASK];
-    }
-    s_device_id[pos] = '\0';
-
     mqtt_build_topic(s_topic_avail, MQTT_TOPIC_ROOT, MQTT_TOPIC_AVAIL_SUFFIX);
     mqtt_build_topic(s_topic_state, MQTT_TOPIC_ROOT, MQTT_TOPIC_STATE_SUFFIX);
     mqtt_build_topic(s_topic_set, MQTT_TOPIC_ROOT, MQTT_TOPIC_SET_SUFFIX);
@@ -970,7 +953,7 @@ bool mqtt_set_config(const mqtt_config_t *cfg, uint64_t now_us)
     return true;
 }
 
-const char *mqtt_device_id(void)          { return s_device_id; }
+const char *mqtt_device_id(void)          { return device_id(); }
 const char *mqtt_topic_set(void)          { return s_topic_set; }
 const char *mqtt_topic_state(void)        { return s_topic_state; }
 const char *mqtt_topic_availability(void) { return s_topic_avail; }
@@ -1028,7 +1011,7 @@ size_t mqtt_build_discovery(char *buf, size_t max)
     size_t pos = 0U;
     buf[0] = '\0';
     bool ok = mqtt_append(buf, max, &pos, "{\"name\":null,\"unique_id\":\"") &&
-              mqtt_append(buf, max, &pos, s_device_id) &&
+              mqtt_append(buf, max, &pos, device_id()) &&
               mqtt_append(buf, max, &pos, "_light\",\"schema\":\"json\",\"command_topic\":\"") &&
               mqtt_append(buf, max, &pos, s_topic_set) &&
               mqtt_append(buf, max, &pos, "\",\"state_topic\":\"") &&
@@ -1041,7 +1024,7 @@ size_t mqtt_build_discovery(char *buf, size_t max)
               mqtt_append_u32(buf, max, &pos, LIGHT_BRIGHTNESS_MAX) &&
               mqtt_append(buf, max, &pos, ",\"supported_color_modes\":[\"rgb\"],\"qos\":1,\"retain\":false,"
                                           "\"optimistic\":false,\"device\":{\"identifiers\":[\"") &&
-              mqtt_append(buf, max, &pos, s_device_id) &&
+              mqtt_append(buf, max, &pos, device_id()) &&
               mqtt_append(buf, max, &pos, "\"],\"name\":\"" CONFIG_DEVICE_HOSTNAME
                                           "\",\"manufacturer\":\"" CONFIG_DEVICE_MANUFACTURER
                                           "\",\"model\":\"" CONFIG_DEVICE_MODEL_NUMBER
@@ -1080,7 +1063,7 @@ static void mqtt_shell_status(uint64_t now_us)
     char ip[NET_IP_STR_BUF_LEN];
     net_ip_to_str(cfg.host, ip, sizeof(ip));
     console_puts("MQTT client (REV-23)\r\n");
-    mqtt_print_kv("device id:   ", s_device_id);
+    mqtt_print_kv("device id:   ", device_id());
     mqtt_print_kv("enabled:     ", cfg.enabled ? "yes" : "no");
     mqtt_print_kv("broker:      ", cfg.host != 0U ? ip : "(not set)");
     mqtt_print_num("port:        ", cfg.port);

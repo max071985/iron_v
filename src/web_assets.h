@@ -5,7 +5,7 @@
  *
  * Provides pre-formatted, self-contained HTML, CSS, and client-side JavaScript
  * for Iron V embedded HTTP server without filesystem or dynamic heap overhead.
- * The light page at / is not here: it is web/index.html, compressed into
+ * The light page at / is not here: it is src/modules/light/index.html, compressed into
  * web_index_gz.h at build time (scripts/gen_web.py, REV-25).
  */
 

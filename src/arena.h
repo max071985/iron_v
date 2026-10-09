@@ -4,7 +4,8 @@
  * Deterministic Static Arena Memory Allocator
  * Authoritative Architecture: ESP32-C6 RISC-V Bare-Metal Runtime
  *
- * Provides O(1) deterministic fixed-size static block pools (Small: 32x64B, Medium: 16x256B)
+ * Provides O(1) deterministic fixed-size static block pools (64 B and 256 B blocks, block counts
+ * from the build profile: POOL_SMALL_BLOCKS / POOL_MEDIUM_BLOCKS, REV-33; 0 = no pool, no RAM)
  * with intrusive singly linked free-lists and bitmask state tracking, plus an 8 KB linear
  * scratch arena with O(1) stack-like mark and reset semantics.
  * Prohibits dynamic heap allocation (malloc/free) to guarantee zero memory fragmentation.
@@ -15,28 +16,36 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "config.h"
 
 /* Alignment Constraints */
 #define ARENA_ALIGN_BYTES               4U
 #define ARENA_ALIGN_MASK                (ARENA_ALIGN_BYTES - 1U)
 
-/* Small Block Pool Dimensions: 32 blocks of 64 bytes (2048 bytes) */
+/* Small Block Pool Dimensions: blocks of 64 bytes (dev profile: 32 blocks, 2048 bytes) */
 #define ARENA_POOL_BLOCK_SIZE_SMALL     64U
-#define ARENA_POOL_BLOCK_COUNT_SMALL    32U
+#define ARENA_POOL_BLOCK_COUNT_SMALL    CONFIG_POOL_SMALL_BLOCKS
 #define ARENA_POOL_TOTAL_SIZE_SMALL     (ARENA_POOL_BLOCK_SIZE_SMALL * ARENA_POOL_BLOCK_COUNT_SMALL)
 
-/* Medium Block Pool Dimensions: 16 blocks of 256 bytes (4096 bytes) */
+/* Medium Block Pool Dimensions: blocks of 256 bytes (dev profile: 16 blocks, 4096 bytes) */
 #define ARENA_POOL_BLOCK_SIZE_MEDIUM    256U
-#define ARENA_POOL_BLOCK_COUNT_MEDIUM   16U
+#define ARENA_POOL_BLOCK_COUNT_MEDIUM   CONFIG_POOL_MEDIUM_BLOCKS
 #define ARENA_POOL_TOTAL_SIZE_MEDIUM    (ARENA_POOL_BLOCK_SIZE_MEDIUM * ARENA_POOL_BLOCK_COUNT_MEDIUM)
+
+/* A pool's blocks are tracked in one 32-bit mask */
+#define ARENA_POOL_BLOCKS_MAX           32U
 
 /* Linear Scratch Arena Dimensions: 8 KB (8192 bytes) */
 #define ARENA_SCRATCH_TOTAL_SIZE        8192U
 
 /* Bitmask Tracking Constants */
 #define ARENA_BITMASK_EMPTY             0x00000000U
-#define ARENA_BITMASK_FULL_SMALL        0xFFFFFFFFU
-#define ARENA_BITMASK_FULL_MEDIUM       0x0000FFFFU
+#define ARENA_BITMASK_ALL               0xFFFFFFFFU
+/* Mask with the low <count> bits set (the shift count stays below 32 for every count) */
+#define ARENA_BITMASK_FOR(count)        (((count) == 0U) ? ARENA_BITMASK_EMPTY : \
+                                         (ARENA_BITMASK_ALL >> ((ARENA_POOL_BLOCKS_MAX - (count)) & (ARENA_POOL_BLOCKS_MAX - 1U))))
+#define ARENA_BITMASK_FULL_SMALL        ARENA_BITMASK_FOR(ARENA_POOL_BLOCK_COUNT_SMALL)
+#define ARENA_BITMASK_FULL_MEDIUM       ARENA_BITMASK_FOR(ARENA_POOL_BLOCK_COUNT_MEDIUM)
 
 /* Status / Return Codes */
 #define ARENA_FREE_SUCCESS              1

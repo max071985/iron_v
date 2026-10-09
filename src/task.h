@@ -16,7 +16,6 @@
 
 /* Task Scheduling Constants */
 #define TASK_MAX_COUNT              8U
-#define TASK_DEFAULT_STACK_SIZE     2048U
 #define TASK_STACK_ALIGNMENT        16U
 #define TASK_FRAME_SIZE             64U
 #define TASK_NAME_MAX_LEN           16U
@@ -69,6 +68,7 @@ typedef struct {
 
 /* Lifecycle & Task Management Primitives */
 void     task_init(void);
+/* stack_buf/stack_size: the caller's static stack (required; at least TASK_FRAME_SIZE + TASK_STACK_ALIGNMENT) */
 int      task_create(const char *name, task_entry_t entry, void *arg, uint32_t priority, uint8_t *stack_buf, uint32_t stack_size);
 void     task_yield(void);
 void     task_exit(void);

@@ -11,9 +11,6 @@
 #include "io_constants.h"
 #include "utils.h"
 
-/* Pre-allocated static task stacks in HP SRAM DRAM */
-static uint8_t s_internal_stacks[TASK_MAX_COUNT][TASK_DEFAULT_STACK_SIZE] __attribute__((aligned(TASK_STACK_ALIGNMENT)));
-
 /* Task Control Block Table */
 static task_control_block_t s_task_table[TASK_MAX_COUNT];
 static uint32_t s_current_task_idx = 0U;
@@ -71,7 +68,8 @@ int task_create(const char *name, task_entry_t entry, void *arg, uint32_t priori
         task_init();
     }
 
-    if (!entry)
+    /* The caller owns the stack (REV-33: no fallback stacks, they cost 16 KB of DRAM unused) */
+    if (!entry || !stack_buf || stack_size < (TASK_FRAME_SIZE + TASK_STACK_ALIGNMENT))
     {
         return TASK_ERR_INVALID_PARAM;
     }
@@ -98,14 +96,8 @@ int task_create(const char *name, task_entry_t entry, void *arg, uint32_t priori
         return TASK_ERR_FULL; /* Task table full */
     }
 
-    /* Assign stack: use caller's static stack or pre-allocated internal stack */
     uint8_t *stack_ptr = stack_buf;
     uint32_t size = stack_size;
-    if (!stack_ptr || size < (TASK_FRAME_SIZE + TASK_STACK_ALIGNMENT))
-    {
-        stack_ptr = s_internal_stacks[slot];
-        size = TASK_DEFAULT_STACK_SIZE;
-    }
 
     /* Calculate 16-byte aligned top of stack */
     uint32_t stack_base = (uint32_t)(uintptr_t)stack_ptr;

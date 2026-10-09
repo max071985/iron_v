@@ -22,7 +22,9 @@
 #include "gdma.h"
 #include "modem.h"
 #include "wifi.h"
+#if CONFIG_MODULE_IEEE802154
 #include "ieee802154.h"
+#endif
 #include "net.h"
 #include "tcp.h"
 #include "http_server.h"
@@ -101,75 +103,6 @@ static void test_sw_isr(void *arg)
     g_test_isr_hit++;
     /* Deassert software interrupt 0 to prevent continuous re-triggering */
     interrupt_clear_cpu_intr(0);
-}
-
-mem_access_t check_mem_access(uint32_t addr)
-{
-    /* 1. Unaligned addresses are strictly invalid for 32-bit word access */
-    if (addr & WORD_ALIGN_MASK)
-    {
-        return MEM_ACCESS_INVALID;
-    }
-
-    /* 2. Read-Only Code in HP IRAM */
-    if (addr >= (uint32_t)_stext && addr < (uint32_t)_etext)
-    {
-        return MEM_ACCESS_READONLY;
-    }
-
-    /* 3. Read-Only Constant Data (.rodata) in HP DRAM */
-    if (addr >= (uint32_t)_srodata && addr < (uint32_t)_erodata)
-    {
-        return MEM_ACCESS_READONLY;
-    }
-
-    /* 4. Read-Write Data, BSS, Heap, and Stack range in HP SRAM */
-    if (addr >= (uint32_t)_sdata && addr < (uint32_t)_stack_top)
-    {
-        return MEM_ACCESS_READWRITE;
-    }
-
-    /* 5. LP SRAM (16 KB @ 0x50000000) */
-    if (addr >= LP_SRAM_START_ADDR && addr < LP_SRAM_END_ADDR)
-    {
-        return MEM_ACCESS_READWRITE;
-    }
-
-    /* 6. Flash XIP Execution & Read-Only Space (0x42000000 - 0x42800000) */
-    if (addr >= FLASH_XIP_START_ADDR && addr < FLASH_XIP_END_ADDR)
-    {
-        return MEM_ACCESS_READONLY;
-    }
-
-    /* 7. Memory-Mapped I/O Peripheral Space (0x60000000 - 0x600D0000) */
-    if (addr >= PERIPHERAL_MMIO_START_ADDR && addr < PERIPHERAL_MMIO_END_ADDR)
-    {
-        /* Reject unmapped reserved peripheral holes (TRM Tab 5.3-2):
-         * 0x60019000 - 0x6007FFFF (412 KB reserved hole, containing legacy USB 0x60043000)
-         * 0x6009A000 - 0x600A2FFF (36 KB reserved hole, excluding MODEM_FE at 0x600A0000 - 0x600A0FFF)
-         */
-        if ((addr >= 0x60019000U && addr <= 0x6007FFFFU) ||
-            (addr >= 0x6009A000U && addr <= 0x600A2FFFU && (addr < MODEM_FE_BASE_ADDR || addr >= MODEM_FE_END_ADDR)))
-        {
-            return MEM_ACCESS_INVALID;
-        }
-        return MEM_ACCESS_MMIO;
-    }
-
-    /* 8. Core-Local Interrupt & Timer Subsystem Space (PLIC/CLINT: 0x20000000 - 0x20002000) */
-    if (addr >= CORE_LOCAL_PERI_START_ADDR && addr < CORE_LOCAL_PERI_END_ADDR)
-    {
-        return MEM_ACCESS_MMIO;
-    }
-
-    /* 9. Internal ROM (0x40000000 - 0x40050000) */
-    if (addr >= INTERNAL_ROM_START_ADDR && addr < INTERNAL_ROM_END_ADDR)
-    {
-        return MEM_ACCESS_READONLY;
-    }
-
-    /* All other unmapped regions */
-    return MEM_ACCESS_INVALID;
 }
 
 static void print_banner_line(void)
@@ -2186,6 +2119,7 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     wifi_start_ap(CONFIG_WIFI_AP_SSID, NULL, CONFIG_WIFI_AP_CHANNEL);
 #endif
 
+#if CONFIG_MODULE_IEEE802154   /* REV-33: the 802.15.4 facade is a module of the dev profile */
     /* ------------------------------------------------------------- */
     /* IEEE 802.15.4 Radio Transceiver Driver (Task 5.4)             */
     /* ------------------------------------------------------------- */
@@ -2277,6 +2211,7 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
 
     if (t32_pass) passed_tests++;
     print_result(t32_pass);
+#endif
 
     /* ------------------------------------------------------------- */
     /* Bare-Metal Zero-Copy IPv4, ARP & TCP Stack (Task 5.5)         */
@@ -2454,8 +2389,8 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     uint16_t route_cnt = http_server_get_route_count();
     int route_cnt_ok = (route_cnt >= 5U);
 
-    /* 2. GET /api/status -> HTTP 200 OK with valid JSON containing uptime_ms */
-    const char req_status[] = "GET /api/status HTTP/1.1\r\nHost: iron-v\r\n\r\n";
+    /* 2. GET /api/v1/device -> HTTP 200 OK with valid JSON containing uptime_s (REV-33: /api/status removed) */
+    const char req_status[] = "GET /api/v1/device HTTP/1.1\r\nHost: iron-v\r\n\r\n";
     char resp_status[1024];
     size_t resp_status_len = 0U;
     http_status_t st_status = http_process_request(req_status, strlen(req_status),
@@ -2463,7 +2398,7 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
                                                    &resp_status_len);
     int get_status_ok = (st_status == HTTP_OK) &&
                         (strstr(resp_status, "200 OK") != NULL) &&
-                        (strstr(resp_status, "uptime_ms") != NULL) &&
+                        (strstr(resp_status, "\"uptime_s\":") != NULL) &&
                         (strstr(resp_status, "Content-Length:") != NULL) &&
                         (strstr(resp_status, "application/json") != NULL);
 
@@ -2490,8 +2425,8 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
                       (strstr(resp_root, "text/html") != NULL) &&
                       (strstr(resp_root, HTTP_GZIP_HEADER) != NULL);
 
-    /* 5. Method Not Allowed: POST to GET-only /api/info */
-    const char req_method_err[] = "POST /api/info HTTP/1.1\r\nHost: iron-v\r\n\r\n";
+    /* 5. Method Not Allowed: POST to GET-only /api/v1/device */
+    const char req_method_err[] = "POST /api/v1/device HTTP/1.1\r\nHost: iron-v\r\n\r\n";
     char resp_method_err[512];
     size_t resp_method_len = 0U;
     http_status_t st_method_err = http_process_request(req_method_err, strlen(req_method_err),
@@ -3740,3 +3675,65 @@ bool test_soak_run(uint32_t cycles, uint32_t delay_ms)
 
     return all_ok;
 }
+
+/* ========================================================================= */
+/* Shell commands of the developer module (REV-33)                           */
+/* ========================================================================= */
+
+static void test_do_test_shell(char *args)
+{
+    (void)args;
+    run_validation_suite();
+}
+
+static void test_soak_shell(char *args)
+{
+    char *subcmd = args;
+
+    if (strncmp(subcmd, "status", 6) == 0)
+    {
+        soak_print_status();
+    }
+    else if (strncmp(subcmd, "audit", 5) == 0)
+    {
+        soak_print_audit();
+    }
+    else
+    {
+        uint32_t cycles = TEST_SOAK_DEFAULT_CYCLES;
+        if (*subcmd != '\0')
+        {
+            if (strncmp(subcmd, "cont", 4) == 0 || strncmp(subcmd, "24/7", 4) == 0)
+            {
+                cycles = 0U;
+            }
+            else
+            {
+                uint32_t c_in = 0U;
+                if (shell_parse_uint(&subcmd, &c_in))
+                {
+                    cycles = c_in;
+                }
+            }
+        }
+        test_soak_run(cycles, TEST_SOAK_DEFAULT_DELAY_MS);
+    }
+}
+
+SHELL_COMMAND_DEFINE(s_do_test_cmd, {
+    .name = "do-test",
+    .help = "do-test             - Run full baseline validation test suite",
+    .run  = test_do_test_shell,
+});
+
+SHELL_COMMAND_DEFINE(s_test_cmd, {
+    .name = "test",
+    .help = NULL,                        /* alias of do-test */
+    .run  = test_do_test_shell,
+});
+
+SHELL_COMMAND_DEFINE(s_soak_cmd, {
+    .name = "soak",
+    .help = "soak [status|audit|cycles] - 24/7 stability soak, memory leak audit & anti-starvation telemetry",
+    .run  = test_soak_shell,
+});

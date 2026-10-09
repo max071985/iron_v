@@ -3,7 +3,6 @@
 #include "io_constants.h"
 #include "utils.h"
 #include "string.h"
-#include "test.h"
 #include "clock.h"
 #include "mmu.h"
 #include "wdt.h"
@@ -26,16 +25,13 @@
 #include "wifi.h"
 #include "hw_rng.h"
 #include "wifi_os_adapter.h"
-#include "ieee802154.h"
 #include "net.h"
 #include "tcp.h"
 #include "http_server.h"
 #include "dhcp.h"
 #include "wifi_vendor_types.h"
-#include "speedtest.h"
 #include "shell.h"
 #include "efuse.h"
-#include "soak.h"
 #include "ota.h"
 #include "nvs.h"
 #include "provisioning.h"
@@ -43,8 +39,7 @@
 #include "mdns.h"
 #include "button.h"
 #include "looptime.h"
-#include "light.h"
-#include "mqtt.h"
+#include "module.h"
 
 void main(void)
 {
@@ -87,9 +82,6 @@ void main(void)
     /* Initialize Cooperative Coroutine Scheduler */
     task_init();
 
-    /* Initialize 24/7 Stability Soak, Memory Leak & Anti-Starvation Subsystem */
-    soak_init();
-
     /* Initialize Dual-Slot Flash OTA Firmware Upgrade & Rollback Subsystem */
     ota_init();
 
@@ -121,9 +113,6 @@ void main(void)
     /* Initialize 802.11ax Wi-Fi 6 MAC Driver & Zero-Copy Packet Ring */
     wifi_init();
 
-    /* Initialize IEEE 802.15.4 Radio Transceiver Driver */
-    ieee802154_init();
-
     /* Initialize Bare-Metal Zero-Copy IPv4, ARP & ICMP Network Stack */
     net_init();
 
@@ -144,18 +133,14 @@ void main(void)
     wpa2_client_init();
     mdns_init();
 
-    /* Initialize LAN Network Diagnostics & Wi-Fi Speed-Test Benchmark Engine */
-    speedtest_init();
-
     /* Initialize Interactive Console Shell & 24/7 Health Telemetry */
     shell_init();
 
     /* Setup button (BOOT, GPIO9): long press opens the setup SoftAP (REV-15) */
     button_setup_init();
 
-    /* Light (onboard RGB LED, last state from NVS) and the MQTT client to the bridge's broker (REV-23) */
-    light_init(systimer_get_us());
-    mqtt_init();
+    /* Modules of this profile (REV-33), e.g. the light (LED, last state from NVS) and the MQTT client */
+    modules_init(systimer_get_us());
 
     /* NVS sector rewrites wait while a Wi-Fi join is in flight (REV-16) */
     nvs_set_commit_gate(provisioning_join_busy);
@@ -166,7 +151,7 @@ void main(void)
     console_puts("\r\n");
     shell_print_info();
 
-    console_puts("Ready. Type 'do-test' for validation suite or 'help' for command list.\r\n");
+    console_puts("Ready. Type 'help' for the command list.\r\n");
     console_puts(CONFIG_CONSOLE_PROMPT);
     console_flush();
 
@@ -188,16 +173,15 @@ void main(void)
         }
         else if (button_ev == BUTTON_EVENT_SHORT_PRESS)
         {
-            light_toggle_local(now_us);   /* the device-side change for REV-26 */
+            modules_event(MODULE_EVENT_BUTTON_SHORT_PRESS, now_us);   /* light: local toggle */
         }
         looptime_mark(LOOP_CLIENT_BUTTON, systimer_get_us());
         provisioning_tick(now_us);
         looptime_mark(LOOP_CLIENT_PROV, systimer_get_us());
         mdns_tick(now_us);
         looptime_mark(LOOP_CLIENT_MDNS, systimer_get_us());
-        light_tick(now_us);
-        mqtt_tick(now_us, mqtt_link_usable());
-        looptime_mark(LOOP_CLIENT_MQTT, systimer_get_us());
+        modules_tick(now_us);
+        looptime_mark(LOOP_CLIENT_MODULES, systimer_get_us());
         nvs_tick(now_us);
         looptime_mark(LOOP_CLIENT_NVS, systimer_get_us());
         wifi_os_adapter_poll();

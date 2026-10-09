@@ -1,0 +1,26 @@
+# Iron-V bridge (REV-24): Mosquitto + Home Assistant on the PC.
+# Rootless podman (podman-compose) or docker compose. Host networking: HA needs the LAN for mDNS/SSDP and
+# the board connects to the PC's address. Image versions are pinned; bump them deliberately and re-check the
+# board's discovery keys against homeassistant/components/mqtt/light/schema_json.py of the new HA version.
+services:
+  mosquitto:
+    image: docker.io/library/eclipse-mosquitto:2.0.22
+    container_name: ironv-mosquitto
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro,Z
+      - ./mosquitto/passwd:/mosquitto/config/passwd:Z
+      - ./mosquitto/data:/mosquitto/data:Z
+
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:2026.9.4
+    container_name: ironv-homeassistant
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-Europe/Berlin}
+    volumes:
+      - ./homeassistant:/config:Z
+    depends_on:
+      - mosquitto

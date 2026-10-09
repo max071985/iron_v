@@ -1,0 +1,23 @@
+# Iron-V bridge: Home Assistant configuration (REV-24).
+# Secrets live in secrets.yaml (untracked; template: secrets.example.yaml).
+# The MQTT integration is a config entry (./setup.sh ha-mqtt or the UI); HA has no YAML for the broker.
+# The board publishes its own retained discovery (homeassistant/light/<id>/config), so no per-device YAML.
+
+default_config:
+
+homeassistant:
+  name: Iron-V
+  external_url: !secret external_url
+  internal_url: !secret internal_url
+  # Optional features, each enabled by linking a file into packages/ (see tools/bridge/README.md).
+  packages: !include_dir_named packages
+
+# No http: block. Since HA 2026.9 HTTP settings live in storage and YAML is imported once, then ignored.
+# The settings for Tailscale Funnel (trusted proxy 127.0.0.1, X-Forwarded-For, ban after 5 failed logins)
+# are applied by ./setup.sh http (tools/bridge/ha_http.py).
+
+logger:
+  default: warning
+  logs:
+    homeassistant.components.mqtt: info
+    homeassistant.components.google_assistant: info

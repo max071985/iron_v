@@ -1,0 +1,10 @@
+# Runtime state and secrets stay local; only the config below is tracked.
+/local/
+/mosquitto/passwd
+/mosquitto/data/
+/homeassistant/*
+!/homeassistant/configuration.yaml
+!/homeassistant/secrets.example.yaml
+!/homeassistant/google/
+# Google service account keys never belong in the tracked package directory.
+/homeassistant/google/*.json

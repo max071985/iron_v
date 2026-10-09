@@ -1,0 +1,11 @@
+# Google Assistant (manual project, REV-24). Enabled by linking into packages/ once
+# secrets.yaml has google_project_id and google_service_account.json exists (both untracked).
+google_assistant:
+  project_id: !secret google_project_id
+  service_account: !include ../google_service_account.json
+  report_state: true
+  expose_by_default: false
+  entity_config:
+    light.iron_v:
+      expose: true
+      name: Iron-V light

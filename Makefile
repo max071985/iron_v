@@ -25,15 +25,19 @@ LP_IMAGE_H = $(GEN_DIR)/lp_firmware_image.h
 CONFIG_FILE ?= .config
 CONFIG_GEN_H = $(GEN_DIR)/config_gen.h
 HOST_TEST_BIN = $(HOST_DIR)/test_freestanding
+# Light page (REV-25): web/index.html -> minified, gzip-compressed C array served at /
+WEB_SRC = web/index.html
+WEB_GEN_DIR = $(BUILD)/web
+WEB_GZ_H = $(WEB_GEN_DIR)/web_index_gz.h
 
 # Compiler flags
-CFLAGS = -march=rv32imac_zicsr_zifencei -mabi=ilp32 -ffreestanding -nostdlib -Os -g -Wall -Wextra -Werror -Isrc -I$(GEN_DIR)
+CFLAGS = -march=rv32imac_zicsr_zifencei -mabi=ilp32 -ffreestanding -nostdlib -Os -g -Wall -Wextra -Werror -Isrc -I$(GEN_DIR) -I$(WEB_GEN_DIR)
 
 DEPFLAGS = -MMD -MP
 
 # Host test build: native compiler, stub LP image (tests/host/), no cross toolchain needed
 HOST_CC ?= gcc
-HOST_CFLAGS = -O2 -fno-tree-loop-distribute-patterns -Wall -Wextra -Werror -Itests/host -Isrc
+HOST_CFLAGS = -O2 -fno-tree-loop-distribute-patterns -Wall -Wextra -Werror -Itests/host -Isrc -I$(WEB_GEN_DIR)
 # Host tests always build with the defaults (tests/host/config_gen.h), never with .config
 
 # Linker flags
@@ -101,17 +105,21 @@ $(LP_IMAGE_H): $(LP_DIR)/lp_firmware.bin
 $(CONFIG_GEN_H): FORCE
 	@python3 scripts/gen_config.py $(CONFIG_FILE) $@
 
+# Rewritten only when the compressed page changes
+$(WEB_GZ_H): $(WEB_SRC) scripts/gen_web.py
+	@python3 scripts/gen_web.py $(WEB_SRC) $@
+
 .PHONY: FORCE
 FORCE:
 
 # Firmware
 OBJS = $(patsubst src/%,$(OBJ_DIR)/%.o,$(basename $(SRCS)))
 
-$(OBJ_DIR)/%.o: src/%.c $(CONFIG_GEN_H) | $(LP_IMAGE_H)
+$(OBJ_DIR)/%.o: src/%.c $(CONFIG_GEN_H) | $(LP_IMAGE_H) $(WEB_GZ_H)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
-$(OBJ_DIR)/%.o: src/%.S $(CONFIG_GEN_H) | $(LP_IMAGE_H)
+$(OBJ_DIR)/%.o: src/%.S $(CONFIG_GEN_H) | $(LP_IMAGE_H) $(WEB_GZ_H)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
@@ -171,7 +179,7 @@ monitor:
 # Host tests
 HOST_OBJS = $(patsubst %.c,$(HOST_DIR)/%.o,tests/test_freestanding.c $(HOST_SRCS))
 
-$(HOST_DIR)/%.o: %.c
+$(HOST_DIR)/%.o: %.c | $(WEB_GZ_H)
 	@mkdir -p $(@D)
 	$(HOST_CC) $(HOST_CFLAGS) $(DEPFLAGS) -c $< -o $@
 
@@ -180,6 +188,7 @@ $(HOST_TEST_BIN): $(HOST_OBJS)
 
 host-test: $(HOST_TEST_BIN)
 	@python3 scripts/gen_config.py --self-test
+	@python3 scripts/gen_web.py --self-test $(WEB_SRC)
 	@./$(HOST_TEST_BIN)
 	@python3 tests/test_companion_app.py
 

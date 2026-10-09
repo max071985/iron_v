@@ -30,17 +30,20 @@
 #define HTTP_CONTENT_LENGTH_HEADER       "content-length:"
 #define HTTP_RESPONSE_BUF_SIZE           4096U   /* headers + body; from the scratch arena */
 #define HTTP_BODY_MAX_LEN                3584U   /* largest page: /setup (REV-29) */
+#define HTTP_HEADER_RESERVE              512U    /* upper bound of the response headers we write */
 
 /* Protocol Version & Header Literals */
 #define HTTP_VERSION_STR                 "HTTP/1.1"
 #define HTTP_SERVER_HEADER               "Server: Iron-V-BareMetal\r\n"
 #define HTTP_CONN_CLOSE_HEADER           "Connection: close\r\n"
+#define HTTP_GZIP_HEADER                 "Content-Encoding: gzip\r\n"
 
 /* Captive portal: OS connectivity probes are redirected to the setup page so phones
  * report "sign in to network" instead of believing the SoftAP has internet access. */
 #define HTTP_STATUS_LINE_302             "HTTP/1.1 302 Found\r\n"
 #define HTTP_STATUS_LINE_400             "HTTP/1.1 400 Bad Request\r\n"
 #define HTTP_STATUS_LINE_404             "HTTP/1.1 404 Not Found\r\n"
+#define HTTP_STATUS_LINE_500             "HTTP/1.1 500 Internal Server Error\r\n"
 #define HTTP_CAPTIVE_PORTAL_PATH         "/setup"
 #define HTTP_MIME_JSON                   "application/json"
 #define HTTP_MIME_HTML                   "text/html; charset=utf-8"
@@ -121,6 +124,8 @@ bool http_server_is_running(void);
 http_status_t http_route_register(const char *path, http_method_t method, http_route_handler_t handler);
 /* Called by a handler to answer with another status than 200 (REV-23: 400 for rejected input) */
 void http_response_set_status(http_status_code_t code);
+/* Called by a handler to answer with a gzip-encoded body from flash instead of its text body (REV-25) */
+void http_response_set_gzip_body(const uint8_t *data, size_t len);
 const http_route_t *http_route_find(const char *path, http_method_t method, bool *out_path_matched);
 
 /* Request & Response Processing */

@@ -36,6 +36,7 @@
 #include "test.h"
 #include "http_server.h"
 #include "web_assets.h"
+#include "web_index_gz.h"
 #include "speedtest.h"
 #include "clock.h"
 #include "wdt.h"
@@ -2266,13 +2267,13 @@ static void test_http_server_subsystem(void)
     TEST_ASSERT(http_process_request(req_bad, strlen(req_bad), resp, sizeof(resp), &resp_len) == HTTP_ERR_MALFORMED, "Process malformed request returns 400");
     TEST_ASSERT(strstr(resp, "HTTP/1.1 400 Bad Request") != NULL, "Response line is 400 Bad Request");
 
-    /* 8. Web Dashboard Asset Delivery (GET /) */
-    const char req_root[] = "GET / HTTP/1.1\r\n\r\n";
+    /* 8. Light page headers (HEAD /; the gzip body is checked in test_dashboard_page) */
+    const char req_root[] = "HEAD / HTTP/1.1\r\n\r\n";
     resp[0] = '\0';
-    TEST_ASSERT(http_process_request(req_root, strlen(req_root), resp, sizeof(resp), &resp_len) == HTTP_OK, "Process GET / succeeds");
+    TEST_ASSERT(http_process_request(req_root, strlen(req_root), resp, sizeof(resp), &resp_len) == HTTP_OK, "Process HEAD / succeeds");
     TEST_ASSERT(strstr(resp, "HTTP/1.1 200 OK") != NULL, "Root response is 200 OK");
     TEST_ASSERT(strstr(resp, "Content-Type: text/html") != NULL, "Content-Type is text/html");
-    TEST_ASSERT(strstr(resp, "<html") != NULL, "Body contains HTML");
+    TEST_ASSERT(strstr(resp, HTTP_GZIP_HEADER) != NULL, "Page is gzip-encoded");
 
     /* 9. HTTP Server Start & Telemetry */
     TEST_ASSERT(http_server_start(80U) == HTTP_OK, "http_server_start succeeds");
@@ -5047,19 +5048,61 @@ static void test_scheduler_hardening(void)
                 WPA2_ERR_INVALID_ARG, "PBKDF2 rejects a 33-character SSID");
 }
 
+/* REV-25: the light page is web/index.html, gzip-compressed at build time. Its content rules (no timers,
+ * REST v1 only, size) are checked by scripts/gen_web.py --self-test; this checks how it is served. */
+#define GZIP_MAGIC_0            0x1FU
+#define GZIP_MAGIC_1            0x8BU
+#define LIGHT_PAGE_MAX_SEGMENTS 2U      /* a page load stays at two segments (traffic diet, REV-15) */
+#define SMALL_RESP_BUF          1536U   /* do-test size: too small for the page */
+#define CLEN_HDR_BUF            48U     /* "Content-Length: <n>\r\n" */
+
+static size_t http_header_len(const char *resp)
+{
+    const char *end = strstr(resp, HTTP_HEADER_END);
+    return (end == NULL) ? 0U : (size_t)(end - resp) + strlen(HTTP_HEADER_END);
+}
+
 static void test_dashboard_page(void)
 {
-    printf("  [TEST] Dashboard: no polling, one TCP segment (REV-15, O-44)...\n");
+    printf("  [TEST] Light page: gzip from flash, HEAD, size budget (REV-25)...\n");
     http_server_init();
-    TEST_ASSERT(strstr(g_index_html, "setInterval") == NULL && strstr(g_index_html, "setTimeout") == NULL,
-                "Dashboard has no timer (refresh on demand only)");
     char resp_buf[HTTP_RESPONSE_BUF_SIZE];
-    size_t resp_len = 0U;
-    const char req[] = "GET / HTTP/1.1\r\nHost: iron-v.local\r\n\r\n";
-    http_process_request(req, strlen(req), resp_buf, sizeof(resp_buf), &resp_len);
-    TEST_ASSERT(strstr(resp_buf, "200 OK") != NULL && strstr(resp_buf, "</html>") != NULL, "Dashboard served whole");
-    printf("    / response: %u bytes\n", (unsigned)resp_len);
-    TEST_ASSERT(resp_len <= TCP_DEFAULT_MSS, "Dashboard response fits one segment");
+    char again_buf[HTTP_RESPONSE_BUF_SIZE];
+    char clen[CLEN_HDR_BUF];
+    size_t resp_len = 0U, again_len = 0U;
+    snprintf(clen, sizeof(clen), "Content-Length: %u\r\n", (unsigned)WEB_INDEX_GZ_LEN);
+
+    const char req[] = "GET / HTTP/1.1\r\nHost: iron-v.local\r\nAccept-Encoding: gzip\r\n\r\n";
+    TEST_ASSERT(http_process_request(req, strlen(req), resp_buf, sizeof(resp_buf), &resp_len) == HTTP_OK, "GET / succeeds");
+    size_t hdr = http_header_len(resp_buf);
+    TEST_ASSERT(hdr > 0U && hdr <= HTTP_HEADER_RESERVE, "headers complete and within HTTP_HEADER_RESERVE");
+    TEST_ASSERT(strstr(resp_buf, "200 OK") != NULL && strstr(resp_buf, "Content-Type: " HTTP_MIME_HTML) != NULL &&
+                strstr(resp_buf, HTTP_GZIP_HEADER) != NULL && strstr(resp_buf, clen) != NULL,
+                "200, text/html, Content-Encoding: gzip, Content-Length of the compressed page");
+    TEST_ASSERT(resp_len == hdr + WEB_INDEX_GZ_LEN && memcmp(&resp_buf[hdr], g_web_index_gz, WEB_INDEX_GZ_LEN) == 0,
+                "body is the compressed page, byte for byte");
+    TEST_ASSERT((uint8_t)resp_buf[hdr] == GZIP_MAGIC_0 && (uint8_t)resp_buf[hdr + 1U] == GZIP_MAGIC_1, "gzip magic");
+    printf("    / response: %u bytes (page %u B minified, %u B gzip)\n", (unsigned)resp_len,
+           (unsigned)WEB_INDEX_RAW_LEN, (unsigned)WEB_INDEX_GZ_LEN);
+    TEST_ASSERT(resp_len <= LIGHT_PAGE_MAX_SEGMENTS * TCP_DEFAULT_MSS, "page load fits two TCP segments");
+
+    const char req_index[] = "GET /index.html HTTP/1.1\r\nHost: iron-v.local\r\n\r\n";
+    TEST_ASSERT(http_process_request(req_index, strlen(req_index), again_buf, sizeof(again_buf), &again_len) == HTTP_OK &&
+                again_len == resp_len && memcmp(again_buf, resp_buf, resp_len) == 0, "/index.html is the same page");
+
+    const char req_head[] = "HEAD / HTTP/1.1\r\nHost: iron-v.local\r\n\r\n";
+    TEST_ASSERT(http_process_request(req_head, strlen(req_head), again_buf, sizeof(again_buf), &again_len) == HTTP_OK &&
+                strstr(again_buf, "200 OK") != NULL && strstr(again_buf, clen) != NULL &&
+                again_len == http_header_len(again_buf), "HEAD / (was 405): same headers, no body");
+
+    TEST_ASSERT(http_process_request(req, strlen(req), again_buf, SMALL_RESP_BUF, &again_len) == HTTP_ERR_BUFFER_TOO_SMALL &&
+                strstr(again_buf, "500") != NULL && again_len == http_header_len(again_buf),
+                "too small a buffer: 500 with no body, never a cut-off page");
+
+    const char req_light[] = "GET /api/v1/light HTTP/1.1\r\nHost: iron-v.local\r\n\r\n";
+    TEST_ASSERT(http_process_request(req_light, strlen(req_light), again_buf, sizeof(again_buf), &again_len) == HTTP_OK &&
+                strstr(again_buf, HTTP_GZIP_HEADER) == NULL && strstr(again_buf, "\"color_mode\"") != NULL,
+                "next response is plain JSON (no gzip state left over)");
 }
 
 /* ------------------------------------------------------------------------- */

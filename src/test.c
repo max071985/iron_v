@@ -2478,8 +2478,8 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
                           (strstr(resp_unknown, "404 Not Found") != NULL) &&
                           (strstr(resp_unknown, "not_found") != NULL);
 
-    /* 4. GET / -> Embedded Web UI HTML Dashboard */
-    const char req_root[] = "GET / HTTP/1.1\r\nHost: iron-v\r\n\r\n";
+    /* 4. HEAD / -> light page headers (REV-25: gzip from flash; the body is checked by the host test) */
+    const char req_root[] = "HEAD / HTTP/1.1\r\nHost: iron-v\r\n\r\n";
     char resp_root[1536];
     size_t resp_root_len = 0U;
     http_status_t st_root = http_process_request(req_root, strlen(req_root),
@@ -2488,7 +2488,7 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     int get_root_ok = (st_root == HTTP_OK) &&
                       (strstr(resp_root, "200 OK") != NULL) &&
                       (strstr(resp_root, "text/html") != NULL) &&
-                      (strstr(resp_root, "<html") != NULL);
+                      (strstr(resp_root, HTTP_GZIP_HEADER) != NULL);
 
     /* 5. Method Not Allowed: POST to GET-only /api/info */
     const char req_method_err[] = "POST /api/info HTTP/1.1\r\nHost: iron-v\r\n\r\n";

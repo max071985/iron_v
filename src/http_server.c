@@ -12,6 +12,7 @@
 #include "section.h"
 #include "config.h"
 #include "web_assets.h"
+#include "web_index_gz.h"   /* generated from web/index.html (scripts/gen_web.py) */
 #include "arena.h"
 #include "string.h"
 #include "wdt.h"
@@ -45,10 +46,22 @@ static http_telemetry_t s_http_telemetry;
 static tcp_pcb_t *s_http_listener_pcb = NULL;
 static bool s_http_initialized = false;
 static http_status_code_t s_http_handler_status = HTTP_STATUS_200_OK;   /* set by the running handler */
+static const uint8_t *s_http_gzip_body = NULL;                          /* set by the running handler */
+static size_t s_http_gzip_body_len = 0U;
+
+/* The page goes out in one response: headers + compressed page <= buffer <= TCP backlog per connection */
+_Static_assert(WEB_INDEX_GZ_LEN + HTTP_HEADER_RESERVE <= HTTP_RESPONSE_BUF_SIZE, "web/index.html too large");
+_Static_assert(HTTP_RESPONSE_BUF_SIZE <= TCP_SNDBUF_PCB_MAX_BYTES, "a response must fit one TCP backlog");
 
 void http_response_set_status(http_status_code_t code)
 {
     s_http_handler_status = code;
+}
+
+void http_response_set_gzip_body(const uint8_t *data, size_t len)
+{
+    s_http_gzip_body = data;
+    s_http_gzip_body_len = len;
 }
 
 /* ========================================================================= */
@@ -151,22 +164,15 @@ static size_t http_str_append(char *dest, size_t dest_max, const char *src)
 /* Default Built-In REST Handlers                                            */
 /* ========================================================================= */
 
-/* GET / and GET /index.html -> Serves embedded HTML dashboard */
+/* GET / and GET /index.html -> the light page (REV-25), gzip-compressed in flash */
 static void http_handler_root(const char *query_params, char *response_body, size_t max_len)
 {
     (void)query_params;
-    if (response_body == NULL || max_len == 0U)
+    if (response_body != NULL && max_len > 0U)
     {
-        return;
+        response_body[0] = '\0';
     }
-
-    size_t asset_len = strlen(g_index_html);
-    if (asset_len >= max_len)
-    {
-        asset_len = max_len - 1U;
-    }
-    memcpy(response_body, g_index_html, asset_len);
-    response_body[asset_len] = '\0';
+    http_response_set_gzip_body(g_web_index_gz, WEB_INDEX_GZ_LEN);
 }
 
 /* GET /api/status -> Returns JSON with uptime_ms, cpu_mhz, hostname */
@@ -343,6 +349,13 @@ static const char s_cors_preflight_resp[] FLASH_RODATA_ATTR =
     "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
     "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
     "Access-Control-Max-Age: 86400\r\n"
+    "Content-Length: 0\r\n\r\n";
+/* REV-25: header of the gzip page, and the answer when it does not fit the caller's buffer */
+static const char s_gzip_hdr[] FLASH_RODATA_ATTR = HTTP_GZIP_HEADER;
+static const char s_too_large_resp[] FLASH_RODATA_ATTR =
+    HTTP_STATUS_LINE_500
+    HTTP_SERVER_HEADER
+    HTTP_CONN_CLOSE_HEADER
     "Content-Length: 0\r\n\r\n";
 
 /* GET /api/health -> Aggregated 24/7 system health telemetry */
@@ -530,7 +543,9 @@ const http_route_t *http_route_find(const char *path, http_method_t method, bool
             {
                 *out_path_matched = true;
             }
-            if (s_http_routes[i].method == method)
+            /* HEAD is GET without the body (RFC 9110 9.3.2) */
+            http_method_t want = (method == HTTP_METHOD_HEAD) ? HTTP_METHOD_GET : method;
+            if (s_http_routes[i].method == want)
             {
                 return &s_http_routes[i];
             }
@@ -746,6 +761,7 @@ http_status_t http_process_request(const char *raw_request, size_t req_len,
     bool captive_redirect = false;
     const char *content_type = HTTP_MIME_JSON;
     http_status_t ret_status = HTTP_OK;
+    http_response_set_gzip_body(NULL, 0U);
 
     if (route != NULL)
     {
@@ -799,7 +815,8 @@ http_status_t http_process_request(const char *raw_request, size_t req_len,
     }
 
     /* 5. Format HTTP/1.1 Response */
-    size_t body_len = strlen(body_buf);
+    const uint8_t *gzip_body = s_http_gzip_body;
+    size_t body_len = (gzip_body != NULL) ? s_http_gzip_body_len : strlen(body_buf);
     char len_buf[16];
     http_u32_to_dec((uint32_t)body_len, len_buf, sizeof(len_buf));
 
@@ -814,18 +831,40 @@ http_status_t http_process_request(const char *raw_request, size_t req_len,
     http_str_append(out_response, max_resp_len, "Access-Control-Allow-Origin: *\r\n");
     http_str_append(out_response, max_resp_len, s_cors_methods_hdr);
     http_str_append(out_response, max_resp_len, s_cors_headers_hdr);
+    if (gzip_body != NULL)
+    {
+        http_str_append(out_response, max_resp_len, s_gzip_hdr);
+    }
     http_str_append(out_response, max_resp_len, "Content-Type: ");
     http_str_append(out_response, max_resp_len, content_type);
     http_str_append(out_response, max_resp_len, "\r\nContent-Length: ");
     http_str_append(out_response, max_resp_len, len_buf);
     http_str_append(out_response, max_resp_len, "\r\n\r\n");
 
-    if (method != HTTP_METHOD_HEAD)
+    size_t resp_total_len = strlen(out_response);
+    if (method != HTTP_METHOD_HEAD && gzip_body != NULL)
+    {
+        if (resp_total_len + body_len < max_resp_len)
+        {
+            memcpy(&out_response[resp_total_len], gzip_body, body_len);   /* binary: no string appends */
+            resp_total_len += body_len;
+            out_response[resp_total_len] = '\0';
+        }
+        else
+        {
+            /* Never send a cut-off compressed body (only a caller with a small buffer gets here) */
+            out_response[0] = '\0';
+            http_str_append(out_response, max_resp_len, s_too_large_resp);
+            resp_total_len = strlen(out_response);
+            s_http_telemetry.responses_err++;
+            ret_status = HTTP_ERR_BUFFER_TOO_SMALL;
+        }
+    }
+    else if (method != HTTP_METHOD_HEAD)
     {
         http_str_append(out_response, max_resp_len, body_buf);
+        resp_total_len = strlen(out_response);
     }
-
-    size_t resp_total_len = strlen(out_response);
     *out_resp_len = resp_total_len;
     s_http_telemetry.bytes_tx += (uint32_t)resp_total_len;
 

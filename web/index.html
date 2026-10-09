@@ -1,164 +1,172 @@
 <!DOCTYPE html>
+<!-- Iron V light control (REV-25), served from flash at / and /index.html.
+     Talks to the board's REST v1 API only; no timers, no polling (REV-15): refresh on load, on Refresh and
+     when the page becomes visible again.
+     The build minifies and gzips this file (scripts/gen_web.py): comments in the script go on lines of
+     their own, no multi-line strings, no strings in the CSS. `make host-test` checks the rules and size. -->
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Iron V Bare-Metal RISC-V Dashboard</title>
-    <style>
-        :root {
-            --bg: #0f172a;
-            --surface: #1e293b;
-            --border: #334155;
-            --text: #f8fafc;
-            --text-muted: #94a3b8;
-            --primary: #38bdf8;
-            --success: #4ade80;
-            --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-        }
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body {
-            background-color: var(--bg);
-            color: var(--text);
-            font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            line-height: 1.5;
-            padding: 1.5rem;
-        }
-        .container { max-width: 900px; margin: 0 auto; }
-        header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-bottom: 1px solid var(--border);
-            padding-bottom: 1rem;
-            margin-bottom: 1.5rem;
-        }
-        .title-group h1 { font-size: 1.5rem; font-weight: 700; color: var(--primary); }
-        .title-group p { font-size: 0.875rem; color: var(--text-muted); }
-        .badge {
-            display: inline-flex;
-            align-items: center;
-            padding: 0.25rem 0.625rem;
-            border-radius: 9999px;
-            font-size: 0.75rem;
-            font-weight: 600;
-            background: rgba(74, 222, 128, 0.15);
-            color: var(--success);
-            border: 1px solid rgba(74, 222, 128, 0.3);
-        }
-        .grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-            gap: 1.25rem;
-            margin-bottom: 1.5rem;
-        }
-        .card {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 0.75rem;
-            padding: 1.25rem;
-        }
-        .card h2 {
-            font-size: 1rem;
-            font-weight: 600;
-            margin-bottom: 0.75rem;
-            display: flex;
-            align-items: center;
-            color: var(--text);
-            border-bottom: 1px solid var(--border);
-            padding-bottom: 0.5rem;
-        }
-        .data-row {
-            display: flex;
-            justify-content: space-between;
-            padding: 0.375rem 0;
-            font-size: 0.875rem;
-        }
-        .data-row .label { color: var(--text-muted); }
-        .data-row .val { font-family: var(--font-mono); font-weight: 500; }
-        .btn {
-            background: var(--primary);
-            color: #0f172a;
-            border: none;
-            padding: 0.5rem 1rem;
-            border-radius: 0.375rem;
-            font-size: 0.875rem;
-            font-weight: 600;
-            cursor: pointer;
-        }
-        .btn:hover { opacity: 0.9; }
-        .footer {
-            text-align: center;
-            font-size: 0.75rem;
-            color: var(--text-muted);
-            margin-top: 2rem;
-            padding-top: 1rem;
-            border-top: 1px solid var(--border);
-        }
-    </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Iron V</title>
+<link rel="icon" href="data:,">
+<style>
+  body { background: #0f172a; color: #f8fafc; font: 15px system-ui, sans-serif; max-width: 380px; margin: auto; padding: 16px; }
+  header, .row, footer { display: flex; justify-content: space-between; align-items: center; }
+  h1 { color: #38bdf8; font-size: 18px; margin: 0; }
+  #link, #error { color: #f87171; font-size: 13px; }
+  #link.online { color: #4ade80; }
+  #lamp { display: block; width: 150px; height: 150px; margin: 28px auto 10px; border: 0; border-radius: 50%;
+          background: #334155; color: #94a3b8; transition: .3s; }
+  #lamp.on { color: #0f172a; }
+  #summary, .row, footer { color: #94a3b8; font-size: 12px; }
+  #summary { text-align: center; font-size: 15px; margin-bottom: 18px; }
+  .card { background: #1e293b; border-radius: 12px; padding: 14px; margin: 10px 0; }
+  .row { text-transform: uppercase; margin-bottom: 10px; }
+  #brightness { width: 100%; accent-color: #38bdf8; }
+  #swatches { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; }
+  #swatches > * { width: 100%; height: auto; aspect-ratio: 1; border: 0; border-radius: 50%; padding: 0; }
+  .selected { box-shadow: 0 0 0 2px #1e293b, 0 0 0 4px #f8fafc; }
+  #custom { appearance: none; background: conic-gradient(red, #ff0, lime, cyan, blue, #f0f, red); }
+  #custom::-webkit-color-swatch { opacity: 0; }
+  #custom::-moz-color-swatch { opacity: 0; }
+  footer { flex-wrap: wrap; gap: 6px; }
+  a { color: #38bdf8; }
+</style>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <div class="title-group">
-                <h1>Iron V Bare-Metal Runtime</h1>
-                <p>ESP32-C6 RISC-V SoC Embedded Engine</p>
-            </div>
-            <div>
-                <span class="badge">ONLINE</span>
-            </div>
-        </header>
-        <div class="grid">
-            <div class="card">
-                <h2>System & Hardware</h2>
-                <div class="data-row"><span class="label">Target SoC:</span><span class="val" id="val-soc">ESP32-C6</span></div>
-                <div class="data-row"><span class="label">CPU Frequency:</span><span class="val" id="val-cpu">160 MHz</span></div>
-                <div class="data-row"><span class="label">APB Frequency:</span><span class="val" id="val-apb">40 MHz</span></div>
-                <div class="data-row"><span class="label">System Uptime:</span><span class="val" id="val-uptime">--</span></div>
-            </div>
-            <div class="card">
-                <h2>Network & Transport</h2>
-                <div class="data-row"><span class="label">IPv4 Address:</span><span class="val" id="val-ip">192.168.1.100</span></div>
-                <div class="data-row"><span class="label">Subnet Mask:</span><span class="val">255.255.255.0</span></div>
-                <div class="data-row"><span class="label">Gateway:</span><span class="val">192.168.1.1</span></div>
-                <div class="data-row"><span class="label">TCP Port:</span><span class="val">80 (HTTP)</span></div>
-            </div>
-            <div class="card">
-                <h2>Wireless Subsystems</h2>
-                <div class="data-row"><span class="label">Wi-Fi 6:</span><span class="val">802.11ax MAC / SoftAP</span></div>
-                <div class="data-row"><span class="label">IEEE 802.15.4:</span><span class="val">Radio Transceiver Ready</span></div>
-                <div class="data-row"><span class="label">RF Coexistence:</span><span class="val">Hardware Arbiter Synced</span></div>
-            </div>
-            <div class="card">
-                <h2>Memory & Safety</h2>
-                <div class="data-row"><span class="label">HP SRAM:</span><span class="val">512 KB (Harvard Split)</span></div>
-                <div class="data-row"><span class="label">Static Arenas:</span><span class="val">Zero Dynamic Heap</span></div>
-                <div class="data-row"><span class="label">Watchdog:</span><span class="val">Multi-Tier MWDT Active</span></div>
-                <div class="data-row"><span class="label">Isolation:</span><span class="val">PMP & HP_APM Enforced</span></div>
-            </div>
-        </div>
-        <div style="text-align: right;">
-            <button class="btn" onclick="fetchStatus()">Refresh Status</button>
-        </div>
-        <div class="footer">
-            Iron V Embedded RISC-V Runtime &mdash; Built with zero dynamic heap allocation
-        </div>
-    </div>
-    <script>
-        function fetchStatus() {
-            fetch('/api/status')
-                .then(r => r.json())
-                .then(d => {
-                    if (d.uptime_ms) {
-                        const sec = Math.floor(d.uptime_ms / 1000);
-                        document.getElementById('val-uptime').innerText = sec + 's (' + d.uptime_ms + ' ms)';
-                    }
-                    if (d.hostname) document.getElementById('val-soc').innerText = d.hostname + ' (ESP32-C6)';
-                    if (d.cpu_mhz) document.getElementById('val-cpu').innerText = d.cpu_mhz + ' MHz';
-                })
-                .catch(err => console.log('API poll:', err));
-        }
-        setInterval(fetchStatus, 5000);
-        window.onload = fetchStatus;
-    </script>
+<header><h1>Iron V</h1><span id="link">connecting</span></header>
+<button id="lamp" aria-label="Power">
+  <svg width="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v8M6.3 6.3a8 8 0 1 0 11.4 0"/></svg>
+</button>
+<p id="summary">&nbsp;</p>
+<section class="card">
+  <div class="row">Brightness<span id="level"></span></div>
+  <input id="brightness" type="range" min="1" max="100" aria-label="Brightness">
+</section>
+<section class="card">
+  <div class="row">Colour</div>
+  <div id="swatches"><input id="custom" type="color" aria-label="Any colour"></div>
+</section>
+<p id="error"></p>
+<footer>
+  <span id="device"></span>
+  <span><a href="#" id="refresh">Refresh</a> &middot; <a href="/setup">Wi-Fi setup</a></span>
+</footer>
+<script>
+'use strict';
+const PRESETS = ['#ffffff', '#ffb46b', '#ff2222', '#ff8800', '#ffdd00', '#22ee44',
+                 '#00ddbb', '#00ccff', '#2255ff', '#aa44ff', '#ff44aa'];
+const el = id => document.getElementById(id);
+// `light` is what the page shows {state, brightness, color: {r, g, b}} and runs ahead of the board while a
+// command is on its way; `confirmed` is the last state the board reported (JSON). One request at a time
+// (weak link, small board); changes made meanwhile are merged into `pending` and sent when it returns.
+let light = null;
+let confirmed = null;
+let inFlight = false;
+let pending = null;
+
+const toHex = c => '#' + [c.r, c.g, c.b].map(x => x.toString(16).padStart(2, '0')).join('');
+function fromHex(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return { r: n >> 16, g: (n >> 8) & 255, b: n & 255 };
+}
+
+function setOnline(online) {
+  el('link').textContent = online ? 'online' : 'offline';
+  el('link').className = online ? 'online' : '';
+}
+
+function render(s) {
+  light = s;
+  const on = s.state === 'ON', hex = toHex(s.color), level = s.brightness / 100;
+  const lamp = el('lamp');
+  lamp.className = on ? 'on' : '';
+  lamp.style.background = on ? hex : '';
+  lamp.style.boxShadow = on ? `0 0 ${16 + 48 * level}px ${hex}` : '';
+  lamp.style.filter = on ? `brightness(${0.55 + 0.45 * level})` : '';
+  el('summary').textContent = on ? `On · ${s.brightness}%` : 'Off';
+  el('level').textContent = s.brightness + '%';
+  el('brightness').value = s.brightness;
+  el('custom').value = hex;
+  let preset = false;
+  for (const swatch of document.querySelectorAll('#swatches button')) {
+    preset = swatch.classList.toggle('selected', swatch.value === hex) || preset;
+  }
+  el('custom').classList.toggle('selected', !preset);
+}
+
+// State reported by the board
+function show(s) {
+  confirmed = JSON.stringify(s);
+  render(s);
+}
+
+// GET without a body, POST with one; rejects with the board's error reason on 4xx
+function api(path, body) {
+  const init = body && { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+  return fetch('/api/v1/' + path, init).then(r => r.json().then(d => {
+    if (!r.ok) throw new Error(d.error);
+    setOnline(true);
+    return d;
+  }));
+}
+
+function report(err) {
+  // TypeError: network failure, the board is not reachable
+  if (err instanceof TypeError) setOnline(false);
+  else el('error').textContent = 'Error: ' + err.message;
+}
+
+function send(cmd) {
+  if (inFlight) { pending = Object.assign(pending || {}, cmd); return; }
+  inFlight = true;
+  api('light', cmd)
+    .then(s => { el('error').textContent = ''; if (pending) confirmed = JSON.stringify(s); else show(s); },
+          err => {
+            report(err);
+            // Not applied: back to what the board last reported, then ask it again
+            if (!pending) { if (confirmed) render(JSON.parse(confirmed)); refresh(); }
+          })
+    .then(() => {
+      inFlight = false;
+      if (pending) { const next = pending; pending = null; send(next); }
+    });
+}
+
+// Show the change at once, then send it; the board's reply confirms it
+function change(cmd) {
+  if (!light) return;
+  render(Object.assign(light, cmd));
+  send(cmd);
+}
+
+function pickColour(hex) {
+  const c = fromHex(hex);
+  // Black is not a colour for the board (rule 2.2.4): it means off
+  change(c.r || c.g || c.b ? { state: 'ON', color: c } : { state: 'OFF' });
+}
+
+function refresh() {
+  api('light').then(show).then(() => api('device')).then(d => {
+    const up = d.uptime_s;
+    el('device').textContent = `${d.ip} · fw ${d.fw} · up ${Math.floor(up / 3600)}h ${Math.floor(up / 60) % 60}m`;
+  }, report);
+}
+
+el('lamp').onclick = () => light && change({ state: light.state === 'ON' ? 'OFF' : 'ON' });
+el('brightness').oninput = e => change({ state: 'ON', brightness: Number(e.target.value) });
+el('custom').oninput = e => pickColour(e.target.value);
+el('refresh').onclick = e => { e.preventDefault(); refresh(); };
+for (const hex of PRESETS) {
+  const swatch = document.createElement('button');
+  swatch.value = swatch.style.background = hex;
+  swatch.setAttribute('aria-label', hex);
+  swatch.onclick = () => pickColour(hex);
+  el('swatches').insertBefore(swatch, el('custom'));
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+refresh();
+</script>
 </body>
 </html>

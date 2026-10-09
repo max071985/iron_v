@@ -19,9 +19,8 @@
 #define MEMSTAT_REPAINT_GUARD_BYTES  256U
 
 typedef struct {
-    uint32_t iram_size;        /* hp_iram region */
+    uint32_t sram_size;        /* hp_sram region: IRAM code and DRAM share it (REV-34) */
     uint32_t iram_code;        /* .text: the IRAM keep-list */
-    uint32_t dram_size;        /* hp_dram region */
     uint32_t dram_rodata;      /* .rodata left in DRAM */
     uint32_t dram_data;        /* .data */
     uint32_t dram_bss;         /* .bss */

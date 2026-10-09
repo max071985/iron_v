@@ -9,7 +9,8 @@ Performs:
 3. Verification of static initialized .data symbol g_test_data_var (0x12345678) unpacked from raw ELF bytes.
 4. Verification of .bss symbol g_test_bss_var residing in SHT_NOBITS section with SHF_WRITE | SHF_ALLOC.
 5. Verification of .rodata symbol g_test_rodata_str ("IRON_V_RODATA_TEST_PATTERN") unpacked from raw ELF bytes.
-6. Verification of Harvard segment isolation: 0 RWX segments, IRAM executable (0x40800000), DRAM read-write (0x40829000).
+6. Verification of W^X segments: 0 RWX segments, IRAM code executable from 0x40800000, data read-write above it
+   (one unified HP SRAM region, REV-34).
 7. Verification of external flash XIP section (.flash_xip) allocatable status.
 8. ESP32-C6 firmware.bin flash image header verification (Magic 0xE9, 8 MB flash geometry, entry 0x40800000).
 9. Execution of host-native freestanding C unit test binary (tests/test_freestanding).
@@ -25,13 +26,14 @@ import subprocess
 import sys
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-IRAM_END = 0x40829000
+SRAM_START = 0x40800000        # HP SRAM: IRAM code and DRAM share one region (ld/link.ld, REV-34)
+SRAM_END = 0x40880000
 FLASH_XIP_START = 0x42000000
 FLASH_XIP_END = 0x42800000
 ROM_START = 0x40000000
 ROM_END = 0x40060000
 ROM_DATA_START = 0x4087E610      # ROM .bss/.data (ld/link.ld)
-IRAM_MIN_FREE = 16 * 1024        # budgets mirror the ASSERTs in ld/link.ld
+IRAM_MIN_FREE = 16 * 1024        # budgets mirror the ASSERTs in ld/link.ld: room above the main-stack budget
 MAIN_STACK_MIN_SIZE = 32 * 1024   # default; `make elf-test` passes the profile's MAIN_STACK_MIN
 MODULE_DESC_SIZE = 32            # sizeof(module_t) on RV32: name, order, six hooks (src/module.h)
 STT_FILE = 4
@@ -48,6 +50,8 @@ FLASH_OP_ROUTINES_MIN = 6        # flash_read/write/erase_sector in nvs.c and ot
 
 FUNC_RE = re.compile(r"^([0-9a-f]+) <([^>]+)>:$")
 CALL_RE = re.compile(r"\b(?:jal|j|jalr|tail|call)\b.*?\b([0-9a-f]{8}) <([^>+]+)(\+0x[0-9a-f]+)?>")
+# objdump resolves lui/auipc + addi/load/store pairs to the address they form: "addi a0,a0,-1316 # 4081dadc <...>"
+DATA_REF_RE = re.compile(r"\s#\s([0-9a-f]{8})\b")
 
 
 def find_objdump(explicit=None):
@@ -57,27 +61,33 @@ def find_objdump(explicit=None):
     return None
 
 
-def iram_call_closure(elf_path, objdump, in_iram, in_flash):
+def iram_call_closure(elf_path, objdump, in_iram, in_flash, in_flash_rodata=lambda a: False):
     """Walks direct calls from IRAM_ONLY_ROOTS through IRAM functions.
 
-    Returns (roots, walked, violations); a violation is a call path that reaches
-    a function in flash. Indirect calls through pointers are not followed.
+    Returns (roots, walked, violations, data_refs); a violation is a call path that reaches
+    a function in flash, a data ref is an address in flash constants formed by a walked
+    function (strings, tables, switch jump tables; REV-34). Indirect calls through
+    pointers are not followed.
     """
     listing = subprocess.run([objdump, "-d", "--no-show-raw-insn", elf_path],
                              capture_output=True, text=True, check=True).stdout
-    names, calls, cur = {}, {}, None
+    names, calls, refs, cur = {}, {}, {}, None
     for line in listing.splitlines():
         m = FUNC_RE.match(line)
         if m:
             cur = int(m.group(1), 16)
             names[cur] = m.group(2)
             calls[cur] = set()
+            refs[cur] = set()
             continue
+        d = DATA_REF_RE.search(line) if cur is not None else None
+        if d and in_flash_rodata(int(d.group(1), 16)):
+            refs[cur].add(int(d.group(1), 16))
         m = CALL_RE.search(line) if cur is not None else None
         if m and not (m.group(2) == names[cur] and m.group(3)):
             calls[cur].add(int(m.group(1), 16))
     roots = [a for a, n in names.items() if any(re.fullmatch(p, n) for p in IRAM_ONLY_ROOTS)]
-    walked, violations = set(), []
+    walked, violations, data_refs = set(), [], []
     stack = [(a, [names[a]]) for a in roots]
     while stack:
         addr, path = stack.pop()
@@ -87,12 +97,14 @@ def iram_call_closure(elf_path, objdump, in_iram, in_flash):
         if not in_iram(addr):
             violations.append(" -> ".join(path))
             continue
+        for ref in sorted(refs.get(addr, ())):
+            data_refs.append(f"{' -> '.join(path)} reads 0x{ref:08x}")
         for tgt in calls.get(addr, ()):
             if in_flash(tgt):
                 violations.append(" -> ".join(path + [names.get(tgt, hex(tgt))]))
             elif in_iram(tgt) and tgt in names:
                 stack.append((tgt, path + [names[tgt]]))
-    return [names[a] for a in roots], walked, violations
+    return [names[a] for a in roots], walked, violations, data_refs
 
 # ELF constants
 EI_MAG0 = 0
@@ -272,7 +284,7 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="d
 
     # Placement predicates (ld/link.ld policy: code runs from flash unless kept in IRAM)
     def in_iram(addr):
-        return stext <= addr < IRAM_END
+        return stext <= addr < etext
 
     def in_flash(addr):
         return FLASH_XIP_START <= addr < FLASH_XIP_END
@@ -283,13 +295,13 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="d
     # TEST: Memory Section Topology & Monotonicity
     total += 1
     t1_pass = (stext == 0x40800000 and stext < etext and etext <= srodata
-               and srodata >= 0x40829000 and srodata < erodata
+               and srodata < erodata
                and erodata <= sdata and sdata <= edata and edata <= sbss and sbss <= ebss
-               and ebss < stack_top and stack_top == 0x40880000)
+               and ebss < stack_top and stack_top == SRAM_END)
     passed += print_result_line(
         total,
         "Memory Section Topology & Monotonicity",
-        "Verify SRAM section layout conforms to ESP32-C6 Harvard architecture",
+        "Verify the unified HP SRAM layout: IRAM code, constants, data, bss, main stack",
         "0x40800000 == _stext < _etext <= _srodata < _sdata < _sbss < _stack_top(0x40880000)",
         f"_stext=0x{stext:08x} _etext=0x{etext:08x} _srodata=0x{srodata:08x} _sdata=0x{sdata:08x} _sbss=0x{sbss:08x} _stack=0x{stack_top:08x}",
         t1_pass
@@ -320,7 +332,7 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="d
             total,
             "RW Data Section Static Initial Value in ELF Binary",
             "Unpack actual 4 bytes of g_test_data_var from .data section in firmware.elf",
-            "Static initialized value = 0x12345678 at VMA in DRAM [0x40829000, 0x40880000)",
+            "Static initialized value = 0x12345678 at VMA in DRAM [_sdata, 0x40880000)",
             f"File Offset=0x{data_file_offset:06x}, VMA=0x{sym_data['value']:08x}, Value=0x{data_unpacked_word:08x}",
             t3_pass
         )
@@ -346,7 +358,10 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="d
         # TEST: Read-Only Memory (RODATA) Content & Flags Verification
         total += 1
         sym_rodata = symbols["g_test_rodata_str"]
-        sec_rodata = sections[".rodata"]
+        # Own constants live in flash since REV-34 (.flash_xip); vendor and IRAM-path constants in DRAM (.rodata)
+        sec_rodata = next(sec for name, sec in sections.items()
+                          if name in (".rodata", ".flash_xip")
+                          and sec["addr"] <= sym_rodata["value"] < sec["addr"] + sec["size"])
         rodata_file_offset = sec_rodata["offset"] + (sym_rodata["value"] - sec_rodata["addr"])
         rodata_raw_bytes = raw[rodata_file_offset : rodata_file_offset + sym_rodata["size"]]
         rodata_str = rodata_raw_bytes.split(b"\x00")[0].decode("ascii", "replace")
@@ -366,15 +381,16 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="d
     total += 1
     load_segs = [s for s in segments if s["type"] == PT_LOAD]
     rwx_segs = [s for s in load_segs if (s["flags"] & (PF_W | PF_X)) == (PF_W | PF_X)]
-    iram_text_seg = [s for s in load_segs if s["vaddr"] >= 0x40800000 and s["vaddr"] < 0x40829000 and (s["flags"] & PF_X)]
-    dram_data_seg = [s for s in load_segs if s["vaddr"] >= 0x40829000 and s["vaddr"] < 0x40880000 and (s["flags"] & PF_W)]
+    iram_text_seg = [s for s in load_segs if s["vaddr"] == SRAM_START and s["vaddr"] + s["memsz"] <= etext
+                     and (s["flags"] & PF_X)]
+    dram_data_seg = [s for s in load_segs if s["vaddr"] >= etext and s["vaddr"] < SRAM_END and (s["flags"] & PF_W)]
     t6_pass = (len(load_segs) >= 2 and len(rwx_segs) == 0 and len(iram_text_seg) > 0 and len(dram_data_seg) > 0)
     seg_flags_str = ", ".join(f"vaddr=0x{s['vaddr']:08x}:flags=0x{s['flags']:x}" for s in load_segs)
     passed += print_result_line(
         total,
         "Harvard Segment Isolation & W^X Permission Safety",
         "Inspect ELF program headers to ensure 0 RWX segments exist and IRAM/DRAM are segregated",
-        "0 RWX segments, IRAM executable at 0x40800000, DRAM read-write in [0x40829000, 0x40880000)",
+        "0 RWX segments, IRAM code segment [0x40800000, _etext) executable, DRAM read-write in [_etext, 0x40880000)",
         f"Total LOAD segments={len(load_segs)}, RWX segments={len(rwx_segs)}, [{seg_flags_str}]",
         t6_pass
     )
@@ -441,7 +457,7 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="d
     lp_sym = symbols.get("_lp_sram_start", {}).get("value", None)
     flash_text_sym = symbols.get("_flash_text_start", {}).get("value", None)
     vec_table_sym = symbols.get("_vector_table", {}).get("value", None)
-    vec_align_ok = (vec_table_sym is not None) and (vec_table_sym % 256 == 0) and (vec_table_sym >= stext and vec_table_sym < 0x40829000)
+    vec_align_ok = (vec_table_sym is not None) and (vec_table_sym % 256 == 0) and (vec_table_sym >= stext and vec_table_sym < etext)
     lp_ok = (lp_sym == 0x50000000)
     flash_ok = (flash_text_sym == 0x42000000)
     t10_pass = (lp_ok and flash_ok and vec_align_ok)
@@ -461,7 +477,7 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="d
     main_stack_top = symbols.get("_main_stack_top", {}).get("value", 0)
     start_sym = symbols.get("_start", {}).get("value", None)
     stack_align_ok = (main_stack_top % 16 == 0)
-    stack_vma_ok = (stack_top == 0x40880000) and (0 < main_stack_top <= ROM_DATA_START)
+    stack_vma_ok = (stack_top == SRAM_END) and (0 < main_stack_top <= ROM_DATA_START)
     stack_headroom = main_stack_top - ebss
     entry_ok = (start_sym == 0x40800000) and (elf["entry"] == 0x40800000)
     t11_pass = stack_align_ok and stack_vma_ok and (stack_headroom >= main_stack_min) and entry_ok
@@ -492,7 +508,7 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="d
         total,
         "PCR Clock Subsystem Linkage & Symbols Validation",
         "Verify clock_init, clock_get_config, and query symbols exist in IRAM executable section",
-        "All 4 clock subsystem symbols present in IRAM text section [0x40800000, 0x40829000)",
+        "All 4 clock subsystem symbols present in IRAM text section [0x40800000, _etext)",
         t12_actual,
         t12_pass
     )
@@ -512,7 +528,7 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="d
         total,
         "Watchdog Supervisor Linkage & Symbols Validation",
         "Verify wdt_init, wdt_feed, and tick symbols exist in IRAM executable section",
-        "All 6 watchdog supervisor symbols present in IRAM text section [0x40800000, 0x40829000)",
+        "All 6 watchdog supervisor symbols present in IRAM text section [0x40800000, _etext)",
         t13_actual,
         t13_pass
     )
@@ -565,7 +581,7 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="d
         total,
         "Interrupt Matrix (INTMTX) & INTPRI Controller Linkage",
         "Verify interrupt_init, route, priority, threshold, enable/disable, and dispatch in IRAM",
-        "All 10 interrupt subsystem symbols present in IRAM text section [0x40800000, 0x40829000)",
+        "All 10 interrupt subsystem symbols present in IRAM text section [0x40800000, _etext)",
         t15_actual,
         t15_pass
     )
@@ -599,7 +615,7 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="d
         total,
         "Lock-Free SPSC DPC Queue Engine Linkage & Symbols",
         "Verify dpc_init, queue, enqueue, dequeue, process, and query symbols exist in IRAM",
-        "All 13 DPC engine symbols present in IRAM text section [0x40800000, 0x40829000)",
+        "All 13 DPC engine symbols present in IRAM text section [0x40800000, _etext)",
         t16_actual,
         t16_pass
     )
@@ -632,7 +648,7 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="d
         total,
         "USB-Serial-JTAG CDC-ACM Hardware Driver Linkage",
         "Verify usb_serial_init, tx/rx, read/write, flush, and dev symbols exist in IRAM",
-        "All 12 USB-Serial-JTAG driver symbols present in IRAM text section [0x40800000, 0x40829000)",
+        "All 12 USB-Serial-JTAG driver symbols present in IRAM text section [0x40800000, _etext)",
         t17_actual,
         t17_pass
     )
@@ -672,7 +688,7 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="d
         total,
         "Unified Dual-Console & Interrupt-Driven UART0 Subsystem Linkage",
         "Verify uart and console multiplexer functions exist in IRAM executable section",
-        "All 19 UART0 and Console subsystem symbols present in IRAM text section [0x40800000, 0x40829000)",
+        "All 19 UART0 and Console subsystem symbols present in IRAM text section [0x40800000, _etext)",
         t18_actual,
         t18_pass
     )
@@ -701,7 +717,7 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="d
         total,
         "Hardware Periodic Timer (TIMG0 T0) Driver Linkage",
         "Verify timer_init, start/stop, ISR, DPC handler, and query symbols exist in IRAM",
-        "All 8 timer driver symbols present in IRAM text section [0x40800000, 0x40829000)",
+        "All 8 timer driver symbols present in IRAM text section [0x40800000, _etext)",
         t19_actual,
         t19_pass
     )
@@ -732,7 +748,7 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="d
         total,
         "Deterministic Static Arena Memory Allocator Linkage",
         "Verify arena_init, alloc/free, scratch mark/reset, and telemetry symbols exist in IRAM",
-        "All 10 arena allocator symbols present in IRAM text section [0x40800000, 0x40829000)",
+        "All 10 arena allocator symbols present in IRAM text section [0x40800000, _etext)",
         t20_actual,
         t20_pass
     )
@@ -764,7 +780,7 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="d
         total,
         "High-Resolution SYSTIMER Driver Linkage",
         "Verify systimer_init, get_ticks/us/ms, delay, alarm, and telemetry symbols exist in IRAM",
-        "All 11 SYSTIMER driver symbols present in IRAM text section [0x40800000, 0x40829000)",
+        "All 11 SYSTIMER driver symbols present in IRAM text section [0x40800000, _etext)",
         t21_actual,
         t21_pass
     )
@@ -796,7 +812,7 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="d
         total,
         "Cooperative Coroutine Task Engine Linkage",
         "Verify task_init, create, yield, exit, status, and task_switch_asm symbols exist in IRAM",
-        "All 11 coroutine scheduler symbols present in IRAM text section [0x40800000, 0x40829000)",
+        "All 11 coroutine scheduler symbols present in IRAM text section [0x40800000, _etext)",
         t22_actual,
         t22_pass
     )
@@ -901,7 +917,7 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="d
         total,
         "Power Management & LP Shared Mailbox Subsystem Linkage",
         "Verify power_init, mailbox_init, send_cmd, sample_telemetry, set/get_mode, and retained store symbols exist in IRAM",
-        f"All {len(pwr_syms)} power management symbols present in IRAM text section [0x40800000, 0x40829000)",
+        f"All {len(pwr_syms)} power management symbols present in IRAM text section [0x40800000, _etext)",
         t25_actual,
         t25_pass
     )
@@ -1553,13 +1569,13 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="d
         flash_syms += ["dev_http_health", "dev_http_speedtest"]
     found_fl = [s for s in flash_syms if s in symbols]
     fl_ok = all(in_flash(symbols[s]["value"]) for s in found_fl)
-    etext_ok = ("_etext" in symbols) and (symbols["_etext"]["value"] <= 0x40829000)
+    etext_ok = ("_etext" in symbols) and (symbols["_etext"]["value"] <= srodata)
     fl_pass = len(found_fl) == len(flash_syms) and fl_ok and etext_ok
     passed += print_result_line(
         total,
         "Module and REST Handler Code in Flash XIP",
         "Verify the route registration, REST v1 and the profile's module handlers are linked and run from flash XIP",
-        "All listed symbols linked in flash XIP, _etext <= 0x40829000",
+        "All listed symbols linked in flash XIP, _etext <= _srodata",
         f"Symbols={len(found_fl)}/{len(flash_syms)} in FlashXIP={fl_ok}, _etext=0x{symbols.get('_etext', {}).get('value', 0):08x}",
         fl_pass
     )
@@ -1571,18 +1587,25 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="d
         clo_pass = False
         clo_actual = "objdump not found (pass --objdump)"
     else:
-        clo_roots, clo_walked, clo_violations = iram_call_closure(elf_path, objdump, in_iram, in_flash)
+        flash_rodata_start = symbols["_flash_rodata_start"]["value"]
+        flash_rodata_end = symbols["_eflash_xip"]["value"]
+        clo_roots, clo_walked, clo_violations, clo_refs = iram_call_closure(
+            elf_path, objdump, in_iram, in_flash,
+            lambda a: flash_rodata_start <= a < flash_rodata_end)
         flash_ops = [r for r in clo_roots if r.startswith("flash_")]
-        clo_pass = (not clo_violations) and len(flash_ops) >= FLASH_OP_ROUTINES_MIN and "mmu_init" in clo_roots
+        clo_pass = (not clo_violations and not clo_refs and len(flash_ops) >= FLASH_OP_ROUTINES_MIN
+                    and "mmu_init" in clo_roots)
         clo_actual = (f"{len(clo_roots)} roots ({len(flash_ops)} flash routines), {len(clo_walked)} IRAM functions walked, "
-                      f"{len(clo_violations)} calls into flash")
+                      f"{len(clo_violations)} calls into flash, {len(clo_refs)} reads of flash constants")
         for v in clo_violations[:8]:
             clo_actual += f"\n               flash call: {v}"
+        for v in clo_refs[:8]:
+            clo_actual += f"\n               flash data: {v}"
     passed += print_result_line(
         total,
         "IRAM-Only Code Paths (pre-MMU, trap/panic, flash routines)",
         "Walk direct calls from clock_init, mmu_init, trap/panic entry and the NVS/OTA flash routines through IRAM",
-        f"All roots in IRAM, >= {FLASH_OP_ROUTINES_MIN} flash routines found, no call path reaches flash XIP",
+        f"All roots in IRAM, >= {FLASH_OP_ROUTINES_MIN} flash routines found, no call path reaches flash XIP code or constants",
         clo_actual,
         clo_pass
     )
@@ -1590,18 +1613,18 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="d
     # TEST: Memory budgets (mirror of the ld/link.ld ASSERTs, with the numbers)
     total += 1
     main_stack_top = symbols.get("_main_stack_top", {}).get("value", 0)
-    iram_free = IRAM_END - etext
     main_stack = main_stack_top - ebss
+    headroom = main_stack - main_stack_min
     flash_used = symbols["_eflash_xip"]["value"] - symbols["_sflash_xip"]["value"]
-    bud_pass = (iram_free >= IRAM_MIN_FREE and main_stack >= main_stack_min
+    bud_pass = (main_stack >= main_stack_min and headroom >= IRAM_MIN_FREE
                 and 0 < main_stack_top <= ROM_DATA_START)
-    bud_actual = (f"IRAM used {etext - stext} B, free {iram_free} B; main stack {main_stack} B; "
-                  f"flash XIP {flash_used} B")
+    bud_actual = (f"IRAM code {etext - stext} B, DRAM constants {erodata - srodata} B; main stack {main_stack} B "
+                  f"({headroom} B above the budget); flash XIP {flash_used} B")
     passed += print_result_line(
         total,
         "Memory Budgets: IRAM Headroom, Main Stack, Flash XIP",
-        "Report IRAM/stack/flash usage and enforce the headroom budgets",
-        f"IRAM free >= {IRAM_MIN_FREE} B, main stack >= {main_stack_min} B (profile {profile}), stack top <= 0x{ROM_DATA_START:08x}",
+        "Report SRAM/stack/flash usage and enforce the headroom budgets (one SRAM region: IRAM code takes from DRAM)",
+        f"main stack >= {main_stack_min} B (profile {profile}) + IRAM_MIN_FREE {IRAM_MIN_FREE} B, stack top <= 0x{ROM_DATA_START:08x}",
         bud_actual,
         bud_pass
     )

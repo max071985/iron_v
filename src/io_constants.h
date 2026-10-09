@@ -66,11 +66,10 @@
 #define RTC_WDT_SWD_WPROTECT_REG    LP_WDT_SWD_WPROTECT_REG
 #define RTC_WDT_SWD_CONFIG_REG      LP_WDT_SWD_CONF_REG
 
-/* Memory Region Boundaries for Address Validation */
-#define HP_IRAM_START_ADDR          0x40800000U
-#define HP_IRAM_END_ADDR            0x40829000U
-#define HP_DRAM_START_ADDR          0x40829000U
-#define HP_DRAM_END_ADDR            0x40880000U
+/* Memory Region Boundaries for Address Validation.
+ * HP SRAM is one region: IRAM code and DRAM share it, the code/data boundary is _etext (ld/link.ld, REV-34). */
+#define HP_SRAM_START_ADDR          0x40800000U
+#define HP_SRAM_END_ADDR            0x40880000U
 #define LP_SRAM_START_ADDR          0x50000000U
 #define LP_SRAM_END_ADDR            0x50004000U
 #define FLASH_XIP_START_ADDR        0x42000000U

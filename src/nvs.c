@@ -12,6 +12,7 @@
 #include "string.h"
 #include "console.h"
 #include "utils.h"
+#include "io_constants.h"
 #include "efuse.h"
 #include "ota.h"
 #include "wdt.h"
@@ -27,6 +28,8 @@ extern char _edata[];
 extern char _sbss[];
 extern char _ebss[];
 extern char _stack_top[];
+extern char _srodata[];
+extern char _main_stack_top[];
 #endif
 
 /* IEEE 802.3 32-bit CRC Polynomial */
@@ -744,13 +747,15 @@ bool golden_master_verify(golden_master_report_t *out_report)
 #if defined(__riscv)
     uint32_t stext = (uint32_t)(uintptr_t)_stext;
     uint32_t etext = (uint32_t)(uintptr_t)_etext;
+    uint32_t srodata = (uint32_t)(uintptr_t)_srodata;
     uint32_t sdata = (uint32_t)(uintptr_t)_sdata;
     uint32_t ebss  = (uint32_t)(uintptr_t)_ebss;
 
-    mem_ok = (stext == 0x40800000U) &&
-             (etext <= 0x40829000U) &&
-             (sdata >= 0x40829000U) &&
-             (ebss <= 0x40878000U);
+    /* One HP SRAM region (REV-34): IRAM code, constants, data, bss, then the main stack */
+    mem_ok = (stext == HP_SRAM_START_ADDR) &&
+             (etext <= srodata) &&
+             (srodata <= sdata) &&
+             (ebss <= (uint32_t)(uintptr_t)_main_stack_top);
 #endif
     rep.memory_cartography_ok = mem_ok;
     if (mem_ok) pass_count++;
@@ -818,7 +823,7 @@ void golden_master_print_report(void)
 
     console_puts("==================== GOLDEN MASTER SYSTEM SEAL AUDIT ====================\r\n");
     console_puts("  1. Memory Cartography:       ");
-    console_puts(rep.memory_cartography_ok ? "[PASS] (Harvard 164K/348K, stack >= 30K)\r\n" : "[FAIL]\r\n");
+    console_puts(rep.memory_cartography_ok ? "[PASS] (unified SRAM: code, constants, data, bss, stack)\r\n" : "[FAIL]\r\n");
 
     console_puts("  2. Watchdog Supervisors:     ");
     console_puts(rep.watchdogs_ok ? "[PASS] (MWDT & LP WDT active, 0 resets)\r\n" : "[FAIL]\r\n");

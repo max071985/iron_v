@@ -43,8 +43,8 @@ void panic_print_stack_preview(const trapframe_t *tf)
     console_puts("):\r\n");
 
     if (((tf->sp & PANIC_SP_ALIGNMENT_MASK) == 0U) &&
-        (tf->sp >= HP_DRAM_START_ADDR) &&
-        (tf->sp <= (HP_DRAM_END_ADDR - (PANIC_STACK_WORDS * sizeof(uint32_t)))))
+        (tf->sp >= HP_SRAM_START_ADDR) &&
+        (tf->sp <= (HP_SRAM_END_ADDR - (PANIC_STACK_WORDS * sizeof(uint32_t)))))
     {
         uint32_t *sp_ptr = (uint32_t *)tf->sp;
         for (uint32_t i = 0U; i < PANIC_STACK_WORDS; i++)

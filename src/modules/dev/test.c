@@ -244,7 +244,7 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     /* ------------------------------------------------------------- */
     total_tests++;
     print_test_header("Memory Section Topology & Monotonicity",
-                      "Verify SRAM section layout conforms to Harvard architecture (164KB IRAM / 348KB DRAM)");
+                      "Verify the unified HP SRAM layout (REV-34): IRAM code, constants, data, bss, main stack");
     
     uint32_t stext = (uint32_t)_stext;
     uint32_t etext = (uint32_t)_etext;
@@ -256,7 +256,7 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     uint32_t ebss = (uint32_t)_ebss;
     uint32_t stack_top = (uint32_t)_stack_top;
 
-    uart_puts("  Expected:    0x40800000 == _stext < _etext <= 0x40828FFF, 0x40829000 <= _srodata < _stack_top(0x40880000)\r\n");
+    uart_puts("  Expected:    0x40800000 == _stext < _etext <= _srodata < _sdata < _sbss < _stack_top(0x40880000)\r\n");
     uart_puts("  Actual:      _stext=");
     put_hex(stext);
     uart_puts(" _srodata=");
@@ -269,10 +269,8 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     put_hex(stack_top);
     uart_puts("\r\n");
 
-    int t1_pass = (stext == 0x40800000U) &&
+    int t1_pass = (stext == HP_SRAM_START_ADDR) &&
                   (stext < etext) &&
-                  (etext <= 0x40828FFFU) &&
-                  (srodata >= 0x40829000U) &&
                   (etext <= srodata) &&
                   (srodata < erodata) &&
                   (erodata <= sdata) &&
@@ -280,7 +278,7 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
                   (edata <= sbss) &&
                   (sbss <= ebss) &&
                   (ebss < stack_top) &&
-                  (stack_top == 0x40880000U);
+                  (stack_top == HP_SRAM_END_ADDR);
 
     if (t1_pass) passed_tests++;
     print_result(t1_pass);
@@ -1388,8 +1386,8 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     /* 6. Configure HP_APM Region 1 authority attributes over DRAM bounds (Region 0 preserves 4GB pass-through) */
     apm_region_cfg_t apm_r1 = {
         .region_idx    = 1U,
-        .start_addr    = HP_DRAM_START_ADDR,
-        .end_addr      = HP_DRAM_END_ADDR,
+        .start_addr    = TEST_APM_REGION_START_ADDR,
+        .end_addr      = TEST_APM_REGION_END_ADDR,
         .read_allow    = 1U,
         .write_allow   = 1U,
         .execute_allow = 0U,
@@ -1403,8 +1401,8 @@ void run_validation_suite_ex(test_suite_result_t *out_result)
     uint32_t apm_pms   = *HP_APM_REGION_PMS_ATTR_REG(1U);
     uint32_t apm_flt   = *HP_APM_REGION_FILTER_ENABLE_REG;
 
-    int apm_reg_ok = (apm_start == HP_DRAM_START_ADDR) &&
-                     (apm_end == HP_DRAM_END_ADDR) &&
+    int apm_reg_ok = (apm_start == TEST_APM_REGION_START_ADDR) &&
+                     (apm_end == TEST_APM_REGION_END_ADDR) &&
                      ((apm_pms & APM_PMS_R_BIT) != 0U) &&
                      ((apm_pms & APM_PMS_W_BIT) != 0U) &&
                      ((apm_pms & APM_PMS_X_BIT) == 0U) &&

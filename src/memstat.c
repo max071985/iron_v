@@ -14,8 +14,7 @@
 #include "wifi_os_adapter.h"
 
 #if defined(__riscv)
-extern char _iram_region_start[], _iram_region_end[];
-extern char _dram_region_start[], _dram_region_end[];
+extern char _sram_region_start[], _sram_region_end[];
 extern char _stext[], _etext[];
 extern char _srodata[], _erodata[], _sdata[], _edata[], _sbss[], _ebss[];
 extern char _main_stack_top[];
@@ -36,15 +35,14 @@ void memstat_get_layout(memstat_layout_t *out)
     }
     memset(out, 0, sizeof(*out));
 #if defined(__riscv)
-    out->iram_size      = memstat_span(_iram_region_start, _iram_region_end);
+    out->sram_size      = memstat_span(_sram_region_start, _sram_region_end);
     out->iram_code      = memstat_span(_stext, _etext);
-    out->dram_size      = memstat_span(_dram_region_start, _dram_region_end);
     out->dram_rodata    = memstat_span(_srodata, _erodata);
     out->dram_data      = memstat_span(_sdata, _edata);
     out->dram_bss       = memstat_span(_sbss, _ebss);
     out->main_stack     = memstat_span(_ebss, _main_stack_top);
     out->main_stack_min = (uint32_t)(uintptr_t)MAIN_STACK_MIN_SIZE;
-    out->top_reserve    = memstat_span(_main_stack_top, _dram_region_end);
+    out->top_reserve    = memstat_span(_main_stack_top, _sram_region_end);
     out->flash_xip      = memstat_span(_sflash_xip, _eflash_xip);
 #endif
 }
@@ -125,11 +123,9 @@ void memstat_shell(const char *args)
     memstat_layout_t l;
     memstat_get_layout(&l);
     console_puts("RAM budget (peaks since boot or `mem reset`)\r\n");
-    memstat_bytes("  IRAM ", l.iram_size);
-    memstat_bytes(": code ", l.iram_code);
-    memstat_bytes(", unused ", l.iram_size - l.iram_code);
-    memstat_bytes("\r\n  DRAM ", l.dram_size);
-    memstat_bytes(": constants ", l.dram_rodata);
+    memstat_bytes("  SRAM ", l.sram_size);
+    memstat_bytes(": IRAM code ", l.iram_code);
+    memstat_bytes(", constants ", l.dram_rodata);
     memstat_bytes(", data ", l.dram_data);
     memstat_bytes(", bss ", l.dram_bss);
     memstat_bytes(", main stack ", l.main_stack);

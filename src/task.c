@@ -48,8 +48,8 @@ void task_init(void)
 
     /* Slot 0 represents the main thread execution context */
     s_task_table[0].sp               = 0U;
-    s_task_table[0].stack_base       = HP_DRAM_START_ADDR;
-    s_task_table[0].stack_size       = (HP_DRAM_END_ADDR - HP_DRAM_START_ADDR);
+    s_task_table[0].stack_base       = HP_SRAM_START_ADDR;
+    s_task_table[0].stack_size       = (HP_SRAM_END_ADDR - HP_SRAM_START_ADDR);
     s_task_table[0].state            = TASK_STATE_RUNNING;
     s_task_table[0].priority         = TASK_PRIORITY_DEFAULT;
     s_task_table[0].name             = "main";

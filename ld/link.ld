@@ -1,6 +1,12 @@
 /*
  * Iron-V linker script, ESP32-C6 (image loaded directly by the ROM loader).
  *
+ * HP SRAM is one 512 KB block reachable at the same address for code and data
+ * (no I/D split register on the C6; ESP-IDF uses a single sram_seg as well).
+ * It is laid out as one region (REV-34): IRAM code, DRAM constants, .data,
+ * .bss and the main stack follow each other, so every byte IRAM code does not
+ * use belongs to DRAM. Program headers keep code R+X and data R+W.
+ *
  * Code placement policy:
  *   - All code runs from flash (XIP through the cache, .flash_xip) by default.
  *   - IRAM (.text) holds only code that must not depend on flash:
@@ -12,8 +18,15 @@
  *     The packet path (wifi.o, net.o, tcp.o) also stays in IRAM as a latency
  *     choice: it runs inside the Wi-Fi task's poll, and from a cold cache the
  *     net self-test took 956 us in flash against 118 us in IRAM.
- *   - Read-only data stays in DRAM unless placed in .flash.rodata (DMA engines
- *     and IRAM_ATTR code must never read from flash).
+ *   - Read-only data of Iron-V's own objects lives in flash (REV-34), except
+ *     for the EXCLUDE_FILE list in .flash_xip: the IRAM keep-list (their code
+ *     runs without flash, or is latency-critical) and the objects that exist
+ *     for IRAM_ATTR code (flash_rom, hw_rng, looptime). nvs.o and ota.o mix
+ *     main-loop code with IRAM_ATTR flash routines; their constants go to flash
+ *     because those routines read none. Vendor libraries keep their constants
+ *     in DRAM (REV-35). DMA engines must never read from flash either: keep
+ *     DMA sources in RAM. tests/test_runner.py checks that no IRAM-only code
+ *     path calls into flash or loads an address in flash constants.
  * Interrupts are disabled around every flash operation, so flash-resident
  * interrupt handlers are safe; keeping them in IRAM is only a latency choice.
  *
@@ -24,8 +37,7 @@ ENTRY(_start)
 
 MEMORY
 {
-    hp_iram (rx)  : ORIGIN = 0x40800000, LENGTH = 0x29000
-    hp_dram (rw)  : ORIGIN = 0x40829000, LENGTH = 0x57000
+    hp_sram (rwx) : ORIGIN = 0x40800000, LENGTH = 512K
     lp_sram (rw)  : ORIGIN = 0x50000000, LENGTH = 16K
     flash_xip (rx): ORIGIN = 0x42000000, LENGTH = 8M
 }
@@ -37,7 +49,18 @@ MEMORY
 ROM_DATA_START          = 0x4087E610;
 MAIN_STACK_ROM_GAP      = 0x3200;   /* main stack starts this far below the end of SRAM */
 /* MAIN_STACK_MIN_SIZE: the build profile's MAIN_STACK_MIN (Makefile: --defsym, REV-33) */
+/* Room left for IRAM code growth: the main stack must exceed its budget by this much.
+ * (With one SRAM region there is no separate IRAM to run out of; IRAM code takes from DRAM.) */
 IRAM_MIN_FREE           = 16K;
+
+PHDRS
+{
+    iram  PT_LOAD FLAGS(5);     /* R X: IRAM code */
+    xip   PT_LOAD FLAGS(5);     /* R X: flash code + constants */
+    drom  PT_LOAD FLAGS(4);     /* R:   DRAM constants */
+    dram  PT_LOAD FLAGS(6);     /* R W: .data, .bss, heap */
+    lp    PT_LOAD FLAGS(6);     /* R W: LP SRAM (NOLOAD) */
+}
 
 SECTIONS
 {
@@ -81,7 +104,7 @@ SECTIONS
         *(.wifislprxiram .wifislprxiram.*)
         . = ALIGN(16);
         _etext = .;
-    } > hp_iram
+    } > hp_sram :iram
 
     .flash_xip : ALIGN(16) {
         _sflash_xip = .;
@@ -91,18 +114,17 @@ SECTIONS
         *(.flash.text .flash.text.*)
         _flash_rodata_start = .;
         *(.flash.rodata .flash.rodata.*)
-        *shell.o*(.rodata .rodata.* .srodata .srodata.*)
-        /* REV-23 light/MQTT/REST v1: main-loop code only, never runs with the flash cache off */
-        *light.o(.rodata .rodata.* .srodata .srodata.*)
-        *mqtt.o(.rodata .rodata.* .srodata .srodata.*)
-        *api_v1.o(.rodata .rodata.* .srodata .srodata.*)
-        *json_lite.o(.rodata .rodata.* .srodata .srodata.*)
-        /* REV-32 RAM budget (`mem`): shell only */
-        *memstat.o(.rodata .rodata.* .srodata .srodata.*)
-        /* REV-33 module registry, module glue (*module.o) and device id: main loop and shell only.
-         * The tables are walked between their __start_/__stop_ symbols (module.h, shell.h). */
-        *module.o(.rodata .rodata.* .srodata .srodata.*)
-        *device.o(.rodata .rodata.* .srodata .srodata.*)
+        /* Own objects' constants (REV-34): everything under build/<profile>/obj/ except the
+         * DRAM keep-list. Vendor archive members (libs/) never match this file pattern. */
+        EXCLUDE_FILE(
+            */obj/crt0.o */obj/trap_entry.o */obj/trap.o */obj/panic.o
+            */obj/task_switch.o */obj/task.o */obj/interrupt.o */obj/dpc.o
+            */obj/systimer.o */obj/timer.o */obj/wdt.o */obj/uart.o
+            */obj/usb_serial.o */obj/console.o */obj/utils.o */obj/string.o
+            */obj/arena.o */obj/clock.o */obj/mmu.o */obj/power.o */obj/main.o
+            */obj/wifi_os_adapter.o */obj/wifi.o */obj/net.o */obj/tcp.o
+            */obj/flash_rom.o */obj/hw_rng.o */obj/looptime.o
+        ) */obj/*(.rodata .rodata.* .srodata .srodata.*)
         . = ALIGN(4);
         __start_iron_modules = .;
         KEEP(*(iron_modules))
@@ -111,10 +133,9 @@ SECTIONS
         __start_iron_shell_cmds = .;
         KEEP(*(iron_shell_cmds))
         __stop_iron_shell_cmds = .;
-        *test.o(.rodata.str* .srodata.str*)
         . = ALIGN(16);
         _eflash_xip = .;
-    } > flash_xip
+    } > flash_xip :xip
 
     .rodata : ALIGN(16) {
         _srodata = .;
@@ -123,7 +144,7 @@ SECTIONS
         *(.rodata_wlog* .rodata_wlog*.*)
         . = ALIGN(16);
         _erodata = .;
-    } > hp_dram
+    } > hp_sram :drom
 
     .data : ALIGN(16) {
         _sdata = .;
@@ -133,7 +154,7 @@ SECTIONS
         . = ALIGN(16);
         _edata = .;
         __global_pointer$ = _sdata + 0x800;
-    } > hp_dram
+    } > hp_sram :dram
 
     .bss (NOLOAD) : ALIGN(16) {
         _sbss = .;
@@ -142,13 +163,13 @@ SECTIONS
         *(COMMON)
         . = ALIGN(16);
         _ebss = .;
-    } > hp_dram
+    } > hp_sram :dram
 
     .heap (NOLOAD) : ALIGN(16) {
         _sheap = .;
         . = ALIGN(16);
         _eheap = .;
-    } > hp_dram
+    } > hp_sram :dram
 
     .lp_sram (NOLOAD) : ALIGN(16) {
         _slp_sram = .;
@@ -156,16 +177,14 @@ SECTIONS
         *(.lp_sram .lp_sram.*)
         . = ALIGN(16);
         _elp_sram = .;
-    } > lp_sram
+    } > lp_sram :lp
 
     /* Region bounds for the RAM budget (`mem`, REV-32) */
-    _iram_region_start = ORIGIN(hp_iram);
-    _iram_region_end   = ORIGIN(hp_iram) + LENGTH(hp_iram);
-    _dram_region_start = ORIGIN(hp_dram);
-    _dram_region_end   = ORIGIN(hp_dram) + LENGTH(hp_dram);
+    _sram_region_start = ORIGIN(hp_sram);
+    _sram_region_end   = ORIGIN(hp_sram) + LENGTH(hp_sram);
 
     /* End of HP SRAM; the main stack starts MAIN_STACK_ROM_GAP below it */
-    _stack_top = ORIGIN(hp_dram) + LENGTH(hp_dram);
+    _stack_top = ORIGIN(hp_sram) + LENGTH(hp_sram);
     _main_stack_top = _stack_top - MAIN_STACK_ROM_GAP;
 
     /DISCARD/ : {
@@ -181,7 +200,8 @@ ASSERT(_main_stack_top <= ROM_DATA_START,
 ASSERT(_main_stack_top % 16 == 0, "main stack top must be 16-byte aligned")
 ASSERT(_main_stack_top - _ebss >= MAIN_STACK_MIN_SIZE,
        "DRAM: less than MAIN_STACK_MIN_SIZE left for the main stack above .bss")
-ASSERT(ORIGIN(hp_iram) + LENGTH(hp_iram) - _etext >= IRAM_MIN_FREE,
-       "IRAM: less than IRAM_MIN_FREE left; keep new code in flash or use IRAM_ATTR sparingly")
+ASSERT(_main_stack_top - _ebss >= MAIN_STACK_MIN_SIZE + IRAM_MIN_FREE,
+       "SRAM: less than IRAM_MIN_FREE above the main-stack budget; keep new code in flash or use IRAM_ATTR sparingly")
+ASSERT(_etext <= _srodata, "IRAM code overlaps DRAM constants")
 ASSERT(_sflash_xip == ORIGIN(flash_xip),
        ".flash_xip must start at 0x42000000: mmu_init() maps it from flash offset 0x10000")

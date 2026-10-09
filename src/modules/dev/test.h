@@ -17,6 +17,11 @@ extern char _sbss[];
 extern char _ebss[];
 extern char _stack_top[];
 
+/* APM register write/readback window: a data-only RAM range (the DRAM part of the pre-REV-34 split).
+ * The test programs region 1 with it, reads the registers back and clears the region again. */
+#define TEST_APM_REGION_START_ADDR      0x40829000U
+#define TEST_APM_REGION_END_ADDR        HP_SRAM_END_ADDR
+
 #define TEST_SOAK_DEFAULT_CYCLES        5U
 #define TEST_SOAK_DEFAULT_DELAY_MS      50U
 

@@ -163,6 +163,7 @@ wifi_status_t wifi_rx_ring_init(void)
 
     s_wifi_telemetry.rx_ring_head = 0U;
     s_wifi_telemetry.rx_ring_tail = 0U;
+    s_wifi_telemetry.rx_ring_queued = 0U;
     wifi_fence();
 
     return WIFI_OK;
@@ -238,32 +239,54 @@ wifi_status_t wifi_verify_rx_ring(uint32_t *out_visited_count)
 /* Vendor Wi-Fi Callbacks & Lifecycle Initialization                         */
 /* ========================================================================= */
 
+/* Copy one received frame into the software RX queue: the blob's RX callback on the target, tests on the host */
+static bool wifi_rx_ring_push(wifi_tx_if_t rx_if, const void *buffer, uint16_t len)
+{
+    if (buffer == NULL || len == 0U || len > PACKET_BUFFER_SIZE)
+    {
+        return false;
+    }
+
+    uint32_t tail = s_wifi_telemetry.rx_ring_tail;
+    if (s_rx_packet_ring[tail].dma_desc.owner != DMA_OWNER_DMA)
+    {
+        s_wifi_telemetry.ring_full_drops++;
+        return false;
+    }
+
+    memcpy(s_rx_packet_ring[tail].payload, buffer, len);
+    s_rx_packet_ring[tail].dma_desc.length = len;
+    s_rx_packet_ring[tail].rx_if = (uint8_t)rx_if;
+    s_rx_packet_ring[tail].dma_desc.suc_eof = 1U;
+    wifi_fence();
+    s_rx_packet_ring[tail].dma_desc.owner = DMA_OWNER_CPU;
+    wifi_fence();
+    s_wifi_telemetry.rx_ring_tail = (tail + 1U) % PACKET_RING_COUNT;
+    s_wifi_telemetry.rx_bytes += len;
+    s_wifi_telemetry.rx_ring_queued++;
+    if (s_wifi_telemetry.rx_ring_queued > s_wifi_telemetry.rx_ring_peak)
+    {
+        s_wifi_telemetry.rx_ring_peak = s_wifi_telemetry.rx_ring_queued;
+    }
+    return true;
+}
+
+void wifi_rx_ring_peak_reset(void)
+{
+    s_wifi_telemetry.rx_ring_peak = s_wifi_telemetry.rx_ring_queued;
+}
+
+#if !defined(__riscv)
+bool wifi_host_rx_push(wifi_tx_if_t rx_if, const void *frame, uint16_t len)
+{
+    return wifi_rx_ring_push(rx_if, frame, len);
+}
+#endif
+
 #if defined(__riscv)
 static esp_err_t wifi_vendor_rx_enqueue(wifi_tx_if_t rx_if, void *buffer, uint16_t len, void *eb)
 {
-    if (buffer != NULL && len > 0U && len <= PACKET_BUFFER_SIZE)
-    {
-        uint32_t tail = s_wifi_telemetry.rx_ring_tail;
-        uint32_t next_tail = (tail + 1U) % PACKET_RING_COUNT;
-
-        if (s_rx_packet_ring[tail].dma_desc.owner == DMA_OWNER_DMA)
-        {
-            memcpy(s_rx_packet_ring[tail].payload, buffer, len);
-            s_rx_packet_ring[tail].dma_desc.length = len;
-            s_rx_packet_ring[tail].rx_if = (uint8_t)rx_if;
-            s_rx_packet_ring[tail].dma_desc.suc_eof = 1U;
-            wifi_fence();
-            s_rx_packet_ring[tail].dma_desc.owner = DMA_OWNER_CPU;
-            wifi_fence();
-            s_wifi_telemetry.rx_ring_tail = next_tail;
-            s_wifi_telemetry.rx_bytes += len;
-        }
-        else
-        {
-            s_wifi_telemetry.ring_full_drops++;
-        }
-    }
-
+    (void)wifi_rx_ring_push(rx_if, buffer, len);
     if (eb != NULL)
     {
         esp_wifi_internal_free_rx_buffer(eb);
@@ -631,6 +654,10 @@ wifi_status_t wifi_rx_release(net_packet_t *packet)
 
     s_wifi_telemetry.rx_ring_head = (s_wifi_telemetry.rx_ring_head + 1U) % PACKET_RING_COUNT;
     s_wifi_telemetry.rx_packets++;
+    if (s_wifi_telemetry.rx_ring_queued > 0U)
+    {
+        s_wifi_telemetry.rx_ring_queued--;
+    }
     return WIFI_OK;
 }
 

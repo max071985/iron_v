@@ -66,6 +66,8 @@ static bool s_tcp_in_callback = false;
 
 static uint8_t s_sndbuf_pool[TCP_SNDBUF_CHUNKS][TCP_SNDBUF_CHUNK_SIZE];
 static bool s_sndbuf_used[TCP_SNDBUF_CHUNKS];
+/* Most chunks in use at once (REV-32 RAM budget); kept across tcp_init(), which do-test calls */
+static uint32_t s_sndbuf_peak_chunks = 0U;
 
 /* ========================================================================= */
 /* Send Buffer (chunk chain per PCB)                                         */
@@ -78,6 +80,11 @@ static uint8_t tcp_sndbuf_chunk_alloc(void)
         if (!s_sndbuf_used[i])
         {
             s_sndbuf_used[i] = true;
+            uint32_t in_use = TCP_SNDBUF_CHUNKS - tcp_sndbuf_free_chunks();
+            if (in_use > s_sndbuf_peak_chunks)
+            {
+                s_sndbuf_peak_chunks = in_use;
+            }
             return (uint8_t)i;
         }
     }
@@ -106,6 +113,23 @@ uint32_t tcp_sndbuf_free_chunks(void)
         }
     }
     return n;
+}
+
+void tcp_sndbuf_usage(uint32_t *out_in_use, uint32_t *out_peak)
+{
+    if (out_in_use != NULL)
+    {
+        *out_in_use = TCP_SNDBUF_CHUNKS - tcp_sndbuf_free_chunks();
+    }
+    if (out_peak != NULL)
+    {
+        *out_peak = s_sndbuf_peak_chunks;
+    }
+}
+
+void tcp_sndbuf_peak_reset(void)
+{
+    s_sndbuf_peak_chunks = TCP_SNDBUF_CHUNKS - tcp_sndbuf_free_chunks();
 }
 
 uint32_t tcp_sndbuf_space(const tcp_pcb_t *pcb)

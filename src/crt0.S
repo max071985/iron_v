@@ -1,5 +1,6 @@
 #include "interrupt.h"
 #include "io_constants.h"
+#include "memstat.h"
 
 .section .text.entry, "ax"
 .global _start
@@ -42,10 +43,22 @@ _start:
     j 1b
 
 2:
-    /* 5. Memory barrier to guarantee BSS clearing is committed */
+    /* 5. Paint the main stack (nothing is on it yet) so `mem` finds its deepest use (REV-32) */
+    la t0, _ebss
+    la t1, _main_stack_top
+    li t2, MEMSTAT_STACK_FILL_WORD
+
+3:
+    bgeu t0, t1, 4f
+    sw t2, 0(t0)
+    addi t0, t0, 4
+    j 3b
+
+4:
+    /* 6. Memory barrier to guarantee BSS clearing and stack painting are committed */
     fence rw, rw
 
-    /* 6. Jump into runtime main() */
+    /* 7. Jump into runtime main() */
     call main
 
     /* Safety Net infinite loop in case main() ever returns */

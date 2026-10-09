@@ -224,6 +224,9 @@ tcp_status_t tcp_get_telemetry(tcp_telemetry_t *out_telem);
 const tcp_pcb_t *tcp_get_pcb(uint32_t index);
 const char *tcp_state_to_str(tcp_state_t state);
 uint32_t tcp_sndbuf_free_chunks(void);
+/* REV-32 RAM budget: chunks in use now and at most since boot or the last reset */
+void tcp_sndbuf_usage(uint32_t *out_in_use, uint32_t *out_peak);
+void tcp_sndbuf_peak_reset(void);
 
 #if !defined(__riscv)
 /* Host tests: the TCP clock only moves when told to */

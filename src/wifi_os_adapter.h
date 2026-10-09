@@ -29,6 +29,7 @@ void wifi_os_adapter_print_timers(void);
 
 /* OSAL Static Arena telemetry query */
 void wifi_os_adapter_get_heap_stats(size_t *used_bytes, size_t *free_bytes, size_t *peak_bytes);
+void wifi_os_adapter_heap_peak_reset(void);
 
 /* WPA Supplicant callbacks registration */
 void wifi_os_adapter_register_wpa_stubs(void);

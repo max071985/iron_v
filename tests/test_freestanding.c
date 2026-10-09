@@ -37,6 +37,7 @@
 #include "http_server.h"
 #include "web_assets.h"
 #include "web_index_gz.h"
+#include "memstat.h"
 #include "speedtest.h"
 #include "clock.h"
 #include "wdt.h"
@@ -3607,7 +3608,12 @@ static void test_tcp_reliability(void)
     tcp_abort(cl);
 
     /* --- Send buffer pool: all-or-nothing writes --- */
+    uint32_t pool_now = 0U, pool_peak = 0U, peak_before = 0U;
+    tcp_sndbuf_usage(NULL, &peak_before);
     TEST_ASSERT(tcp_init() == TCP_OK, "fresh stack");
+    tcp_sndbuf_usage(&pool_now, &pool_peak);
+    TEST_ASSERT(pool_now == 0U && pool_peak == peak_before, "send-pool peak survives tcp_init (do-test calls it, REV-32)");
+    tcp_sndbuf_peak_reset();
     lst = tcp_new();
     (void)tcp_bind(lst, TT_LISTEN_PORT);
     (void)tcp_listen(lst, NULL);
@@ -3625,11 +3631,18 @@ static void test_tcp_reliability(void)
     TEST_ASSERT(tcp_sndbuf_space(b) == left && tcp_write(b, big, (uint16_t)(left + 1U)) == TCP_ERR_MEM,
                 "pool exhaustion refuses the whole write");
     TEST_ASSERT(tcp_write(b, big, (uint16_t)left) == TCP_OK && tcp_sndbuf_free_chunks() == 0U, "the rest of the pool fits");
+    tcp_sndbuf_usage(&pool_now, &pool_peak);
+    TEST_ASSERT(pool_now == TCP_SNDBUF_CHUNKS && pool_peak == TCP_SNDBUF_CHUNKS, "send-pool usage and peak: all chunks");
     tcp_get_telemetry(&tt);
     TEST_ASSERT(tt.sndbuf_full == full0 + 2U, "refusals counted");
     tcp_abort(a);
     tcp_abort(b);
     TEST_ASSERT(tcp_sndbuf_free_chunks() == TCP_SNDBUF_CHUNKS, "abort returns the buffers");
+    tcp_sndbuf_usage(&pool_now, &pool_peak);
+    TEST_ASSERT(pool_now == 0U && pool_peak == TCP_SNDBUF_CHUNKS, "peak kept after the buffers return");
+    tcp_sndbuf_peak_reset();
+    tcp_sndbuf_usage(&pool_now, &pool_peak);
+    TEST_ASSERT(pool_peak == 0U, "peak reset to the current use");
 
     /* --- Driver out of TX buffers: short retry, no backoff; a dead interface ends in the RTO path --- */
     (void)tt_open(TT_PEER_PORT + 6U);
@@ -5046,6 +5059,75 @@ static void test_scheduler_hardening(void)
                 memcmp(pmk, vec0_full, sizeof(pmk)) == 0, "PBKDF2 full 32-byte PMK (IEEE 802.11 J.4 vector 2)");
     TEST_ASSERT(wpa2_crypto_pbkdf2_sha1("password", "SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS", WPA2_PBKDF2_ITERATIONS, pmk) ==
                 WPA2_ERR_INVALID_ARG, "PBKDF2 rejects a 33-character SSID");
+}
+
+/* REV-32: RAM budget measurements (stack painting scan, RX ring fill and peak) */
+#define MEMSTAT_TEST_WORDS      64U
+#define MEMSTAT_TEST_FRAME_LEN  60U
+
+static void test_memstat(void)
+{
+    printf("  [TEST] RAM budget: stack scan, RX ring fill/peak (REV-32)...\n");
+    static uint32_t stack[MEMSTAT_TEST_WORDS];
+    for (uint32_t i = 0U; i < MEMSTAT_TEST_WORDS; i++)
+    {
+        stack[i] = (uint32_t)MEMSTAT_STACK_FILL_WORD;
+    }
+    TEST_ASSERT(memstat_stack_untouched(stack, MEMSTAT_TEST_WORDS) == MEMSTAT_TEST_WORDS * sizeof(uint32_t),
+                "fully painted stack: all untouched");
+    for (uint32_t i = MEMSTAT_TEST_WORDS - 5U; i < MEMSTAT_TEST_WORDS; i++)
+    {
+        stack[i] = i;   /* the stack grows down from the top */
+    }
+    TEST_ASSERT(memstat_stack_untouched(stack, MEMSTAT_TEST_WORDS) == (MEMSTAT_TEST_WORDS - 5U) * sizeof(uint32_t),
+                "five words used at the top");
+    stack[10] = 0U;   /* one deep write with painted words above it still counts as used */
+    TEST_ASSERT(memstat_stack_untouched(stack, MEMSTAT_TEST_WORDS) == 10U * sizeof(uint32_t),
+                "deepest write wins over painted holes");
+    stack[0] = 0U;
+    TEST_ASSERT(memstat_stack_untouched(stack, MEMSTAT_TEST_WORDS) == 0U && memstat_stack_untouched(NULL, 4U) == 0U,
+                "fully used stack and NULL");
+
+    TEST_ASSERT(wifi_rx_ring_init() == WIFI_OK, "RX ring reset");
+    wifi_rx_ring_peak_reset();
+    uint8_t frame[MEMSTAT_TEST_FRAME_LEN];
+    memset(frame, 0x5A, sizeof(frame));
+    wifi_telemetry_t wt;
+    for (uint32_t i = 0U; i < 5U; i++)
+    {
+        (void)wifi_host_rx_push(WIFI_TX_IF_STA, frame, sizeof(frame));
+    }
+    (void)wifi_get_telemetry(&wt);
+    TEST_ASSERT(wt.rx_ring_queued == 5U && wt.rx_ring_peak == 5U, "five frames queued, peak 5");
+    net_packet_t *pkt = NULL;
+    uint16_t len = 0U;
+    for (uint32_t i = 0U; i < 3U; i++)
+    {
+        TEST_ASSERT(wifi_rx_poll(&pkt, &len) == WIFI_OK && len == sizeof(frame) && wifi_rx_release(pkt) == WIFI_OK,
+                    "poll + release");
+    }
+    (void)wifi_get_telemetry(&wt);
+    TEST_ASSERT(wt.rx_ring_queued == 2U && wt.rx_ring_peak == 5U, "two left, peak kept");
+    uint32_t drops0 = wt.ring_full_drops;
+    while (wifi_host_rx_push(WIFI_TX_IF_AP, frame, sizeof(frame)))
+    {
+    }
+    (void)wifi_get_telemetry(&wt);
+    TEST_ASSERT(wt.rx_ring_queued == PACKET_RING_COUNT && wt.rx_ring_peak == PACKET_RING_COUNT &&
+                wt.ring_full_drops == drops0 + 1U, "full ring: peak = capacity, the next frame is dropped and counted");
+    TEST_ASSERT(!wifi_host_rx_push(WIFI_TX_IF_STA, frame, 0U) && !wifi_host_rx_push(WIFI_TX_IF_STA, frame, PACKET_BUFFER_SIZE + 1U),
+                "invalid lengths refused");
+    (void)wifi_get_telemetry(&wt);
+    TEST_ASSERT(wt.ring_full_drops == drops0 + 1U, "invalid frames are not counted as drops");
+    while (wifi_rx_poll(&pkt, &len) == WIFI_OK)
+    {
+        (void)wifi_rx_release(pkt);
+    }
+    (void)wifi_get_telemetry(&wt);
+    TEST_ASSERT(wt.rx_ring_queued == 0U && wt.rx_ring_peak == PACKET_RING_COUNT, "drained, peak kept");
+    wifi_rx_ring_peak_reset();
+    (void)wifi_get_telemetry(&wt);
+    TEST_ASSERT(wt.rx_ring_peak == 0U, "peak reset to the current fill");
 }
 
 /* REV-25: the light page is web/index.html, gzip-compressed at build time. Its content rules (no timers,
@@ -7843,6 +7925,7 @@ int main(void)
     test_setup_mode();
     test_mdns_traffic_rules();
     test_dashboard_page();
+    test_memstat();
     test_scheduler_hardening();
     test_wpa2_client_and_mdns_subsystem();
     test_dhcp_client_rfc2131();

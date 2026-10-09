@@ -251,6 +251,14 @@ void *wifi_osi_realloc(void *ptr, size_t size)
     return new_p;
 }
 
+/* Restart the heap peak at the current use (`mem reset`, REV-32) */
+void wifi_os_adapter_heap_peak_reset(void)
+{
+    uint32_t prev_mstatus = interrupt_global_save_and_disable();
+    s_peak_bytes = s_allocated_bytes;
+    interrupt_global_restore(prev_mstatus);
+}
+
 void wifi_os_adapter_get_heap_stats(size_t *used_bytes, size_t *free_bytes, size_t *peak_bytes)
 {
     if (used_bytes != NULL) *used_bytes = s_allocated_bytes;

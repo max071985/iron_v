@@ -176,6 +176,8 @@ typedef struct {
     uint32_t rx_bytes;
     uint32_t tx_bytes;
     uint32_t ring_full_drops;   /* RX frames dropped because the queue was full */
+    uint32_t rx_ring_queued;    /* frames waiting for the main loop now */
+    uint32_t rx_ring_peak;      /* most frames waiting at once (REV-32 RAM budget) */
     uint32_t tx_errors;         /* TX attempts refused (interface down or blob error) */
 } wifi_telemetry_t;
 
@@ -193,6 +195,8 @@ wifi_status_t wifi_verify_rx_ring(uint32_t *out_visited_count);
 /* Packet Reception (software queue) & Transmission (blob) */
 wifi_status_t wifi_rx_poll(net_packet_t **out_packet, uint16_t *out_len);
 wifi_status_t wifi_rx_release(net_packet_t *packet);
+/* Restart the queue peak at the current fill (`mem reset`) */
+void wifi_rx_ring_peak_reset(void);
 wifi_status_t wifi_tx_packet(wifi_tx_if_t ifx, const uint8_t *payload, uint16_t len);
 /* Interface that owns the IP configuration: STA once associated, otherwise the SoftAP */
 wifi_tx_if_t wifi_get_ip_tx_if(void);
@@ -203,6 +207,8 @@ const uint8_t *wifi_host_last_tx(uint16_t *out_len, wifi_tx_if_t *out_ifx);
  * with WIFI_ERR_TX_FAILED (driver out of TX buffers) */
 typedef bool (*wifi_host_tx_hook_t)(const uint8_t *frame, uint16_t len);
 void wifi_host_set_tx_hook(wifi_host_tx_hook_t hook);
+/* Host tests: a frame as the blob's RX callback hands it over; false if it was dropped */
+bool wifi_host_rx_push(wifi_tx_if_t rx_if, const void *frame, uint16_t len);
 #endif
 void wifi_poll_rx_traffic(void);
 

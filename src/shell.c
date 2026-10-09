@@ -38,6 +38,7 @@
 #include "soak.h"
 #include "ota.h"
 #include "nvs.h"
+#include "memstat.h"
 #include "provisioning.h"
 #include "wpa2_client.h"
 #include "mdns.h"
@@ -239,6 +240,7 @@ void shell_print_help(void)
     console_puts("  panic               - Trigger illegal instruction exception to test panic dump\r\n");
     console_puts("  timer [start|stop]  - Show or control periodic timer telemetry\r\n");
     console_puts("  arena               - Show static memory arena allocation telemetry\r\n");
+    console_puts("  mem [reset]         - RAM budget: layout and buffer peaks (reset: restart the peaks)\r\n");
     console_puts("  lp [status|start|stop] - Show or control LP core coprocessor\r\n");
     console_puts("  power [status|mode|sample|store] - Show or control power management & shared mailbox\r\n");
     console_puts("  gpio [status|set|get|dir|pull] - Show or control GPIO pins & IO_MUX\r\n");
@@ -1155,6 +1157,10 @@ void shell_execute(char *input_buffer)
     {
         timer_start();
         console_puts("[TIMER] TIMG0 Timer 0 started.\r\n");
+    }
+    else if (strncmp(input_buffer, "mem", 3) == 0 && (input_buffer[3] == ' ' || input_buffer[3] == '\0'))
+    {
+        memstat_shell(input_buffer + 3);
     }
     else if (strcmp(input_buffer, "arena") == 0)
     {

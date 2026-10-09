@@ -97,6 +97,8 @@ SECTIONS
         *mqtt.o(.rodata .rodata.* .srodata .srodata.*)
         *api_v1.o(.rodata .rodata.* .srodata .srodata.*)
         *json_lite.o(.rodata .rodata.* .srodata .srodata.*)
+        /* REV-32 RAM budget (`mem`): shell only */
+        *memstat.o(.rodata .rodata.* .srodata .srodata.*)
         *test.o(.rodata.str* .srodata.str*)
         . = ALIGN(16);
         _eflash_xip = .;
@@ -143,6 +145,12 @@ SECTIONS
         . = ALIGN(16);
         _elp_sram = .;
     } > lp_sram
+
+    /* Region bounds for the RAM budget (`mem`, REV-32) */
+    _iram_region_start = ORIGIN(hp_iram);
+    _iram_region_end   = ORIGIN(hp_iram) + LENGTH(hp_iram);
+    _dram_region_start = ORIGIN(hp_dram);
+    _dram_region_end   = ORIGIN(hp_dram) + LENGTH(hp_dram);
 
     /* End of HP SRAM; the main stack starts MAIN_STACK_ROM_GAP below it */
     _stack_top = ORIGIN(hp_dram) + LENGTH(hp_dram);

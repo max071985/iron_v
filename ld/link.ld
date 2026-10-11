@@ -23,10 +23,19 @@
  *     runs without flash, or is latency-critical) and the objects that exist
  *     for IRAM_ATTR code (flash_rom, hw_rng, looptime). nvs.o and ota.o mix
  *     main-loop code with IRAM_ATTR flash routines; their constants go to flash
- *     because those routines read none. Vendor libraries keep their constants
- *     in DRAM (REV-35). DMA engines must never read from flash either: keep
- *     DMA sources in RAM. tests/test_runner.py checks that no IRAM-only code
- *     path calls into flash or loads an address in flash constants.
+ *     because those routines read none. DMA engines must never read from
+ *     flash either: keep DMA sources in RAM. tests/test_runner.py checks that
+ *     no IRAM-only code path calls into flash or loads an address in flash
+ *     constants.
+ *   - Vendor libraries are placed as ESP-IDF places them (REV-35; IDF
+ *     66ab063a9a7f components/esp_wifi/linker.lf, esp_phy/linker.lf): only
+ *     their IRAM sections (.iram1, .wifi*iram) run from IRAM, their plain .text
+ *     runs from flash; the Wi-Fi libraries' constants and log strings live in
+ *     flash, libphy's constants stay in DRAM (IDF: noflash_data). The blob
+ *     only runs with flash mapped (IDF even keeps the Wi-Fi interrupt enabled
+ *     during flash operations; Iron-V disables all interrupts). The keep-list
+ *     patterns below are anchored to build/<profile>/obj/ so that they never
+ *     match vendor archive members (O-59: *timer.o took ieee80211_timer.o).
  * Interrupts are disabled around every flash operation, so flash-resident
  * interrupt handlers are safe; keeping them in IRAM is only a latency choice.
  *
@@ -65,35 +74,36 @@ PHDRS
 SECTIONS
 {
     /* IRAM keep-list. It must come before .flash_xip: the first rule that
-     * matches an input section wins, and .flash_xip ends with *(.text .text.*) */
+     * matches an input section wins, and .flash_xip ends with *(.text .text.*).
+     * Own objects only (anchored to obj/), see the header (O-59). */
     .text : ALIGN(16) {
         _stext = .;
         KEEP(*(.text.entry))
-        *crt0.o(.text .text.*)
-        *trap_entry.o(.text .text.*)
-        *trap.o(.text .text.*)
-        *panic.o(.text .text.*)
-        *task_switch.o(.text .text.*)
-        *task.o(.text .text.*)
-        *interrupt.o(.text .text.*)
-        *dpc.o(.text .text.*)
-        *systimer.o(.text .text.*)
-        *timer.o(.text .text.*)
-        *wdt.o(.text .text.*)
-        *uart.o(.text .text.*)
-        *usb_serial.o(.text .text.*)
-        *console.o(.text .text.*)
-        *utils.o(.text .text.*)
-        *string.o(.text .text.*)
-        *arena.o(.text .text.*)
-        *clock.o(.text .text.*)
-        *mmu.o(.text .text.*)
-        *power.o(.text .text.*)
-        *main.o(.text .text.*)
-        *wifi_os_adapter.o(.text .text.*)
-        *wifi.o(.text .text.*)        /* packet path: latency, see header */
-        *net.o(.text .text.*)
-        *tcp.o(.text .text.*)
+        */obj/crt0.o(.text .text.*)
+        */obj/trap_entry.o(.text .text.*)
+        */obj/trap.o(.text .text.*)
+        */obj/panic.o(.text .text.*)
+        */obj/task_switch.o(.text .text.*)
+        */obj/task.o(.text .text.*)
+        */obj/interrupt.o(.text .text.*)
+        */obj/dpc.o(.text .text.*)
+        */obj/systimer.o(.text .text.*)
+        */obj/timer.o(.text .text.*)
+        */obj/wdt.o(.text .text.*)
+        */obj/uart.o(.text .text.*)
+        */obj/usb_serial.o(.text .text.*)
+        */obj/console.o(.text .text.*)
+        */obj/utils.o(.text .text.*)
+        */obj/string.o(.text .text.*)
+        */obj/arena.o(.text .text.*)
+        */obj/clock.o(.text .text.*)
+        */obj/mmu.o(.text .text.*)
+        */obj/power.o(.text .text.*)
+        */obj/main.o(.text .text.*)
+        */obj/wifi_os_adapter.o(.text .text.*)
+        */obj/wifi.o(.text .text.*)        /* packet path: latency, see header */
+        */obj/net.o(.text .text.*)
+        */obj/tcp.o(.text .text.*)
         *libgcc.a:(.text .text.*)
         *(.init .init.*)
         *(.iram1 .iram1.*)
@@ -125,6 +135,12 @@ SECTIONS
             */obj/wifi_os_adapter.o */obj/wifi.o */obj/net.o */obj/tcp.o
             */obj/flash_rom.o */obj/hw_rng.o */obj/looptime.o
         ) */obj/*(.rodata .rodata.* .srodata .srodata.*)
+        /* Wi-Fi vendor libraries' constants and log strings (REV-35, as ESP-IDF).
+         * libphy and libgcc constants stay in DRAM (.rodata below). */
+        *libpp.a:(.rodata .rodata.* .srodata .srodata.*)
+        *libnet80211.a:(.rodata .rodata.* .srodata .srodata.*)
+        *libcore.a:(.rodata .rodata.* .srodata .srodata.*)
+        *(.rodata_wlog* .rodata_wlog*.*)
         . = ALIGN(4);
         __start_iron_modules = .;
         KEEP(*(iron_modules))
@@ -137,11 +153,12 @@ SECTIONS
         _eflash_xip = .;
     } > flash_xip :xip
 
+    /* DRAM constants: the keep-list objects' constants, libphy (IDF: noflash_data)
+     * and libgcc (its code is in IRAM) */
     .rodata : ALIGN(16) {
         _srodata = .;
         *(.rodata .rodata.*)
         *(.srodata .srodata.*)
-        *(.rodata_wlog* .rodata_wlog*.*)
         . = ALIGN(16);
         _erodata = .;
     } > hp_sram :drom

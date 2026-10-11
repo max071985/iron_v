@@ -11,7 +11,8 @@ Performs:
 5. Verification of .rodata symbol g_test_rodata_str ("IRON_V_RODATA_TEST_PATTERN") unpacked from raw ELF bytes.
 6. Verification of W^X segments: 0 RWX segments, IRAM code executable from 0x40800000, data read-write above it
    (one unified HP SRAM region, REV-34).
-7. Verification of external flash XIP section (.flash_xip) allocatable status.
+7. Verification of external flash XIP section (.flash_xip) allocatable status; IRAM-only code paths and vendor
+   library placement against the ESP-IDF linker fragments (link map, REV-35).
 8. ESP32-C6 firmware.bin flash image header verification (Magic 0xE9, 8 MB flash geometry, entry 0x40800000).
 9. Execution of host-native freestanding C unit test binary (tests/test_freestanding).
 10. Architectural documentation that on-board hardware register reads/writes execute via src/modules/dev/test.c (dev profile) on physical silicon.
@@ -47,6 +48,19 @@ IRAM_ONLY_ROOTS = [
     r"flash_(read|write|erase_sector)(\..+)?",
 ]
 FLASH_OP_ROUTINES_MIN = 6        # flash_read/write/erase_sector in nvs.c and ota.c
+
+# Vendor library placement as ESP-IDF 66ab063a9a7f does it (REV-35; components/esp_wifi/linker.lf,
+# components/esp_phy/linker.lf): only the libraries' IRAM sections run from IRAM, their plain .text from flash
+# (O-59); the Wi-Fi libraries' constants and log strings live in flash, libphy's in DRAM (IDF: noflash_data).
+VENDOR_INPUT_RE = re.compile(r"(?:^|/)libs/esp32c6/(lib[a-z0-9_]+\.a)\(([^)]+)\)$")
+VENDOR_IRAM_SECTION_RE = re.compile(r"\.(iram1|wifi[a-z0-9]*iram)(\..*)?$")
+VENDOR_CONST_SECTION_RE = re.compile(r"\.(s?rodata|rodata_wlog_[a-z]+)(\..*)?$")
+VENDOR_FLASH_CONST_LIBS = ("libpp.a", "libnet80211.a", "libcore.a")
+VENDOR_DRAM_CONST_LIBS = ("libphy.a",)
+MAP_OUTPUT_SECTION_RE = re.compile(r"^(\.[A-Za-z0-9_.]+)(\s|$)")
+MAP_INPUT_LINE_RE = re.compile(r"^ (\.\S+)\s+0x([0-9a-f]+)\s+0x([0-9a-f]+)\s+(\S+)$")
+MAP_INPUT_NAME_RE = re.compile(r"^ (\.\S+)$")
+MAP_INPUT_CONT_RE = re.compile(r"^\s+0x([0-9a-f]+)\s+0x([0-9a-f]+)\s+(\S+)$")
 
 FUNC_RE = re.compile(r"^([0-9a-f]+) <([^>]+)>:$")
 CALL_RE = re.compile(r"\b(?:jal|j|jalr|tail|call)\b.*?\b([0-9a-f]{8}) <([^>+]+)(\+0x[0-9a-f]+)?>")
@@ -105,6 +119,69 @@ def iram_call_closure(elf_path, objdump, in_iram, in_flash, in_flash_rodata=lamb
             elif in_iram(tgt) and tgt in names:
                 stack.append((tgt, path + [names[tgt]]))
     return [names[a] for a in roots], walked, violations, data_refs
+
+
+def map_input_sections(map_path):
+    """Input sections placed by the link, from the GNU ld map: [(output, input, size, source)].
+
+    Long input section names put address, size and source on the next line.
+    """
+    out, cur, pending, started = [], None, None, False
+    with open(map_path, errors="replace") as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if not started:
+                started = line.startswith("Linker script and memory map")
+                continue
+            m = MAP_OUTPUT_SECTION_RE.match(line)
+            if m:
+                cur, pending = m.group(1), None
+                continue
+            m = MAP_INPUT_LINE_RE.match(line)
+            if m:
+                out.append((cur, m.group(1), int(m.group(3), 16), m.group(4)))
+                pending = None
+                continue
+            m = MAP_INPUT_NAME_RE.match(line)
+            if m:
+                pending = m.group(1)
+                continue
+            m = MAP_INPUT_CONT_RE.match(line)
+            if m and pending:
+                out.append((cur, pending, int(m.group(2), 16), m.group(3)))
+            pending = None
+    return out
+
+
+def vendor_placement(inputs):
+    """Checks vendor archive members against the ESP-IDF placement (REV-35, O-59).
+
+    Returns (bytes per placement class, violations).
+    """
+    sizes = {"iram_code": 0, "flash_const": 0, "dram_const": 0}
+    violations = []
+    for out_sec, in_sec, size, src in inputs:
+        m = VENDOR_INPUT_RE.search(src)
+        if not m:
+            continue
+        lib, member = m.group(1), m.group(2)
+        where = f"{lib}({member}) {in_sec} [{size} B] in {out_sec}"
+        if out_sec == ".text":
+            sizes["iram_code"] += size
+            if size and not VENDOR_IRAM_SECTION_RE.match(in_sec):
+                violations.append(f"plain code in IRAM: {where}")
+        elif VENDOR_CONST_SECTION_RE.match(in_sec):
+            # Merged strings carry their bytes on the first object of the output section and 0x0 on the
+            # others, so the placement is checked whatever the size
+            to_flash = lib in VENDOR_FLASH_CONST_LIBS or in_sec.startswith(".rodata_wlog")
+            want = ".flash_xip" if to_flash else ".rodata" if lib in VENDOR_DRAM_CONST_LIBS else None
+            if out_sec == ".flash_xip":
+                sizes["flash_const"] += size
+            elif out_sec == ".rodata":
+                sizes["dram_const"] += size
+            if want is not None and out_sec != want:
+                violations.append(f"constants in {out_sec}, expected {want}: {where}")
+    return sizes, violations
 
 # ELF constants
 EI_MAG0 = 0
@@ -240,7 +317,7 @@ def module_sources():
 
 
 def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="dev", modules=None,
-              main_stack_min=MAIN_STACK_MIN_SIZE):
+              main_stack_min=MAIN_STACK_MIN_SIZE, map_path=None):
     modules = list(modules or [])
     has = lambda m: m in modules
 
@@ -358,7 +435,7 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="d
         # TEST: Read-Only Memory (RODATA) Content & Flags Verification
         total += 1
         sym_rodata = symbols["g_test_rodata_str"]
-        # Own constants live in flash since REV-34 (.flash_xip); vendor and IRAM-path constants in DRAM (.rodata)
+        # Own constants live in flash since REV-34 (.flash_xip), Wi-Fi vendor constants since REV-35; IRAM-path constants in DRAM (.rodata)
         sec_rodata = next(sec for name, sec in sections.items()
                           if name in (".rodata", ".flash_xip")
                           and sec["addr"] <= sym_rodata["value"] < sec["addr"] + sec["size"])
@@ -1610,6 +1687,30 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="d
         clo_pass
     )
 
+    # TEST: Vendor libraries placed as ESP-IDF places them (REV-35, O-59)
+    total += 1
+    map_path = map_path or os.path.join(os.path.dirname(elf_path), "firmware.map")
+    if not os.path.exists(map_path):
+        vp_pass = False
+        vp_actual = f"{map_path} not found"
+    else:
+        vp_sizes, vp_violations = vendor_placement(map_input_sections(map_path))
+        vp_pass = (not vp_violations and vp_sizes["iram_code"] > 0 and vp_sizes["flash_const"] > 0
+                   and vp_sizes["dram_const"] > 0)
+        vp_actual = (f"vendor IRAM code {vp_sizes['iram_code']} B, constants in flash {vp_sizes['flash_const']} B, "
+                     f"in DRAM {vp_sizes['dram_const']} B; {len(vp_violations)} misplaced input sections")
+        for v in vp_violations[:8]:
+            vp_actual += f"\n               {v}"
+    passed += print_result_line(
+        total,
+        "Vendor Library Placement (ESP-IDF linker fragments)",
+        "Walk the link map: vendor archive members' IRAM code and constants against the ESP-IDF placement",
+        "Only .iram1/.wifi*iram vendor code in IRAM; libpp/libnet80211/libcore constants and log strings in flash, "
+        "libphy constants in DRAM",
+        vp_actual,
+        vp_pass
+    )
+
     # TEST: Memory budgets (mirror of the ld/link.ld ASSERTs, with the numbers)
     total += 1
     main_stack_top = symbols.get("_main_stack_top", {}).get("value", 0)
@@ -1650,6 +1751,7 @@ if __name__ == "__main__":
     parser.add_argument("--profile", default="dev", help="build profile of the image (profiles/<name>.config)")
     parser.add_argument("--modules", default=None, help="the profile's modules, space separated (default: all)")
     parser.add_argument("--main-stack-min", type=int, default=MAIN_STACK_MIN_SIZE, help="the profile's MAIN_STACK_MIN")
+    parser.add_argument("--map", default=None, help="linker map of the image (default: firmware.map next to --elf)")
     args = parser.parse_args()
     mods = args.modules.split() if args.modules is not None else sorted(module_sources())
-    run_suite(args.elf, args.bin, args.host_test, args.objdump, args.profile, mods, args.main_stack_min)
+    run_suite(args.elf, args.bin, args.host_test, args.objdump, args.profile, mods, args.main_stack_min, args.map)

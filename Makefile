@@ -220,7 +220,7 @@ host-test: $(HOST_TEST_BIN)
 # ELF/BIN checks of one profile's image (layout, budgets, which modules are linked)
 elf-test: $(ELF) $(BIN) $(HOST_TEST_BIN)
 	@python3 tests/test_runner.py --elf $(ELF) --bin $(BIN) --host-test $(HOST_TEST_BIN) --objdump $(OBJDUMP) \
-		--profile $(PROFILE) --modules "$(PROFILE_MODULES)" --main-stack-min $(PROFILE_MAIN_STACK_MIN)
+		--profile $(PROFILE) --modules "$(PROFILE_MODULES)" --main-stack-min $(PROFILE_MAIN_STACK_MIN) --map $(MAP)
 
 # Host tests, then every profile built and checked: the test build and the production builds
 test: host-test

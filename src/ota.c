@@ -12,32 +12,6 @@
 #include "console.h"
 #include "utils.h"
 
-#if defined(__riscv)
-#include "interrupt.h"
-
-/* ROM SPI Flash C API Prototypes */
-typedef int esp_rom_spiflash_result_t;
-extern esp_rom_spiflash_result_t esp_rom_spiflash_unlock(void);
-extern void spi_flash_attach(uint32_t ishspi, bool legacy);
-
-typedef struct {
-    uint32_t device_id;
-    uint32_t chip_size;       /* 8 MB = 0x00800000 */
-    uint32_t block_size;      /* 64 KB = 0x00010000 */
-    uint32_t sector_size;     /* 4 KB = 0x00001000 */
-    uint32_t page_size;       /* 256 B = 0x00000100 */
-    uint32_t status_mask;     /* 0xFFFF */
-} esp_rom_spiflash_chip_t;
-
-static esp_rom_spiflash_chip_t s_rom_flashchip = {
-    .device_id   = 0x00000000U,
-    .chip_size   = OTA_FLASH_TOTAL_SIZE,
-    .block_size  = OTA_FLASH_BLOCK_SIZE,
-    .sector_size = OTA_FLASH_SECTOR_SIZE,
-    .page_size   = OTA_FLASH_PAGE_SIZE,
-    .status_mask = 0xFFFFU
-};
-#endif
 
 /* Standard IEEE 802.3 32-bit CRC Polynomial */
 #define CRC32_POLYNOMIAL                (0xEDB88320U)
@@ -374,9 +348,7 @@ static void ota_select_active_record(void)
 ota_status_t ota_init(void)
 {
 #if defined(__riscv)
-    *(esp_rom_spiflash_chip_t **)0x4087ffec = &s_rom_flashchip;
-    spi_flash_attach(0, false);
-    esp_rom_spiflash_unlock();
+    flash_rom_attach();
 #endif
 
     memset(&s_telemetry, 0, sizeof(s_telemetry));

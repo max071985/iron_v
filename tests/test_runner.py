@@ -45,8 +45,11 @@ STT_FILE = 4
 IRAM_ONLY_ROOTS = [
     r"clock_init", r"mmu_init",
     r"trap_handler", r"trap_entry_exception", r"trap_entry_interrupt", r"panic_dump",
-    r"flash_(read|write|erase_sector)(\..+)?",
+    r"flash_(read|write|erase_sector)(\..+)?", r"flash_rom_attach",
 ]
+# ROM SPI flash entry points: only src/flash_rom.c may call them, inside its interrupt-off windows (O-62)
+ROM_FLASH_ENTRY_RE = re.compile(r"^(esp_rom_spiflash_\w+|spi_flash_attach)$")
+ROM_FLASH_CALLER_RE = re.compile(r"^flash_rom_\w+(\..+)?$")
 FLASH_OP_ROUTINES_MIN = 6        # flash_read/write/erase_sector in nvs.c and ota.c
 
 # Vendor library placement as ESP-IDF 66ab063a9a7f does it (REV-35; components/esp_wifi/linker.lf,
@@ -121,6 +124,22 @@ def iram_call_closure(elf_path, objdump, in_iram, in_flash, in_flash_rodata=lamb
             elif in_iram(tgt) and tgt in names:
                 stack.append((tgt, path + [names[tgt]]))
     return [names[a] for a in roots], walked, violations, data_refs
+
+
+def rom_flash_callers(elf_path, objdump):
+    """Functions that directly call a ROM SPI flash entry point: [(caller, callee)]."""
+    listing = subprocess.run([objdump, "-d", "--no-show-raw-insn", elf_path],
+                             capture_output=True, text=True, check=True).stdout
+    out, cur = set(), None
+    for line in listing.splitlines():
+        m = FUNC_RE.match(line)
+        if m:
+            cur = m.group(2)
+            continue
+        m = CALL_RE.search(line) if cur is not None else None
+        if m and ROM_FLASH_ENTRY_RE.match(m.group(2)):
+            out.add((cur, m.group(2)))
+    return sorted(out)
 
 
 def map_input_sections(map_path):
@@ -1715,6 +1734,27 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="d
         f"All roots in IRAM, >= {FLASH_OP_ROUTINES_MIN} flash routines found, no call path reaches flash XIP code or constants",
         clo_actual,
         clo_pass
+    )
+
+    # TEST: Only flash_rom.c calls the ROM flash routines (interrupts off around every flash operation, O-62)
+    total += 1
+    if objdump is None:
+        rf_pass, rf_actual = False, "objdump not found (pass --objdump)"
+    else:
+        rf_calls = rom_flash_callers(elf_path, objdump)
+        rf_bad = [f"{a} -> {b}" for a, b in rf_calls if not ROM_FLASH_CALLER_RE.match(a)]
+        rf_pass = len(rf_calls) > 0 and not rf_bad
+        rf_actual = (f"{len(rf_calls)} call sites ({', '.join(sorted({a for a, _ in rf_calls}))}); "
+                     f"{len(rf_bad)} outside flash_rom_*")
+        for v in rf_bad[:8]:
+            rf_actual += f"\n               {v}"
+    passed += print_result_line(
+        total,
+        "ROM Flash Calls Only Through flash_rom.c",
+        "Find direct calls to esp_rom_spiflash_* / spi_flash_attach in the disassembly",
+        "Every caller is a flash_rom_* routine (interrupts off for the call)",
+        rf_actual,
+        rf_pass
     )
 
     # TEST: Vendor libraries placed as ESP-IDF places them (REV-35, O-59)

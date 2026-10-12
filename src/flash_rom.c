@@ -17,6 +17,26 @@ extern esp_rom_spiflash_result_t esp_rom_spiflash_read(uint32_t target, uint32_t
 extern esp_rom_spiflash_result_t esp_rom_spiflash_write(uint32_t target, const uint32_t *src, int32_t len);
 extern esp_rom_spiflash_result_t esp_rom_spiflash_erase_sector(size_t sector_num);
 extern esp_rom_spiflash_result_t esp_rom_spiflash_unlock(void);
+extern void spi_flash_attach(uint32_t ishspi, bool legacy);
+
+typedef struct {
+    uint32_t device_id;
+    uint32_t chip_size;
+    uint32_t block_size;
+    uint32_t sector_size;
+    uint32_t page_size;
+    uint32_t status_mask;
+} esp_rom_spiflash_chip_t;
+
+/* Read by the ROM routines while interrupts are off: must be in RAM (.data) */
+static esp_rom_spiflash_chip_t s_rom_flashchip = {
+    .device_id   = 0U,
+    .chip_size   = FLASH_ROM_CHIP_SIZE,
+    .block_size  = FLASH_ROM_BLOCK_SIZE,
+    .sector_size = FLASH_ROM_SECTOR_SIZE,
+    .page_size   = FLASH_ROM_PAGE_SIZE,
+    .status_mask = FLASH_ROM_STATUS_MASK
+};
 
 #define FLASH_ROM_CHUNK_WORDS   (FLASH_ROM_CHUNK_BYTES / sizeof(uint32_t))
 #define FLASH_ROM_WORD_ROUND    (sizeof(uint32_t) - 1U)
@@ -34,6 +54,17 @@ static IRAM_ATTR int flash_rom_unlock(void)
     int res = esp_rom_spiflash_unlock();
     flash_rom_window_end(LOOP_IRQOFF_FLASH_UNLOCK, t0, mstatus);
     return res;
+}
+
+IRAM_ATTR int flash_rom_attach(void)
+{
+    uint64_t t0 = systimer_get_us();
+    uint32_t mstatus = interrupt_global_save_and_disable();
+    *(esp_rom_spiflash_chip_t **)FLASH_ROM_CHIP_PTR_ADDR = &s_rom_flashchip;
+    spi_flash_attach(FLASH_ROM_SPI_PORT, false);
+    int res = esp_rom_spiflash_unlock();
+    flash_rom_window_end(LOOP_IRQOFF_FLASH_UNLOCK, t0, mstatus);
+    return (res == 0) ? FLASH_ROM_OK : FLASH_ROM_ERR_IO;
 }
 
 IRAM_ATTR int flash_rom_read(uint32_t offset, void *dest, size_t len)

@@ -47,6 +47,9 @@ IRAM_ONLY_ROOTS = [
     r"trap_handler", r"trap_entry_exception", r"trap_entry_interrupt", r"panic_dump",
     r"flash_(read|write|erase_sector)(\..+)?", r"flash_rom_attach",
 ]
+# Output sections that occupy memory (ld/link.ld). Anything else with SHF_ALLOC is an orphan: an input
+# section no rule matched, placed by ld's heuristics outside the budgets and placement checks (O-63).
+ALLOC_OUTPUT_SECTIONS = (".text", ".flash_xip", ".rodata", ".data", ".bss", ".heap", ".lp_sram")
 # ROM SPI flash entry points: only src/flash_rom.c may call them, inside its interrupt-off windows (O-62)
 ROM_FLASH_ENTRY_RE = re.compile(r"^(esp_rom_spiflash_\w+|spi_flash_attach)$")
 ROM_FLASH_CALLER_RE = re.compile(r"^flash_rom_\w+(\..+)?$")
@@ -1734,6 +1737,19 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="d
         f"All roots in IRAM, >= {FLASH_OP_ROUTINES_MIN} flash routines found, no call path reaches flash XIP code or constants",
         clo_actual,
         clo_pass
+    )
+
+    # TEST: No orphan sections in memory (O-63)
+    total += 1
+    orphans = sorted(name for name, sec in sections.items()
+                     if (sec["flags"] & SHF_ALLOC) and sec["size"] > 0 and name not in ALLOC_OUTPUT_SECTIONS)
+    passed += print_result_line(
+        total,
+        "No Orphan Sections in Memory",
+        "List SHF_ALLOC output sections with content that are not defined by ld/link.ld",
+        f"Only {', '.join(ALLOC_OUTPUT_SECTIONS)}",
+        f"{len(orphans)} orphan sections" + (f": {', '.join(orphans[:8])}" if orphans else ""),
+        not orphans
     )
 
     # TEST: Only flash_rom.c calls the ROM flash routines (interrupts off around every flash operation, O-62)

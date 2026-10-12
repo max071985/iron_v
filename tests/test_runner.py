@@ -347,6 +347,11 @@ def parse_elf(elf_path):
         "symbols": symbols,
     }
 
+def listing(items, prefix="", limit=8):
+    """Detail lines appended under a result's Actual field (first `limit` items)."""
+    return "".join(f"\n               {prefix}{v}" for v in items[:limit])
+
+
 def print_result_line(num, title, desc, expected, actual, pass_cond):
     print(f"\n[TEST {num:02d}] {title}")
     print(f"  Description: {desc}")
@@ -369,7 +374,7 @@ def module_sources():
 
 
 def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="dev", modules=None,
-              main_stack_min=MAIN_STACK_MIN_SIZE, map_path=None):
+              main_stack_min=MAIN_STACK_MIN_SIZE, map_path="build/dev/firmware.map"):
     modules = list(modules or [])
     has = lambda m: m in modules
 
@@ -1726,10 +1731,7 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="d
                     and "mmu_init" in clo_roots)
         clo_actual = (f"{len(clo_roots)} roots ({len(flash_ops)} flash routines), {len(clo_walked)} IRAM functions walked, "
                       f"{len(clo_violations)} calls into flash, {len(clo_refs)} reads of flash constants")
-        for v in clo_violations[:8]:
-            clo_actual += f"\n               flash call: {v}"
-        for v in clo_refs[:8]:
-            clo_actual += f"\n               flash data: {v}"
+        clo_actual += listing(clo_violations, "flash call: ") + listing(clo_refs, "flash data: ")
     passed += print_result_line(
         total,
         "IRAM-Only Code Paths (pre-MMU, trap/panic, flash routines)",
@@ -1762,8 +1764,7 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="d
         rf_pass = len(rf_calls) > 0 and not rf_bad
         rf_actual = (f"{len(rf_calls)} call sites ({', '.join(sorted({a for a, _ in rf_calls}))}); "
                      f"{len(rf_bad)} outside flash_rom_*")
-        for v in rf_bad[:8]:
-            rf_actual += f"\n               {v}"
+        rf_actual += listing(rf_bad)
     passed += print_result_line(
         total,
         "ROM Flash Calls Only Through flash_rom.c",
@@ -1775,7 +1776,6 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="d
 
     # TEST: Vendor libraries placed as ESP-IDF places them (REV-35, O-59)
     total += 1
-    map_path = map_path or os.path.join(os.path.dirname(elf_path), "firmware.map")
     if not os.path.exists(map_path):
         vp_pass = False
         vp_actual = f"{map_path} not found"
@@ -1789,8 +1789,7 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="d
         vp_actual = (f"vendor IRAM code {vp_sizes['iram_code']} B, constants in flash {vp_sizes['flash_const']} B, "
                      f"in DRAM {vp_sizes['dram_const']} B (post-merge); own keep-lists: {len(kl_code)} objects with "
                      f"IRAM code, {len(kl_const)} with DRAM constants; {len(vp_violations)} misplaced input sections")
-        for v in vp_violations[:8]:
-            vp_actual += f"\n               {v}"
+        vp_actual += listing(vp_violations)
     passed += print_result_line(
         total,
         "Vendor Library Placement (ESP-IDF linker fragments) and Keep-List Agreement",
@@ -1844,4 +1843,5 @@ if __name__ == "__main__":
     parser.add_argument("--map", default=None, help="linker map of the image (default: firmware.map next to --elf)")
     args = parser.parse_args()
     mods = args.modules.split() if args.modules is not None else sorted(module_sources())
-    run_suite(args.elf, args.bin, args.host_test, args.objdump, args.profile, mods, args.main_stack_min, args.map)
+    map_path = args.map or os.path.join(os.path.dirname(args.elf), "firmware.map")
+    run_suite(args.elf, args.bin, args.host_test, args.objdump, args.profile, mods, args.main_stack_min, map_path)

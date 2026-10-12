@@ -160,9 +160,10 @@ $(VENDOR_STAMP): $(VENDOR_LIBS) libs/esp32c6/SHA256SUMS libs/esp32c6/LICENSE
 	@touch $@
 
 # Relinks when the module selection or the stack budget changes (config.mk is rewritten only then)
-# The map is a second output of the link (grouped target): a missing map relinks
+# The map is a second output of the link (grouped target): a missing map relinks.
+# LC_ALL=C: tests/test_runner.py parses the map's English headings.
 $(ELF) $(MAP) &: $(OBJS) $(wildcard ld/*.ld ld/rom/*.ld) $(VENDOR_STAMP) $(CONFIG_MK)
-	$(CC) $(CFLAGS) $(LDFLAGS) $(OBJS) -Wl,--start-group -lnet80211 -lpp -lphy -lcore -Wl,--end-group -lgcc -Wl,-Map=$(MAP) -Wl,--print-memory-usage -o $@
+	LC_ALL=C $(CC) $(CFLAGS) $(LDFLAGS) $(OBJS) -Wl,--start-group -lnet80211 -lpp -lphy -lcore -Wl,--end-group -lgcc -Wl,-Map=$(MAP) -Wl,--print-memory-usage -o $@
 
 $(BIN): $(ELF)
 	esptool --chip esp32c6 elf2image --flash-mode dio --flash-size 8MB --flash-freq 80m -o $@ $<

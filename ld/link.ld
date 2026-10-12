@@ -74,44 +74,42 @@ PHDRS
 SECTIONS
 {
     /* IRAM keep-list. It must come before .flash_xip: the first rule that
-     * matches an input section wins, and .flash_xip ends with *(.text .text.*).
-     * Own objects only (anchored to obj/), see the header (O-59). */
+     * matches an input section wins, and .flash_xip starts with *(.text .text.*).
+     * A pattern starting with ':' matches only files that are not archive
+     * members, i.e. Iron-V's own objects (O-59: "*timer.o" also took vendor
+     * members). The ASSERTs at the end check the boot/trap entry points. */
     .text : ALIGN(16) {
         _stext = .;
         KEEP(*(.text.entry))
-        */obj/crt0.o(.text .text.*)
-        */obj/trap_entry.o(.text .text.*)
-        */obj/trap.o(.text .text.*)
-        */obj/panic.o(.text .text.*)
-        */obj/task_switch.o(.text .text.*)
-        */obj/task.o(.text .text.*)
-        */obj/interrupt.o(.text .text.*)
-        */obj/dpc.o(.text .text.*)
-        */obj/systimer.o(.text .text.*)
-        */obj/timer.o(.text .text.*)
-        */obj/wdt.o(.text .text.*)
-        */obj/uart.o(.text .text.*)
-        */obj/usb_serial.o(.text .text.*)
-        */obj/console.o(.text .text.*)
-        */obj/utils.o(.text .text.*)
-        */obj/string.o(.text .text.*)
-        */obj/arena.o(.text .text.*)
-        */obj/clock.o(.text .text.*)
-        */obj/mmu.o(.text .text.*)
-        */obj/power.o(.text .text.*)
-        */obj/main.o(.text .text.*)
-        */obj/wifi_os_adapter.o(.text .text.*)
-        */obj/wifi.o(.text .text.*)        /* packet path: latency, see header */
-        */obj/net.o(.text .text.*)
-        */obj/tcp.o(.text .text.*)
+        :*/crt0.o(.text .text.*)
+        :*/trap_entry.o(.text .text.*)
+        :*/trap.o(.text .text.*)
+        :*/panic.o(.text .text.*)
+        :*/task_switch.o(.text .text.*)
+        :*/task.o(.text .text.*)
+        :*/interrupt.o(.text .text.*)
+        :*/dpc.o(.text .text.*)
+        :*/systimer.o(.text .text.*)
+        :*/timer.o(.text .text.*)
+        :*/wdt.o(.text .text.*)
+        :*/uart.o(.text .text.*)
+        :*/usb_serial.o(.text .text.*)
+        :*/console.o(.text .text.*)
+        :*/utils.o(.text .text.*)
+        :*/string.o(.text .text.*)
+        :*/arena.o(.text .text.*)
+        :*/clock.o(.text .text.*)
+        :*/mmu.o(.text .text.*)
+        :*/power.o(.text .text.*)
+        :*/main.o(.text .text.*)
+        :*/wifi_os_adapter.o(.text .text.*)
+        :*/wifi.o(.text .text.*)        /* packet path: latency, see header */
+        :*/net.o(.text .text.*)
+        :*/tcp.o(.text .text.*)
         *libgcc.a:(.text .text.*)
         *(.init .init.*)
         *(.iram1 .iram1.*)
         *(.wifi*iram .wifi*iram.*)
-        *(.wifiextrairam .wifiextrairam.*)
-        *(.wifirxiram .wifirxiram.*)
-        *(.wifislpiram .wifislpiram.*)
-        *(.wifislprxiram .wifislprxiram.*)
         . = ALIGN(16);
         _etext = .;
     } > hp_sram :iram
@@ -124,23 +122,22 @@ SECTIONS
         *(.flash.text .flash.text.*)
         _flash_rodata_start = .;
         *(.flash.rodata .flash.rodata.*)
-        /* Own objects' constants (REV-34): everything under build/<profile>/obj/ except the
-         * DRAM keep-list. Vendor archive members (libs/) never match this file pattern. */
+        /* Own objects' constants (REV-34): every non-archive object except the DRAM
+         * keep-list (the IRAM keep-list plus the objects that exist for IRAM_ATTR code;
+         * tests/test_runner.py checks the two lists agree). */
         EXCLUDE_FILE(
-            */obj/crt0.o */obj/trap_entry.o */obj/trap.o */obj/panic.o
-            */obj/task_switch.o */obj/task.o */obj/interrupt.o */obj/dpc.o
-            */obj/systimer.o */obj/timer.o */obj/wdt.o */obj/uart.o
-            */obj/usb_serial.o */obj/console.o */obj/utils.o */obj/string.o
-            */obj/arena.o */obj/clock.o */obj/mmu.o */obj/power.o */obj/main.o
-            */obj/wifi_os_adapter.o */obj/wifi.o */obj/net.o */obj/tcp.o
-            */obj/flash_rom.o */obj/hw_rng.o */obj/looptime.o
-        ) */obj/*(.rodata .rodata.* .srodata .srodata.*)
-        /* Wi-Fi vendor libraries' constants and log strings (REV-35, as ESP-IDF).
-         * libphy and libgcc constants stay in DRAM (.rodata below). */
-        *libpp.a:(.rodata .rodata.* .srodata .srodata.*)
-        *libnet80211.a:(.rodata .rodata.* .srodata .srodata.*)
-        *libcore.a:(.rodata .rodata.* .srodata .srodata.*)
-        *(.rodata_wlog* .rodata_wlog*.*)
+            :*/crt0.o :*/trap_entry.o :*/trap.o :*/panic.o
+            :*/task_switch.o :*/task.o :*/interrupt.o :*/dpc.o
+            :*/systimer.o :*/timer.o :*/wdt.o :*/uart.o
+            :*/usb_serial.o :*/console.o :*/utils.o :*/string.o
+            :*/arena.o :*/clock.o :*/mmu.o :*/power.o :*/main.o
+            :*/wifi_os_adapter.o :*/wifi.o :*/net.o :*/tcp.o
+            :*/flash_rom.o :*/hw_rng.o :*/looptime.o
+        ) :*(.rodata .rodata.* .srodata .srodata.*)
+        /* Vendor constants and log strings (REV-35, as ESP-IDF): flash by default for
+         * every vendor archive; libphy keeps its constants in DRAM (IDF: noflash_data). */
+        EXCLUDE_FILE(*libphy.a:*) *esp32c6/lib*.a:(.rodata .rodata.* .srodata .srodata.*)
+        *(.rodata_wlog*)
         . = ALIGN(4);
         __start_iron_modules = .;
         KEEP(*(iron_modules))
@@ -220,5 +217,10 @@ ASSERT(_main_stack_top - _ebss >= MAIN_STACK_MIN_SIZE,
 ASSERT(_main_stack_top - _ebss >= MAIN_STACK_MIN_SIZE + IRAM_MIN_FREE,
        "SRAM: less than IRAM_MIN_FREE above the main-stack budget; keep new code in flash or use IRAM_ATTR sparingly")
 ASSERT(_etext <= _srodata, "IRAM code overlaps DRAM constants")
+/* Code that runs before mmu_init() or on a trap must be in IRAM (keep-list above) */
+ASSERT(clock_init >= _stext && clock_init < _etext, "clock_init is not in IRAM: check the .text keep-list")
+ASSERT(mmu_init >= _stext && mmu_init < _etext, "mmu_init is not in IRAM: check the .text keep-list")
+ASSERT(trap_handler >= _stext && trap_handler < _etext, "trap_handler is not in IRAM: check the .text keep-list")
+ASSERT(_vector_table >= _stext && _vector_table < _etext, "_vector_table is not in IRAM: check the .text keep-list")
 ASSERT(_sflash_xip == ORIGIN(flash_xip),
        ".flash_xip must start at 0x42000000: mmu_init() maps it from flash offset 0x10000")

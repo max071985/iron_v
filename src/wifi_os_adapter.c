@@ -873,9 +873,11 @@ typedef struct _ETSTIMER_ {
 /* Memory validator to guarantee function pointers are in executable memory */
 static inline bool is_valid_instruction_address(uintptr_t addr)
 {
+    /* IRAM code ends at _etext; above it HP SRAM holds writable data (ld/link.ld, REV-34) */
+    extern char _stext[], _etext[];
     if ((addr & 1U) != 0U) return false;
     if (addr >= 0x40000000U && addr < 0x40060000U) return true; /* ROM */
-    if (addr >= 0x40800000U && addr < 0x40829000U) return true; /* IRAM */
+    if (addr >= (uintptr_t)_stext && addr < (uintptr_t)_etext) return true; /* IRAM */
     if (addr >= 0x42000000U && addr < 0x42800000U) return true; /* Flash XIP text */
     return false;
 }

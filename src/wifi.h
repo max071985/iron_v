@@ -92,9 +92,9 @@
 #define WIFI_VENDOR_EVENT_AP_STADISCONNECTED 15
 
 
-/* Memory Cartography Boundaries for HP SRAM DRAM Descriptor Validation   */
-#define WIFI_DRAM_START_ADDR             0x40820000U
-#define WIFI_DRAM_END_ADDR               0x40880000U
+/* RX ring descriptors and buffers must lie in RAM data: [_sdata, _stack_top)
+ * (ld/link.ld). Linker symbols, not fixed addresses: the boundary moves with
+ * the IRAM code and DRAM constants size (REV-34/35). */
 
 /* Bounded Polling Timeout */
 #define WIFI_DEFAULT_TIMEOUT_US          1000U

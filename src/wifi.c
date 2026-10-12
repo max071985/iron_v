@@ -198,16 +198,19 @@ wifi_status_t wifi_verify_rx_ring(uint32_t *out_visited_count)
         }
 
 #if defined(__riscv)
-        /* 2. Verify descriptor DRAM boundaries [0x40820000, 0x40880000) */
+        /* 2. Verify descriptor DRAM boundaries [_sdata, _stack_top) */
+        extern char _sdata[], _stack_top[];
+        const uintptr_t dram_start = (uintptr_t)_sdata;
+        const uintptr_t dram_end = (uintptr_t)_stack_top;
         uintptr_t desc_vma = (uintptr_t)curr;
-        if (desc_vma < WIFI_DRAM_START_ADDR || desc_vma >= WIFI_DRAM_END_ADDR)
+        if (desc_vma < dram_start || desc_vma >= dram_end)
         {
             return WIFI_ERR_OUT_OF_BOUNDS;
         }
 
         /* 3. Verify buffer pointer DRAM boundaries */
         uintptr_t buf_vma = (uintptr_t)curr->buffer_addr;
-        if (buf_vma < WIFI_DRAM_START_ADDR || buf_vma >= WIFI_DRAM_END_ADDR)
+        if (buf_vma < dram_start || buf_vma >= dram_end)
         {
             return WIFI_ERR_OUT_OF_BOUNDS;
         }

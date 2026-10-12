@@ -51,15 +51,17 @@ FLASH_OP_ROUTINES_MIN = 6        # flash_read/write/erase_sector in nvs.c and ot
 
 # Vendor library placement as ESP-IDF 66ab063a9a7f does it (REV-35; components/esp_wifi/linker.lf,
 # components/esp_phy/linker.lf): only the libraries' IRAM sections run from IRAM, their plain .text from flash
-# (O-59); the Wi-Fi libraries' constants and log strings live in flash, libphy's in DRAM (IDF: noflash_data).
+# (O-59); every vendor archive's constants and log strings live in flash, libphy's in DRAM (IDF: noflash_data).
+# The patterns mirror the ld/link.ld globs (.iram1*, .wifi*iram*, .rodata_wlog*).
 VENDOR_INPUT_RE = re.compile(r"(?:^|/)libs/esp32c6/(lib[a-z0-9_]+\.a)\(([^)]+)\)$")
-VENDOR_IRAM_SECTION_RE = re.compile(r"\.(iram1|wifi[a-z0-9]*iram)(\..*)?$")
-VENDOR_CONST_SECTION_RE = re.compile(r"\.(s?rodata|rodata_wlog_[a-z]+)(\..*)?$")
-VENDOR_FLASH_CONST_LIBS = ("libpp.a", "libnet80211.a", "libcore.a")
+VENDOR_IRAM_SECTION_RE = re.compile(r"^\.(iram1|wifi.*iram)(\..*)?$")
+VENDOR_PLAIN_CODE_RE = re.compile(r"^\.text(\..*)?$")
+CONST_SECTION_RE = re.compile(r"^\.(s?rodata|rodata_wlog.*)(\..*)?$")
 VENDOR_DRAM_CONST_LIBS = ("libphy.a",)
-MAP_OUTPUT_SECTION_RE = re.compile(r"^(\.[A-Za-z0-9_.]+)(\s|$)")
-MAP_INPUT_LINE_RE = re.compile(r"^ (\.\S+)\s+0x([0-9a-f]+)\s+0x([0-9a-f]+)\s+(\S+)$")
-MAP_INPUT_NAME_RE = re.compile(r"^ (\.\S+)$")
+OWN_OBJECT_RE = re.compile(r"\.o$")             # not an archive member: "archive.a(member.o)" ends in ")"
+MAP_OUTPUT_SECTION_RE = re.compile(r"^([./]\S*)(\s|$)")
+MAP_INPUT_LINE_RE = re.compile(r"^ ([^*\s]\S*)\s+0x([0-9a-f]+)\s+0x([0-9a-f]+)\s+(\S+)$")
+MAP_INPUT_NAME_RE = re.compile(r"^ ([^*\s]\S*)$")
 MAP_INPUT_CONT_RE = re.compile(r"^\s+0x([0-9a-f]+)\s+0x([0-9a-f]+)\s+(\S+)$")
 
 FUNC_RE = re.compile(r"^([0-9a-f]+) <([^>]+)>:$")
@@ -156,7 +158,9 @@ def map_input_sections(map_path):
 def vendor_placement(inputs):
     """Checks vendor archive members against the ESP-IDF placement (REV-35, O-59).
 
-    Returns (bytes per placement class, violations).
+    Code: IRAM sections must be in .text (IRAM), plain .text in .flash_xip. Constants: libphy in .rodata
+    (DRAM), every other archive in .flash_xip. Byte totals are post-merge (merged strings count on the
+    first object of an output section). Returns (bytes per placement class, violations).
     """
     sizes = {"iram_code": 0, "flash_const": 0, "dram_const": 0}
     violations = []
@@ -168,20 +172,46 @@ def vendor_placement(inputs):
         where = f"{lib}({member}) {in_sec} [{size} B] in {out_sec}"
         if out_sec == ".text":
             sizes["iram_code"] += size
-            if size and not VENDOR_IRAM_SECTION_RE.match(in_sec):
-                violations.append(f"plain code in IRAM: {where}")
-        elif VENDOR_CONST_SECTION_RE.match(in_sec):
+        if VENDOR_IRAM_SECTION_RE.match(in_sec):
+            if size and out_sec != ".text":
+                violations.append(f"IRAM code outside IRAM: {where}")
+        elif VENDOR_PLAIN_CODE_RE.match(in_sec):
+            if size and out_sec != ".flash_xip":
+                violations.append(f"plain code outside flash: {where}")
+        elif CONST_SECTION_RE.match(in_sec):
             # Merged strings carry their bytes on the first object of the output section and 0x0 on the
             # others, so the placement is checked whatever the size
-            to_flash = lib in VENDOR_FLASH_CONST_LIBS or in_sec.startswith(".rodata_wlog")
-            want = ".flash_xip" if to_flash else ".rodata" if lib in VENDOR_DRAM_CONST_LIBS else None
+            dram = lib in VENDOR_DRAM_CONST_LIBS and not in_sec.startswith(".rodata_wlog")
+            want = ".rodata" if dram else ".flash_xip"
             if out_sec == ".flash_xip":
                 sizes["flash_const"] += size
             elif out_sec == ".rodata":
                 sizes["dram_const"] += size
-            if want is not None and out_sec != want:
+            if out_sec != want:
                 violations.append(f"constants in {out_sec}, expected {want}: {where}")
     return sizes, violations
+
+
+def own_keep_list_consistency(inputs):
+    """ld/link.ld keeps two hand-written lists: the IRAM .text keep-list and the DRAM constants keep-list.
+
+    An own object with plain code in IRAM must keep its constants in DRAM (they are read on the same
+    path); an own object with constants in DRAM must have code in IRAM (keep-list or IRAM_ATTR).
+    Returns (objects with code in IRAM, objects with DRAM constants, mismatches).
+    """
+    iram_code, iram_any, dram_const, flash_const = set(), set(), set(), set()
+    for out_sec, in_sec, size, src in inputs:
+        if not OWN_OBJECT_RE.search(src):
+            continue
+        if out_sec == ".text" and size:
+            iram_any.add(src)
+            if VENDOR_PLAIN_CODE_RE.match(in_sec):
+                iram_code.add(src)
+        elif CONST_SECTION_RE.match(in_sec):
+            (dram_const if out_sec == ".rodata" else flash_const).add(src)
+    mismatches = [f"code in IRAM, constants in flash: {o}" for o in sorted(iram_code & flash_const)]
+    mismatches += [f"constants in DRAM, no IRAM code: {o}" for o in sorted(dram_const - iram_any)]
+    return iram_code, dram_const, mismatches
 
 # ELF constants
 EI_MAG0 = 0
@@ -1694,19 +1724,23 @@ def run_suite(elf_path, bin_path, native_test_bin, objdump_path=None, profile="d
         vp_pass = False
         vp_actual = f"{map_path} not found"
     else:
-        vp_sizes, vp_violations = vendor_placement(map_input_sections(map_path))
+        inputs = map_input_sections(map_path)
+        vp_sizes, vp_violations = vendor_placement(inputs)
+        kl_code, kl_const, kl_mismatch = own_keep_list_consistency(inputs)
+        vp_violations += kl_mismatch
         vp_pass = (not vp_violations and vp_sizes["iram_code"] > 0 and vp_sizes["flash_const"] > 0
-                   and vp_sizes["dram_const"] > 0)
+                   and len(kl_code) > 0)
         vp_actual = (f"vendor IRAM code {vp_sizes['iram_code']} B, constants in flash {vp_sizes['flash_const']} B, "
-                     f"in DRAM {vp_sizes['dram_const']} B; {len(vp_violations)} misplaced input sections")
+                     f"in DRAM {vp_sizes['dram_const']} B (post-merge); own keep-lists: {len(kl_code)} objects with "
+                     f"IRAM code, {len(kl_const)} with DRAM constants; {len(vp_violations)} misplaced input sections")
         for v in vp_violations[:8]:
             vp_actual += f"\n               {v}"
     passed += print_result_line(
         total,
-        "Vendor Library Placement (ESP-IDF linker fragments)",
-        "Walk the link map: vendor archive members' IRAM code and constants against the ESP-IDF placement",
-        "Only .iram1/.wifi*iram vendor code in IRAM; libpp/libnet80211/libcore constants and log strings in flash, "
-        "libphy constants in DRAM",
+        "Vendor Library Placement (ESP-IDF linker fragments) and Keep-List Agreement",
+        "Walk the link map: vendor code and constants against the ESP-IDF placement; own IRAM code vs DRAM constants",
+        "Vendor .iram1/.wifi*iram in IRAM, plain vendor code in flash; vendor constants and log strings in flash "
+        "except libphy (DRAM); own objects with IRAM code keep DRAM constants and vice versa",
         vp_actual,
         vp_pass
     )

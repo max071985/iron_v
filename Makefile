@@ -160,7 +160,8 @@ $(VENDOR_STAMP): $(VENDOR_LIBS) libs/esp32c6/SHA256SUMS libs/esp32c6/LICENSE
 	@touch $@
 
 # Relinks when the module selection or the stack budget changes (config.mk is rewritten only then)
-$(ELF): $(OBJS) $(wildcard ld/*.ld ld/rom/*.ld) $(VENDOR_STAMP) $(CONFIG_MK)
+# The map is a second output of the link (grouped target): a missing map relinks
+$(ELF) $(MAP) &: $(OBJS) $(wildcard ld/*.ld ld/rom/*.ld) $(VENDOR_STAMP) $(CONFIG_MK)
 	$(CC) $(CFLAGS) $(LDFLAGS) $(OBJS) -Wl,--start-group -lnet80211 -lpp -lphy -lcore -Wl,--end-group -lgcc -Wl,-Map=$(MAP) -Wl,--print-memory-usage -o $@
 
 $(BIN): $(ELF)
@@ -218,7 +219,7 @@ host-test: $(HOST_TEST_BIN)
 	@./$(HOST_TEST_BIN)
 
 # ELF/BIN checks of one profile's image (layout, budgets, which modules are linked)
-elf-test: $(ELF) $(BIN) $(HOST_TEST_BIN)
+elf-test: $(ELF) $(MAP) $(BIN) $(HOST_TEST_BIN)
 	@python3 tests/test_runner.py --elf $(ELF) --bin $(BIN) --host-test $(HOST_TEST_BIN) --objdump $(OBJDUMP) \
 		--profile $(PROFILE) --modules "$(PROFILE_MODULES)" --main-stack-min $(PROFILE_MAIN_STACK_MIN) --map $(MAP)
 
